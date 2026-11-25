@@ -7,7 +7,7 @@ result importable by Photos, and calls the shortcut back with the outcome.
 
 Usage (the shortcut builds these commands, you never need to type them):
     python umdl.py run <payload>        download the link in the payload
-    python umdl.py installed <payload>  verify a fresh install
+    python umdl.py setup <payload>      install the download tools and report
     python umdl.py update <payload>     force-update the download tools
     python umdl.py doctor <payload>     report tool versions
     python umdl.py logout <payload>     forget saved site logins
@@ -17,12 +17,15 @@ Project: https://github.com/TheKfcBandit/UMDL   Licence: MIT
 
 import base64
 import hashlib
+import importlib
+import importlib.util
 import itertools
 import json
 import os
 import re
 import shlex
 import shutil
+import site
 import subprocess
 import sys
 import threading
@@ -30,9 +33,9 @@ import time
 import traceback
 import urllib.parse
 
-HELPER_VERSION = "1.0.0"
+HELPER_VERSION = "1.1.0"
 # Bumped only when the payload/callback format changes incompatibly.
-PROTOCOL = 1
+PROTOCOL = 2
 
 REPO = "TheKfcBandit/UMDL"
 RAW_BASE = "https://raw.githubusercontent.com/%s/main" % REPO
@@ -49,8 +52,10 @@ LAST_FILE = os.path.join(WORKSPACE, "last.b64")
 LOG_FILE = os.path.join(WORKSPACE, "last.log")
 SAFARI_COOKIES = os.path.join(HOME, "Library", "Cookies", "Cookies.binarycookies")
 
-PACKAGES_BASE = ["chardet", "requests", "certifi", "mutagen"]
-PACKAGES_TOOLS = ["yt-dlp", "yt-dlp-ejs", "yt-dlp-apple-webkit-jsi", "gallery-dl"]
+# pip package name -> module that proves it is installed.
+REQUIRED_TOOLS = {"yt-dlp": "yt_dlp", "gallery-dl": "gallery_dl"}
+# Needed by yt-dlp for YouTube on iOS. A failure here must not block other sites.
+OPTIONAL_TOOLS = ["yt-dlp-ejs", "yt-dlp-apple-webkit-jsi"]
 
 DAY = 86400
 
@@ -416,26 +421,133 @@ def callback(payload, data):
 
 # ------------------------------------------------------------------- updates
 
-def pip_install(packages, force=False):
-    args = ["pip", "install", "-q", "--disable-pip-version-check", "--upgrade"]
-    if force:
-        args.append("--force-reinstall")
-    code, out, err = run_cmd(args + packages)
-    if code != 0:
-        log("pip failed (%s): %s %s" % (code, out[-600:], err[-600:]))
-    return code == 0
+class InstallError(Exception):
+    """The download tools are missing and could not be installed."""
 
 
-def update_tools(state, force=False):
-    """Upgrade yt-dlp and gallery-dl at most once a day. Sites change often,
-    so a stale extractor is the most common cause of a failed download."""
+def pip_commands():
+    override = os.environ.get("UMDL_PIP")  # tests point this at a stand-in
+    if override:
+        return [shlex.split(override)]
+    return [["pip"], ["python", "-m", "pip"]]
+
+
+def pip_install(packages):
+    """Install or upgrade packages. Returns (ok, last lines of pip's output)."""
+    tail = ""
+    for command in pip_commands():
+        code, out, err = run_cmd(command + ["install", "-q", "--disable-pip-version-check",
+                                            "--upgrade"] + packages)
+        tail = strip_ansi((err or out).strip())[-400:]
+        log("%s install %s -> %s %s" % (" ".join(command), " ".join(packages), code, tail))
+        if code == 0:
+            return True, tail
+    return False, tail
+
+
+def refresh_import_paths():
+    """Let this process see packages pip has just installed. A folder that did
+    not exist when Python started is not on sys.path yet."""
+    importlib.invalidate_caches()
+    candidates = []
+    try:
+        candidates.append(site.getusersitepackages())
+    except Exception:
+        pass
+    try:
+        candidates.extend(site.getsitepackages())
+    except Exception:
+        pass
+    for folder in candidates:
+        if folder and os.path.isdir(folder) and folder not in sys.path:
+            site.addsitedir(folder)
+
+
+def use_site_dirs(folders):
+    """Search extra folders for Python packages. Returns the ones added."""
+    added = []
+    for folder in folders or []:
+        if isinstance(folder, str) and os.path.isdir(folder) and folder not in sys.path:
+            site.addsitedir(folder)
+            # Tools started as separate commands (gallery-dl) need it as well.
+            current = os.environ.get("PYTHONPATH", "")
+            os.environ["PYTHONPATH"] = folder + (os.pathsep + current if current else "")
+            added.append(folder)
+    if added:
+        importlib.invalidate_caches()
+    return added
+
+
+def adopt_install_location(state, packages):
+    """pip can install into a folder this Python is not searching. Ask pip
+    where the packages went, search there too, and remember it for next time."""
+    added = []
+    for command in pip_commands():
+        code, out, _ = run_cmd(command + ["show"] + list(packages))
+        if code == 0:
+            added = use_site_dirs(re.findall(r"(?m)^Location:\s*(.+?)\s*$", out))
+            break
+    if added:
+        state["site_dirs"] = sorted(set(list(state.get("site_dirs") or []) + added))
+        log("adopted install location: " + ", ".join(added))
+    return added
+
+
+def missing_tools():
+    refresh_import_paths()
+    missing = []
+    for package, module in REQUIRED_TOOLS.items():
+        loaded = sys.modules.get(module, False)
+        if loaded is not False:
+            found = loaded is not None
+        else:
+            try:
+                found = importlib.util.find_spec(module) is not None
+            except Exception:
+                found = False
+        if not found:
+            missing.append(package)
+    return missing
+
+
+def ensure_tools(state, force=False):
+    """Install the download tools if they are missing, and upgrade them at
+    most once a day. Sites change often, so a stale extractor is the most
+    common cause of a failed download.
+
+    Returns True when an upgrade ran. Raises InstallError when a required
+    tool is missing and cannot be installed.
+    """
+    now = time.time()
+    missing = missing_tools()
+    if missing:
+        ui.start("Installing download tools (first run only)")
+        tail = ""
+        # One package at a time: a failure in one must not hold back the rest.
+        for package in list(REQUIRED_TOOLS) + OPTIONAL_TOOLS:
+            ok, output = pip_install([package])
+            if not ok and package in REQUIRED_TOOLS:
+                tail = output
+        missing = missing_tools()
+        if missing and adopt_install_location(state, missing):
+            missing = missing_tools()
+        if missing:
+            ui.fail()
+            detail = tidy_error(tail) if tail else (
+                "pip reported success, but Python cannot find the packages.")
+            raise InstallError("Could not install %s. %s" % (" and ".join(missing), detail))
+        state["tools_checked"] = now
+        ui.done()
+        return True
     if os.environ.get("UMDL_SKIP_UPDATES"):
         return False
-    now = time.time()
     if not force and now - float(state.get("tools_checked", 0)) < DAY:
         return False
     ui.start("Updating download tools")
-    ok = pip_install(PACKAGES_TOOLS)
+    ok, _ = pip_install(list(REQUIRED_TOOLS) + OPTIONAL_TOOLS)
+    if not ok:
+        # One optional package failing should not stop the important ones.
+        ok = all([pip_install([package])[0] for package in REQUIRED_TOOLS])
     if ok:
         state["tools_checked"] = now
         ui.done()
@@ -741,7 +853,9 @@ def gallery_extractor_name(url):
 
 def gallery_run(args, on_line=None):
     """Run the gallery-dl CLI, streaming stdout lines. Returns (code, lines, stderr)."""
-    argv = ["gallery-dl"] + args
+    # The gallery-dl command exists only where pip could place scripts on PATH.
+    launcher = ["gallery-dl"] if shutil.which("gallery-dl") else ["python", "-m", "gallery_dl"]
+    argv = launcher + args
     cmd = " ".join(shlex.quote(a) for a in argv) if IOS else argv
     lines = []
     try:
@@ -1073,7 +1187,10 @@ def cmd_run(payload, blob):
 
     ui.header(hostname(url) or "download")
     state = read_json(STATE_FILE, {})
-    updated = update_tools(state, force=truthy(payload.get("force_update")))
+    try:
+        updated = ensure_tools(state, force=truthy(payload.get("force_update")))
+    except InstallError as exc:
+        return callback(payload, {"t": "error", "kind": "install", "msg": str(exc), "url": url})
     latest = check_project_updates(state, str(payload.get("v") or "0"))
     try:
         write_json(STATE_FILE, state)
@@ -1124,29 +1241,22 @@ def cmd_run(payload, blob):
         with open(PENDING_FILE, "w", encoding="utf-8") as handle:
             handle.write(manifest)
     if latest:
-        result["up"] = latest
-    ui.write("\n  %s\n" % ui.c("92", "Done. Returning to Shortcuts…"))
+        result["upv"] = latest["v"]
+        result["upurl"] = latest["url"]
+    ui.write("\n  %s\n" % ui.c("92", "Finished. Returning to Shortcuts."))
     return callback(payload, result)
 
 
-def cmd_installed(payload):
-    ui.header("finishing setup")
-    ui.start("Checking the download tools")
-    versions = tool_versions()
-    missing = [k for k in ("yt-dlp", "gallery-dl") if versions[k].startswith("missing")]
-    if missing:
-        ui.fail()
-        return callback(payload, {
-            "t": "error", "kind": "install", "url": str(payload.get("url") or ""),
-            "msg": "Could not install %s. Check your connection and run setup again."
-                   % " and ".join(missing)})
-    ui.done()
-    os.makedirs(JOBS_DIR, exist_ok=True)
+def cmd_setup(payload):
+    """First run with nothing to download: install the tools and report."""
+    ui.header("setting up")
     state = read_json(STATE_FILE, {})
-    state["tools_checked"] = time.time()
+    try:
+        ensure_tools(state)
+    except InstallError as exc:
+        return callback(payload, {"t": "error", "kind": "install", "msg": str(exc), "url": ""})
     write_json(STATE_FILE, state)
-    return callback(payload, {"t": "setup", "url": clean_url(str(payload.get("url") or "")),
-                              "ver": versions})
+    return callback(payload, {"t": "setup", "url": "", "ver": tool_versions()})
 
 
 def describe_versions(versions):
@@ -1157,11 +1267,14 @@ def describe_versions(versions):
 def cmd_update(payload):
     ui.header("updating tools")
     state = read_json(STATE_FILE, {})
-    ok = update_tools(state, force=True)
+    try:
+        ok = ensure_tools(state, force=True)
+    except InstallError as exc:
+        return callback(payload, {"t": "error", "kind": "install", "msg": str(exc), "url": ""})
     check_project_updates(state, str(payload.get("v") or "0"), force=True)
     write_json(STATE_FILE, state)
     versions = tool_versions()
-    title = "Tools are up to date" if ok else "Could not reach the update server"
+    title = "Download tools updated" if ok else "The update could not be completed"
     return callback(payload, {"t": "info", "title": title, "msg": describe_versions(versions)})
 
 
@@ -1176,16 +1289,16 @@ def cmd_doctor(payload):
 
 def cmd_logout(payload):
     """Forget site logins: the cookie file both download tools read."""
-    ui.header("forgetting logins")
-    ui.start("Removing saved logins")
+    ui.header("removing sign-ins")
+    ui.start("Removing saved sign-ins")
     remove(SAFARI_COOKIES)
     ui.done()
     gone = not os.path.exists(SAFARI_COOKIES)
     return callback(payload, {
         "t": "info",
-        "title": "Logins forgotten" if gone else "Could not remove the logins",
-        "msg": ("UMDL's tools no longer have any site logins."
-                if gone else "Open a-Shell and try again.")})
+        "title": "Sign-ins removed" if gone else "The sign-ins could not be removed",
+        "msg": ("The download tools no longer hold any site sign-ins."
+                if gone else "Open a-Shell, then try again.")})
 
 
 def main(argv):
@@ -1204,20 +1317,25 @@ def main(argv):
             subprocess.run("hideKeyboard")
         except Exception:
             pass
+    use_site_dirs(read_json(STATE_FILE, {}).get("site_dirs"))
+    commands = ("run", "setup", "update", "doctor", "logout")
+    if command not in commands or to_int(payload.get("p"), PROTOCOL) != PROTOCOL:
+        # A shortcut from another version is talking to this helper.
+        callback(payload, {"t": "error", "kind": "outdated", "url": "",
+                           "msg": "The UMDL shortcut and its helper are different versions. "
+                                  "Install the latest UMDL from " + RELEASES_URL})
+        return 2
     try:
         if command == "run":
             cmd_run(payload, blob)
-        elif command == "installed":
-            cmd_installed(payload)
+        elif command == "setup":
+            cmd_setup(payload)
         elif command == "update":
             cmd_update(payload)
         elif command == "doctor":
             cmd_doctor(payload)
         elif command == "logout":
             cmd_logout(payload)
-        else:
-            OUT.write("UMDL: unknown command %r\n" % command)
-            return 2
     except KeyboardInterrupt:
         ui.stop_spinner()
         OUT.write("\n  Cancelled.\n")

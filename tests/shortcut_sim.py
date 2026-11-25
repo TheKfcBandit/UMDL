@@ -75,7 +75,7 @@ def as_text(value):
 
 
 def as_list(value):
-    if value is None or value == "":
+    if value is None:
         return []
     if isinstance(value, (list, tuple)):
         return list(value)
@@ -83,19 +83,19 @@ def as_list(value):
 
 
 def has_value(value):
+    """Shortcuts' "has any value". Confirmed on a device: an empty text counts
+    as a value. Only the absence of any output does not."""
     if value is None:
         return False
-    if isinstance(value, (str, list, tuple, dict)):
+    if isinstance(value, (list, tuple)):
         return len(value) > 0
-    if isinstance(value, File):
-        return len(value.data) > 0
     return True
 
 
 def as_dict(value):
     if isinstance(value, dict):
         return value
-    if not has_value(value):
+    if value is None or (isinstance(value, (list, tuple)) and not value):
         return None
     text = as_text(value).strip()
     try:
@@ -132,8 +132,6 @@ class World:
         self.record_path = os.path.join(self.home, "ytdlp-opts.jsonl")
         self.set_scenario({})
         self.clipboard = ""
-        self.version_json = ""
-        self.offline = False
         self.ui = []          # scripted answers: ("menu"|"list"|"ask", text)
         self.events = []      # everything the user would see or that left the shortcut
         self.photos = []      # (file name, album, byte size)
@@ -152,10 +150,61 @@ class World:
         with open(self.scenario_path, "w") as handle:
             json.dump(scenario, handle)
 
-    def install(self, config=None):
-        """Pretend setup already happened."""
-        os.makedirs(os.path.join(self.workspace, "env"), exist_ok=True)
+    @property
+    def version(self):
+        with open(os.path.join(ROOT, "version.json")) as handle:
+            return json.load(handle)["shortcut"]
+
+    def set_offline(self, offline):
+        flag = os.path.join(self.home, ".fake-offline")
+        if offline:
+            open(flag, "w").close()
+        elif os.path.exists(flag):
+            os.remove(flag)
+
+    def set_background_network(self, works):
+        """Whether curl works outside the a-Shell window (the "in extension" mode)."""
+        flag = os.path.join(self.home, ".fake-no-background-curl")
+        if not works:
+            open(flag, "w").close()
+        elif os.path.exists(flag):
+            os.remove(flag)
+
+    def set_version_json(self, data):
+        with open(os.path.join(self.home, ".fake-version.json"), "w") as handle:
+            json.dump(data, handle)
+
+    def set_pip_failure(self, message):
+        flag = os.path.join(self.home, ".fake-pip-fail")
+        if message is None:
+            if os.path.exists(flag):
+                os.remove(flag)
+        else:
+            with open(flag, "w") as handle:
+                handle.write(message)
+
+    def set_pip_target(self, folder):
+        """Make pip install into a folder Python is not searching."""
+        with open(os.path.join(self.home, ".fake-pip-target"), "w") as handle:
+            handle.write(folder)
+
+    def pip_log(self):
+        """What each pip install was asked for, one entry per call."""
+        path = os.path.join(self.home, "pip.log")
+        if not os.path.exists(path):
+            return []
+        with open(path) as handle:
+            return handle.read().splitlines()
+
+    def install(self, config=None, tools=True):
+        """Pretend setup already happened: helper fetched, tools installed."""
+        os.makedirs(self.workspace, exist_ok=True)
         shutil.copy(os.path.join(ROOT, "src", "umdl.py"), os.path.join(self.workspace, "umdl.py"))
+        with open(os.path.join(self.workspace, "helper.for"), "w") as handle:
+            handle.write(self.version + "\n")
+        if tools:
+            shutil.copytree(os.path.join(FAKES, "site"), os.path.join(self.home, "site-packages"),
+                            dirs_exist_ok=True)
         if config is not None:
             blob = base64.b64encode(json.dumps(config).encode()).decode()
             with open(os.path.join(self.workspace, "config.b64"), "w") as handle:
@@ -191,86 +240,106 @@ class World:
 
     # -- a-Shell ----------------------------------------------------------
 
-    def env(self):
-        env = dict(os.environ)
+    def env(self, **extra):
+        env = dict(os.environ, **extra)
         env.update({
             "HOME": self.home,
             "UMDL_PLATFORM": "desktop",
-            "UMDL_SKIP_UPDATES": "1",
+            "UMDL_PIP": "pip",
             "NO_COLOR": "1",
             "UMDL_FAKE_SCENARIO": self.scenario_path,
             "UMDL_FAKE_RECORD": self.record_path,
-            "PYTHONPATH": FAKES,
+            "PYTHONPATH": os.path.join(self.home, "site-packages"),
             "PATH": os.path.join(FAKES, "bin") + os.pathsep + env.get("PATH", ""),
         })
-        env.pop("UMDL_HOME", None)
+        for name in ("UMDL_HOME", "UMDL_SKIP_UPDATES"):
+            env.pop(name, None)
         return env
 
     def background(self, command):
         """An "in extension" command: runs without opening a-Shell, returns stdout."""
-        if command.startswith("curl "):
-            if "-f" not in command.split()[1]:
-                raise SimError("curl without -f would hand an error page to the shortcut")
-            return "" if self.offline else self.version_json
-        proc = subprocess.run(["dash", "-c", command], env=self.env(), cwd=self.home,
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        proc = subprocess.run(["dash", "-c", command], env=self.env(UMDL_SIM_WINDOW="close"),
+                              cwd=self.home, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                               universal_newlines=True)
-        if proc.returncode != 0:
-            raise SimError("background command failed: %s\n%s" % (command, proc.stderr))
+        if proc.returncode == 2 and "fake curl" in proc.stderr:
+            raise SimError(proc.stderr.strip())
+        # Like a-Shell, hand back whatever was printed, even when the command failed.
         return proc.stdout
 
     def foreground(self, command):
-        """A command typed into the a-Shell window, one line at a time."""
+        """Commands typed into the a-Shell window: one per line, each run whatever
+        the one before it did."""
+        cwd = self.home
         for line in command.split("\n"):
             line = line.strip()
             words = line.split()
-            if not words or line in ("clear", "hideKeyboard", "deactivate", "cd", "clear && cd"):
+            if not words or line in ("clear", "clear && cd"):
                 continue
-            if words[0] == "echo" or words[0] == "source" or line.startswith("cd $HOME"):
-                continue
-            if words[0] == "mkdir":
-                self.background(line)
-            elif line.startswith("python -m venv "):
-                os.makedirs(os.path.expandvars(words[3].replace("$HOME", self.home)), exist_ok=True)
-            elif words[0] == "pip":
-                continue
-            elif words[0] == "curl":
-                target = words[words.index("-o") + 1].replace("$HOME", self.home)
-                if not self.offline:
-                    if "/main/src/umdl.py" not in line:
-                        raise SimError("unexpected download: " + line)
-                    shutil.copy(os.path.join(ROOT, "src", "umdl.py"), target)
+            if words[0] == "cd" and len(words) == 2:
+                target = words[1].replace("$HOME", self.home)
+                if os.path.isdir(target):
+                    cwd = target
             elif words[0] == "python":
-                self.helper(words)
+                self.helper(words, cwd)
             elif words[0] == "internalbrowser":
                 self.events.append(("browser", words[1]))
+            elif words[0] in ("mkdir", "rm", "curl", "dash", "pip"):
+                proc = subprocess.run(["dash", "-c", line], env=self.env(UMDL_SIM_WINDOW="open"),
+                                      cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                      universal_newlines=True)
+                if proc.returncode == 2 and "fake curl" in proc.stderr:
+                    raise SimError(proc.stderr.strip())
+                self.follow_opened()
             else:
                 raise SimError("a-Shell would not understand: %r" % line)
 
-    def helper(self, words):
+    def take_callback(self, link):
+        url = urllib.parse.urlsplit(link)
+        query = urllib.parse.parse_qs(url.query)
+        if (url.scheme, url.netloc) != ("shortcuts", "run-shortcut") or query.get("name") != ["UMDL"]:
+            raise SimError("callback would not reach UMDL: " + link)
+        if query.get("input") != ["text"] or len(query.get("text", [])) != 1:
+            raise SimError("callback carries no text: " + link)
+        self.callbacks.append(query["text"][0])
+
+    def follow_opened(self):
+        """Links handed to a-Shell's "open" command."""
+        log = os.path.join(self.home, "opened.log")
+        if os.path.exists(log):
+            with open(log) as handle:
+                links = handle.read().split()
+            os.remove(log)
+            for link in links:
+                self.take_callback(link)
+
+    def helper(self, words, cwd=None):
         script = words[1].replace("$HOME", self.home)
         if not os.path.isabs(script):
-            script = os.path.join(self.workspace, script)
+            script = os.path.join(cwd or self.workspace, script)
         if len(words) != 4:
             raise SimError("helper needs exactly a command and a payload: %r" % (words,))
         command, blob = words[2], words[3]
         if not re.fullmatch(r"[A-Za-z0-9+/=]+", blob):
             raise SimError("payload is not shell-safe base64: %r" % blob[:60])
-        self.helper_runs.append((command, json.loads(base64.b64decode(blob))))
         if not os.path.exists(script):
+            # python prints "can't open file" and a-Shell moves on to the next line.
             self.events.append(("helper-missing", script))
             return
-        proc = subprocess.run([sys.executable, script, command, blob], env=self.env(),
-                              cwd=self.workspace, stdout=subprocess.PIPE,
+        self.helper_runs.append((command, json.loads(base64.b64decode(blob))))
+        # The helper starts "python -m gallery_dl" by name, so "python" must resolve.
+        env = self.env(UMDL_SIM_WINDOW="open")
+        shim = os.path.join(self.home, "shim")
+        os.makedirs(shim, exist_ok=True)
+        if not os.path.exists(os.path.join(shim, "python")):
+            os.symlink(sys.executable, os.path.join(shim, "python"))
+        env["PATH"] = env["PATH"] + os.pathsep + shim
+        proc = subprocess.run([sys.executable, script, command, blob], env=env,
+                              cwd=os.path.dirname(script), stdout=subprocess.PIPE,
                               stderr=subprocess.STDOUT, universal_newlines=True)
         self.helper_output = proc.stdout
         for line in proc.stdout.splitlines():
             if line.startswith("CALLBACK "):
-                url = urllib.parse.urlsplit(line[len("CALLBACK "):])
-                query = urllib.parse.parse_qs(url.query)
-                if url.scheme != "shortcuts" or query["name"] != ["UMDL"]:
-                    raise SimError("callback would not reach UMDL: " + line)
-                self.callbacks.append(query["text"][0])
+                self.take_callback(line[len("CALLBACK "):])
                 return
         raise SimError("helper finished without calling back:\n" + proc.stdout)
 

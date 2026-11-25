@@ -24,6 +24,8 @@ WORK = tempfile.mkdtemp(prefix="umdl-test-")
 os.environ["UMDL_HOME"] = os.path.join(WORK, "UMDL")
 os.environ["UMDL_PLATFORM"] = "desktop"
 os.environ["UMDL_SKIP_UPDATES"] = "1"
+os.environ["UMDL_PIP"] = "pip"   # the stand-in in tests/fakes/bin
+os.environ["HOME"] = WORK        # where that stand-in "installs" to
 os.environ["NO_COLOR"] = "1"
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
@@ -60,7 +62,8 @@ def make_clip(path, vcodec=None, acodec=None, extra=()):
 
 
 def payload(url, **extra):
-    data = {"v": "1.0.0", "p": "1", "name": "UMDL", "url": url, "mode": "auto",
+    data = {"v": umdl.HELPER_VERSION, "p": str(umdl.PROTOCOL), "name": "UMDL", "url": url,
+            "mode": "auto",
             "cfg": {"album": "UMDL", "threshold": "10", "convert": "1", "after": "notify"}}
     data.update(extra)
     return base64.b64encode(json.dumps(data).encode()).decode()
@@ -519,14 +522,14 @@ class EndToEnd(Base):
             handle.write(b"cookies")
         self.addCleanup(lambda: umdl.remove(umdl.SAFARI_COOKIES))
         code, (_, data) = self.run_helper("logout", payload(""))
-        self.assertEqual((data["t"], data["title"]), ("info", "Logins forgotten"))
+        self.assertEqual((data["t"], data["title"]), ("info", "Sign-ins removed"))
         self.assertFalse(os.path.exists(umdl.SAFARI_COOKIES))
 
-    def test_installed_and_doctor(self):
+    def test_setup_and_doctor(self):
         install_fake_ytdlp({"raw": {}})
         install_fake_gallery(True)
-        code, (_, data) = self.run_helper("installed", payload("https://video.test/a"))
-        self.assertEqual((data["t"], data["url"]), ("setup", "https://video.test/a"))
+        code, (_, data) = self.run_helper("setup", payload(""))
+        self.assertEqual((code, data["t"]), (0, "setup"))
         self.assertEqual(data["ver"]["yt-dlp"], "fake")
         self.setUp()
         install_fake_ytdlp({"raw": {}})
@@ -535,11 +538,47 @@ class EndToEnd(Base):
         self.assertEqual(data["t"], "info")
         self.assertIn("gallery-dl  fake", data["msg"])
 
-    def test_missing_tools_reported(self):
+    def test_tools_that_cannot_be_installed_are_reported(self):
         sys.modules["yt_dlp"] = None  # makes "import yt_dlp" raise ImportError
         install_fake_gallery(True)
+        flag = os.path.join(WORK, ".fake-pip-fail")
+        with open(flag, "w") as handle:
+            handle.write("Could not find a version that satisfies the requirement yt-dlp")
+        self.addCleanup(os.remove, flag)
+        for command in ("setup", "run", "update"):
+            self.out.seek(0)
+            self.out.truncate()
+            code, (_, data) = self.run_helper(command, payload("https://video.test/a"))
+            self.assertEqual((data["t"], data["kind"]), ("error", "install"), command)
+            self.assertIn("Could not install yt-dlp.", data["msg"])
+            self.assertIn("Could not find a version", data["msg"])
+
+    def test_another_protocol_or_command_is_reported_as_out_of_date(self):
+        install_fake_ytdlp({"raw": {}})
+        install_fake_gallery(True)
+        code, (_, data) = self.run_helper("run", payload("https://video.test/a", p="1"))
+        self.assertEqual((code, data["t"], data["kind"]), (2, "error", "outdated"))
+        self.out.seek(0)
+        self.out.truncate()
         code, (_, data) = self.run_helper("installed", payload(""))
-        self.assertEqual((data["t"], data["kind"]), ("error", "install"))
+        self.assertEqual((code, data["t"], data["kind"]), (2, "error", "outdated"))
+
+    def test_update_notice_is_flat(self):
+        clip = self.clip()
+        install_fake_ytdlp({"raw": {"_type": "video", "id": "abc", "title": "T"},
+                            "files": [("abc.mp4", clip, "T")]})
+        install_fake_gallery(False)
+        umdl.write_json(umdl.STATE_FILE, {"latest": {"v": "99.0.0", "url": "https://example.test/r",
+                                                     "notes": ""},
+                                          "meta_checked": 4102444800})
+        original = umdl.check_project_updates
+        umdl.check_project_updates = lambda state, version, force=False: state.get("latest")
+        try:
+            code, (_, data) = self.run_helper("run", payload("https://video.test/watch/abc"))
+        finally:
+            umdl.check_project_updates = original
+        self.assertEqual((data["t"], data["upv"], data["upurl"]),
+                         ("done", "99.0.0", "https://example.test/r"))
 
     def test_crash_still_calls_back(self):
         install_fake_ytdlp({"raw": {"_type": "video", "id": "x"}})

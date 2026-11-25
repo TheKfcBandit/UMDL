@@ -8,15 +8,15 @@
 
 UMDL is a free and open-source Shortcut. Downloads run on your own device with [yt-dlp](https://github.com/yt-dlp/yt-dlp) and [gallery-dl](https://github.com/mikf/gallery-dl) inside the free [a-Shell](https://apps.apple.com/app/a-shell/id1473805438) app. Nothing you share is sent to a UMDL server, because there isn't one.
 
-> **Status: 1.0.0, first release.** The shortcut compiles and passes its automated tests, which run the compiled shortcut in a simulator against the real helper script and the real yt-dlp and gallery-dl. It has not yet been confirmed on a physical device. Please [report](https://github.com/TheKfcBandit/UMDL/issues) what you find.
+> **Status: 1.1.0.** Version 1.0.0 was tested on a device and failed during setup; 1.1.0 fixes what that test found. The new version passes its automated tests, which run the compiled shortcut in a simulator against the real helper script, but has not yet been run on a device itself. [docs/BEHAVIOR.md](docs/BEHAVIOR.md) lists what is confirmed and what is not. Please [report](https://github.com/TheKfcBandit/UMDL/issues) what you find.
 
 ## Install
 
 1. Install [a-Shell](https://apps.apple.com/app/a-shell/id1473805438) from the App Store and open it once.
 2. On your iPhone or iPad, download `UMDL.shortcut` from the [latest release](https://github.com/TheKfcBandit/UMDL/releases/latest) and tap **Add Shortcut**.
-3. Run UMDL once. It asks where to save, then a-Shell opens and installs the download tools. That takes a minute or two.
+3. Share a post or video to UMDL, or run it from the Shortcuts app, and tap **Quick setup**. UMDL creates an album named UMDL, a-Shell opens and installs the download tools, and the shared post is downloaded. That takes about two minutes. **Custom setup** lets you choose the album first.
 
-Built for iOS and iPadOS 18 and later. Keep the shortcut's name as **UMDL**: a-Shell uses that name to hand results back.
+Built for iOS and iPadOS 18 and later. Keep the shortcut's name as **UMDL**, and keep only one copy: a-Shell uses that name to hand results back. When updating, choose **Replace** if Shortcuts asks, or delete the old copy first.
 
 The first few runs show permission prompts from iOS (run a-Shell, save to Photos, open links). Choose **Always Allow** and they stop.
 
@@ -36,10 +36,12 @@ Open UMDL on its own, without sharing anything, for the menu:
 | Download from clipboard | Downloads the link you copied last |
 | Enter a link | Type or paste one |
 | Resume last download | Appears when a download was interrupted |
-| Settings | Album, the ask-first limit, what to do with unplayable videos, what happens when a download finishes, forget logins, reset |
+| Settings | Album, the ask-first limit, what to do with unsupported video formats, what happens when a download finishes, forget sign-ins, reset |
 | Sign in to a site | For private or age-restricted posts |
-| Update tools | Gets the newest yt-dlp and gallery-dl now |
+| Update tools | Installs the newest yt-dlp and gallery-dl now |
 | About UMDL | Version, update check, diagnostics |
+
+Every screen, choice and message is described in [docs/BEHAVIOR.md](docs/BEHAVIOR.md).
 
 ## What "best quality" means
 
@@ -47,39 +49,40 @@ Photos only imports H.264 and HEVC video. UMDL asks each site for its best strea
 
 On most sites that is the best stream there is. YouTube is the exception: above 1080p it mostly offers VP9 and AV1, which Photos cannot import, so YouTube downloads usually top out at 1080p.
 
-When a site offers no playable format at all, UMDL either converts the video on your device (the default, slower) or keeps the original in Files. Settings › *Videos Photos cannot play* decides.
+When a site offers no playable format at all, UMDL either converts the video on your device (the default, slower) or keeps the original in Files. Settings › *Unsupported video formats* decides.
 
 ## Signing in
 
-Some posts need an account. Choose **Sign in to a site** in the menu: a-Shell opens the site's login page in its own browser. Sign in, then swipe right from the left edge of the screen to leave. The login is stored by a-Shell on your device and yt-dlp and gallery-dl read it from there. UMDL never sees your password.
+Some posts need an account. Choose **Sign in to a site** in the menu: a-Shell opens the site's sign-in page in its own browser. Sign in, then swipe right from the left edge of the screen to leave. The sign-in is stored by a-Shell on your device and yt-dlp and gallery-dl read it from there. UMDL never sees your password.
 
-**Forget saved logins** in Settings deletes the cookie file the download tools read.
+**Forget saved sign-ins** in Settings deletes the cookie file the download tools read.
 
 ## If something goes wrong
 
 A failed download returns to Shortcuts with the reason and these choices:
 
 - **Try again**
-- **Update tools and retry.** Sites change often, and a newer yt-dlp fixes most failures.
+- **Update tools and try again.** Sites change often, and a newer yt-dlp fixes most failures.
 - **Sign in to this site**
 - **Copy error details**, for a bug report
 
 Other things worth knowing:
 
 - **You are left in a-Shell.** Keep a-Shell in the foreground while it works. iOS suspends it otherwise. Share the same link again and the download resumes where it stopped.
-- **"An earlier download was not saved to Photos yet."** The download finished but saving was interrupted, for example by a permission prompt. Choose **Save it now**.
+- **"A download from an earlier run has not been saved to Photos."** The download finished but saving was interrupted, for example by a permission prompt. Choose **Save it now**.
+- **"Setup incomplete."** The helper script or the download tools could not be downloaded. The message says which, and why. Check the connection and run UMDL again; it continues from where it stopped.
 - **The album was not found.** If you renamed or deleted the album, pick it again under Settings › *Save to*.
-- **Start over.** Settings › *Reset UMDL* removes the tools and settings. Deleting a-Shell does the same.
+- **Start over.** Settings › *Reset UMDL* removes the helper and settings. Deleting a-Shell removes everything, the download tools included.
 
 ## Privacy and security
 
 - Links go from your device straight to the site being downloaded.
-- The helper script and the download tools keep themselves current. Once a day UMDL upgrades yt-dlp and gallery-dl from PyPI and checks this repository for a newer helper script, which it installs after checking that it compiles. That means code from this repository's `main` branch runs inside a-Shell on your device. If you would rather pin it, fork the repository and build from your fork.
+- The helper script and the download tools install and update themselves. Setup downloads the helper script from this repository and yt-dlp and gallery-dl from PyPI. Once a day UMDL upgrades the tools and checks this repository for a newer helper script, which it installs after checking that it compiles. That means code from this repository's `main` branch runs inside a-Shell on your device. If you would rather pin it, fork the repository and build from your fork.
 - UMDL collects no analytics and has no account.
 
 ## How it works
 
-The shortcut is the front end; a Python helper in a-Shell does the downloading and calls the shortcut back with the result. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) has the flow chart and the details. [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) lists what UMDL sets out to do and how each point is covered.
+The shortcut is the front end; a Python helper in a-Shell does the downloading and calls the shortcut back with the result. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) has the flow chart and the details. [docs/BEHAVIOR.md](docs/BEHAVIOR.md) describes every screen, with the setup flow chart. [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) lists what UMDL sets out to do and how each point is covered.
 
 ## Build it yourself
 

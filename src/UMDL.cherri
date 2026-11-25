@@ -8,16 +8,16 @@
  * Build from the repository root:   cherri src/UMDL.cherri
  * Project: https://github.com/TheKfcBandit/UMDL   Licence: MIT
  *
- * How a run flows (see docs/ARCHITECTURE.md):
- *   1. Read what was shared. Text starting with "UMDLCB:" is the helper
- *      calling back with a result; anything else is searched for a link.
- *   2. Load settings from a-Shell (skipped when a callback carries them).
- *   3. First run: ask the setup questions, then install the tools.
- *   4. Save a finished download to Photos, or open the menu, or hand the
- *      link to the helper in a-Shell.
+ * Every screen and every path through this file is described in
+ * docs/BEHAVIOR.md. Keep the two in step.
  *
- * Cherri functions are deliberately not used: they re-run the shortcut and
- * read its input, which is the same channel the helper's callback uses.
+ * Two rules this file follows, both learned on a real device:
+ *
+ *   1. Never test a text for "has any value". Shortcuts treats an empty text
+ *      as a value. Emptiness is tested by wrapping the text in brackets and
+ *      comparing with "[]".
+ *   2. Cherri functions are not used. They re-run the shortcut and read its
+ *      input, which is the same channel the helper's callback uses.
  */
 
 #define name UMDL
@@ -35,160 +35,166 @@
 
 // Keep in step with version.json. The protocol number only changes when the
 // payload or callback format does.
-@umdlVersion = "1.0.0"
-@protocol = "1"
+@umdlVersion = "1.1.0"
+@protocol = "2"
 
 @shared = "{ShortcutInput}"
-@link = nil
+@link = ""
+@hasLink = "0"
 @runMode = "auto"
-@runLimit = nil
-@forceUpdate = nil
-@toolCmd = nil
-@signInTo = nil
-@saveManifest = nil
-@resumeBlob = nil
+@runLimit = ""
+@forceUpdate = ""
+@toolCmd = "none"
+@signInTo = ""
+@saveManifest = ""
+@pendingManifest = ""
+@resumeBlob = ""
 @choice = ""
 @firstRun = "0"
+@probe = ""
 
 @cfgAlbum = "UMDL"
 @cfgThreshold = "10"
 @cfgConvert = "1"
 @cfgAfter = "notify"
 @haveCfg = "0"
-@needsInstall = "0"
+@needsHelper = "0"
 @saveCfg = "0"
 @askAlbum = "0"
 @askConvert = "0"
 @settingsChanged = "0"
 
-@failedCount = nil
-@jobTitle = nil
-@updateVersion = nil
-@updateLink = nil
+@failedCount = ""
+@jobTitle = ""
+@updateVersion = ""
+@updateLink = ""
 
 /* ------------------------------------------------------------------------
- * 1. Callback from the helper
+ * 1. What started this run: a callback from the helper, or something shared
  * ---------------------------------------------------------------------- */
+
+// Sent by the in-app helper download (section 8) when it fails.
+if @shared == "UMDL-HELPER-MISSING" {
+    alert("UMDL could not download its helper script.\n\nCheck the internet connection, then run UMDL again.", "Setup incomplete")
+    stop()
+}
 
 if @shared beginsWith "UMDLCB:" {
     const cbBlob = replaceText("UMDLCB:", "", @shared)
     const cbData = base64Decode(cbBlob)
-    const cbText = text("{cbData}")
-    const cb = getDictionary(cbText)
-    @cbType = "{cb['t']}"
+    @cbJSON = "{cbData}"
+    // A callback that cannot be read is ignored: the run continues as if nothing was shared.
+    if @cbJSON contains "\"t\":" {
+        const cb = getDictionary(@cbJSON)
+        @cbType = "{cb['t']}"
 
-    // Every callback carries the settings back, so no second trip to a-Shell.
-    const cbCfgRaw = getValue(cb, "cfg")
-    const cbCfg = getDictionary(cbCfgRaw)
-    @cbAlbum = "{cbCfg['album']}"
-    if @cbAlbum {
-        @cfgAlbum = @cbAlbum
-        @cfgThreshold = "{cbCfg['threshold']}"
-        @cfgConvert = "{cbCfg['convert']}"
-        @cfgAfter = "{cbCfg['after']}"
-        @haveCfg = "1"
-    }
+        // Every callback carries the settings back, so no second trip to a-Shell.
+        const cbCfgRaw = getValue(cb, "cfg")
+        const cbCfg = getDictionary(cbCfgRaw)
+        @probe = "[{cbCfg['album']}]"
+        if @probe != "[]" {
+            @cfgAlbum = "{cbCfg['album']}"
+            @cfgThreshold = "{cbCfg['threshold']}"
+            @cfgConvert = "{cbCfg['convert']}"
+            @cfgAfter = "{cbCfg['after']}"
+            @haveCfg = "1"
+        }
 
-    if @cbType == "done" {
-        @saveManifest = "{cb['m']}"
-        @failedCount = "{cb['nf']}"
-        @jobTitle = "{cb['title']}"
-        const upRaw = getValue(cb, "up")
-        @upText = "{upRaw}"
-        if @upText {
-            const up = getDictionary(upRaw)
-            @updateVersion = "{up['v']}"
-            @updateLink = "{up['url']}"
+        if @cbType == "done" {
+            @saveManifest = "{cb['m']}"
+            @failedCount = "{cb['nf']}"
+            @jobTitle = "{cb['title']}"
+            @updateVersion = "{cb['upv']}"
+            @updateLink = "{cb['upurl']}"
         }
-    }
 
-    if @cbType == "confirm" {
-        @link = "{cb['url']}"
-        @confirmCount = "{cb['n']}"
-        @confirmLimit = "{cb['thr']}"
-        @confirmTitle = "{cb['title']}"
-        @confirmPrompt = "This link has more than {@confirmLimit} items."
-        if @confirmCount {
-            @confirmPrompt = "This link has {@confirmCount} items."
+        if @cbType == "confirm" {
+            @link = "{cb['url']}"
+            @confirmLimit = "{cb['thr']}"
+            @confirmPrompt = "This link contains more than {@confirmLimit} items."
+            @probe = "[{cb['n']}]"
+            if @probe != "[]" {
+                @confirmPrompt = "This link contains {cb['n']} items."
+            }
+            @probe = "[{cb['title']}]"
+            if @probe != "[]" {
+                @confirmPrompt = "{cb['title']}\n\n{@confirmPrompt}"
+            }
+            menu "{@confirmPrompt}" {
+                item "⬇️ Download all":
+                    @runMode = "all"
+                item "⬇️ Download the first {@confirmLimit}":
+                    @runMode = "limit"
+                    @runLimit = @confirmLimit
+                item "⬇️ Download the first item only":
+                    @runMode = "first"
+                item "Cancel":
+                    stop()
+            }
         }
-        if @confirmTitle {
-            @confirmPrompt = "{@confirmTitle}\n\n{@confirmPrompt}"
-        }
-        menu "{@confirmPrompt}" {
-            item "Download everything":
-                @runMode = "all"
-            item "Only the first {@confirmLimit}":
-                @runMode = "limit"
-                @runLimit = @confirmLimit
-            item "Only the first one":
-                @runMode = "first"
-            item "Cancel":
+
+        if @cbType == "error" {
+            @errKind = "{cb['kind']}"
+            @errText = "{cb['msg']}"
+            @errLink = "{cb['url']}"
+            if @errKind == "install" {
+                alert("The download tools could not be installed.\n\n{@errText}\n\nCheck the internet connection, then run UMDL again.", "Setup incomplete")
                 stop()
+            }
+            if @errKind == "outdated" {
+                menu "This copy of UMDL is out of date and cannot continue.\n\n{@errText}" {
+                    item "⬇️ Get the latest version":
+                        openURL("https://github.com/TheKfcBandit/UMDL/releases/latest")
+                        stop()
+                    item "Cancel":
+                        stop()
+                }
+            }
+            if @errKind == "nolink" {
+                alert("UMDL needs a web link. Share a post or video to UMDL, or copy its link first.", "No link found")
+                stop()
+            }
+            @errHint = "Updating the download tools resolves most failures."
+            if @errKind == "auth" {
+                @errHint = "This post appears to require an account. Sign in to the site, then try again."
+            }
+            if @errKind == "network" {
+                @errHint = "Check the internet connection, then try again."
+            }
+            if @errKind == "gone" {
+                @errHint = "The post may be private, removed, or unavailable in your region."
+            }
+            if @errKind == "drm" {
+                @errHint = "This media is copy-protected and cannot be downloaded."
+            }
+            if @errKind == "unsupported" {
+                @errHint = "This site may not be supported."
+            }
+            menu "Download failed\n\n{@errText}\n\n{@errHint}" {
+                item "🔄 Try again":
+                    @link = @errLink
+                item "🛠️ Update tools and try again":
+                    @link = @errLink
+                    @forceUpdate = "1"
+                item "🔑 Sign in to this site":
+                    const errHost = getURLDetail(@errLink, "Host")
+                    @signInTo = "https://{errHost}"
+                item "📋 Copy error details":
+                    @errReport = "UMDL {@umdlVersion}\n{@errLink}\n{@errKind}: {@errText}"
+                    setClipboard(@errReport)
+                    stop()
+                item "Cancel":
+                    stop()
+            }
         }
-    }
 
-    if @cbType == "error" {
-        @errKind = "{cb['kind']}"
-        @errText = "{cb['msg']}"
-        @errLink = "{cb['url']}"
-        if @errKind == "install" {
-            // Forget the half-finished install so the next run starts it again.
-            rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
-                "command": "rm -f $HOME/Documents/UMDL/umdl.py",
-                "openWindow": "close",
-                "keepGoing": false,
-                "ShowWhenRun": false
-            })
-            alert("{@errText}", "Setup did not finish")
+        if @cbType == "info" {
+            alert("{cb['msg']}", "{cb['title']}")
             stop()
         }
-        if @errKind == "nolink" {
-            alert("UMDL needs a web link. Share a post or video to UMDL, or copy its link first.", "No link found")
-            stop()
-        }
-        @errHint = "Updating the tools fixes most failures."
-        if @errKind == "auth" {
-            @errHint = "This looks like it needs an account. Sign in to the site and try again."
-        }
-        if @errKind == "network" {
-            @errHint = "Check your connection and try again."
-        }
-        if @errKind == "gone" {
-            @errHint = "The post may be private, removed or unavailable in your region."
-        }
-        if @errKind == "drm" {
-            @errHint = "This media is copy-protected and cannot be downloaded."
-        }
-        if @errKind == "unsupported" {
-            @errHint = "This site may not be supported yet."
-        }
-        menu "Download failed\n\n{@errText}\n\n{@errHint}" {
-            item "Try again":
-                @link = @errLink
-            item "Update tools and retry":
-                @link = @errLink
-                @forceUpdate = "1"
-            item "Sign in to this site":
-                const errHost = getURLDetail(@errLink, "Host")
-                @signInTo = "https://{errHost}"
-            item "Copy error details":
-                @errReport = "UMDL {@umdlVersion}\n{@errLink}\n{@errKind}: {@errText}"
-                setClipboard(@errReport)
-                stop()
-            item "Cancel":
-                stop()
-        }
-    }
 
-    if @cbType == "info" {
-        alert("{cb['msg']}", "{cb['title']}")
-        stop()
-    }
-
-    if @cbType == "setup" {
-        @link = "{cb['url']}"
-        if !@link {
-            alert("Share any post or video to UMDL and it lands in your Photos.\n\nOpen UMDL on its own for settings.", "UMDL is ready")
+        if @cbType == "setup" {
+            alert("Setup is complete.\n\nTo download, share a post or video to UMDL from any app.\n\nTo change settings, open UMDL from the Shortcuts app.", "UMDL is ready")
             stop()
         }
     }
@@ -198,28 +204,35 @@ if @shared beginsWith "UMDLCB:" {
     @link = "{sharedFirst}"
 }
 
+@probe = "[{@link}]"
+if @probe != "[]" {
+    @hasLink = "1"
+}
+
 /* ------------------------------------------------------------------------
  * 2. Settings and state, read from a-Shell without opening it
  * ---------------------------------------------------------------------- */
 
-@pendingManifest = nil
 if @haveCfg == "0" {
     const preflight = rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
-        "command": "dash -c 'W=\"$HOME/Documents/UMDL\"; if [ -f $W/config.b64 ]; then echo \"CFG:$(cat $W/config.b64)\"; fi; if [ ! -f $W/umdl.py ] || [ ! -d $W/env ]; then echo NEEDS_INSTALL; fi; if [ -f $W/pending ]; then echo \"PENDING:$(cat $W/pending)\"; fi; if [ -f $W/last.b64 ]; then echo \"LAST:$(cat $W/last.b64)\"; fi'",
+        "command": "dash -c 'W=\"$HOME/Documents/UMDL\"; if [ -f $W/config.b64 ]; then echo \"CFG:$(cat $W/config.b64)\"; fi; if [ -f $W/umdl.py ] && [ -f $W/helper.for ]; then echo \"FOR:$(cat $W/helper.for):END\"; fi; if [ -f $W/pending ]; then echo \"PENDING:$(cat $W/pending)\"; fi; if [ -f $W/last.b64 ]; then echo \"LAST:$(cat $W/last.b64)\"; fi; echo DONE'",
         "openWindow": "close",
         "keepGoing": false,
         "ShowWhenRun": false
     })
     @state = "{preflight}"
 
-    if @state contains "NEEDS_INSTALL" {
-        @needsInstall = "1"
+    // The helper is fetched again whenever the shortcut's version changes.
+    @needsHelper = "1"
+    if @state contains "FOR:{@umdlVersion}:END" {
+        @needsHelper = "0"
     }
 
     const cfgMatch = matchText("CFG:(\\S+)", @state)
     const cfgGroup = getMatchGroup(cfgMatch, 1)
     @cfgBlob = "{cfgGroup}"
-    if @cfgBlob {
+    @probe = "[{@cfgBlob}]"
+    if @probe != "[]" {
         const cfgData = base64Decode(@cfgBlob)
         @cfgJSON = "{cfgData}"
         // A damaged settings file is treated as no settings, not as an error.
@@ -242,27 +255,36 @@ if @haveCfg == "0" {
     @resumeBlob = "{lastGroup}"
 }
 
-// Settings written by an older or damaged file fall back to the defaults.
-if !@cfgAlbum {
+// A setting that is missing falls back to its default.
+@probe = "[{@cfgAlbum}]"
+if @probe == "[]" {
     @cfgAlbum = "Recents"
 }
-if !@cfgThreshold {
+@probe = "[{@cfgThreshold}]"
+if @probe == "[]" {
     @cfgThreshold = "10"
 }
-if !@cfgConvert {
+@probe = "[{@cfgConvert}]"
+if @probe == "[]" {
     @cfgConvert = "1"
 }
-if !@cfgAfter {
+@probe = "[{@cfgAfter}]"
+if @probe == "[]" {
     @cfgAfter = "notify"
 }
 
 /* ------------------------------------------------------------------------
- * 3. First run
+ * 3. First run: the setup wizard
  * ---------------------------------------------------------------------- */
 
 if @haveCfg == "0" {
-    menu "Welcome to UMDL\n\nShare a post or video and UMDL saves it to Photos at the best quality your library can play. Downloads run on this device, in the free a-Shell app.\n\nSetup takes about two minutes." {
-        item "Set up UMDL":
+    menu "Welcome to UMDL\n\nUMDL saves shared posts and videos to Photos at the best quality your library can play. Downloads run on this device, in the a-Shell app.\n\nQuick setup saves to a new album named UMDL and installs the download tools. It takes about two minutes and needs an internet connection." {
+        item "✅ Quick setup (recommended)":
+            createAlbum("UMDL")
+            @cfgAlbum = "UMDL"
+            @saveCfg = "1"
+            @firstRun = "1"
+        item "⚙️ Custom setup":
             @askAlbum = "1"
             @askConvert = "1"
             @firstRun = "1"
@@ -275,12 +297,21 @@ if @haveCfg == "0" {
  * 4. A finished download that never reached Photos
  * ---------------------------------------------------------------------- */
 
-if @pendingManifest {
-    menu "An earlier download was not saved to Photos yet." {
-        item "Save it now":
+// Not asked during setup, nor when this run is already delivering a download.
+@probe = "[{@pendingManifest}]"
+if @firstRun == "1" {
+    @probe = "[]"
+}
+@saveProbe = "[{@saveManifest}]"
+if @saveProbe != "[]" {
+    @probe = "[]"
+}
+if @probe != "[]" {
+    menu "A download from an earlier run has not been saved to Photos." {
+        item "💾 Save it now":
             @saveManifest = @pendingManifest
-        item "Discard it":
-            const discardDir = replaceText("/manifest.json", "", "{@pendingManifest}")
+        item "🗑️ Discard it":
+            const discardDir = replaceText("/manifest.json", "", @pendingManifest)
             @discardPath = "{discardDir}"
             if @discardPath contains "/Documents/UMDL/jobs/" {
                 rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
@@ -297,7 +328,8 @@ if @pendingManifest {
  * 5. Save to Photos
  * ---------------------------------------------------------------------- */
 
-if @saveManifest {
+@probe = "[{@saveManifest}]"
+if @probe != "[]" {
     const manifestFile = rawAction("AsheKube.app.a-Shell.GetFileIntent", {
         "fileName": "{@saveManifest}",
         "errorIfNotFound": true,
@@ -325,7 +357,7 @@ if @saveManifest {
     }
 
     // Everything is in Photos now, so the working copies can go.
-    const jobDir = replaceText("/manifest.json", "", "{@saveManifest}")
+    const jobDir = replaceText("/manifest.json", "", @saveManifest)
     @jobPath = "{jobDir}"
     if @jobPath contains "/Documents/UMDL/jobs/" {
         rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
@@ -345,30 +377,33 @@ if @saveManifest {
         @summary = "Saved to {@albumLabel}."
     }
     if @savedCount == 0 {
-        @summary = "Nothing here could go into Photos."
+        @summary = "No items could be added to Photos."
     }
     if @keptCount != "0" {
         @summary = "{@summary}\n{@keptCount} kept in Files, under a-Shell, UMDL, Saved."
     }
-    if @failedCount {
+    @probe = "[{@failedCount}]"
+    if @probe != "[]" {
         @summary = "{@summary}\n{@failedCount} could not be downloaded."
     }
     @summaryTitle = "UMDL"
-    if @jobTitle {
+    @probe = "[{@jobTitle}]"
+    if @probe != "[]" {
         @summaryTitle = @jobTitle
     }
     showNotification("{@summary}", "{@summaryTitle}")
 
-    if @updateVersion {
-        menu "UMDL {@updateVersion} is available. You have {@umdlVersion}." {
-            item "Get the update":
+    @probe = "[{@updateVersion}]"
+    if @probe != "[]" {
+        menu "UMDL {@updateVersion} is available. The installed version is {@umdlVersion}." {
+            item "⬇️ Get the update":
                 openURL("{@updateLink}")
                 stop()
             item "Later":
-                @updateVersion = ""
+                @probe = "[]"
         }
     }
-    if !@link {
+    if @hasLink == "0" {
         if @cfgAfter == "photos" {
             openURL("photos-redirect://")
         }
@@ -377,17 +412,18 @@ if @saveManifest {
 }
 
 /* ------------------------------------------------------------------------
- * 6. Opened without a link: the menu
+ * 6. Opened without a link: the main menu
  * ---------------------------------------------------------------------- */
 
 @needsMenu = "1"
-if @link {
+if @hasLink == "1" {
     @needsMenu = "0"
 }
-if @signInTo {
+if @firstRun == "1" {
     @needsMenu = "0"
 }
-if @askAlbum == "1" {
+@probe = "[{@signInTo}]"
+if @probe != "[]" {
     @needsMenu = "0"
 }
 
@@ -400,11 +436,12 @@ if @needsMenu == "1" {
     const iconUpdate = embedFile("assets/icons/update.png")
     const iconInfo = embedFile("assets/icons/info.png")
 
-    @cards = "BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Download from clipboard;;;;\nORG;CHARSET=utf-8:Use the link you copied last;\nPHOTO;ENCODING=b:{iconDownload}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Enter a link;;;;\nORG;CHARSET=utf-8:Type or paste any post or video link;\nPHOTO;ENCODING=b:{iconPencil}\nEND:VCARD\n"
-    if @resumeBlob {
-        @cards = "{@cards}BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Resume last download;;;;\nORG;CHARSET=utf-8:It was interrupted before it finished;\nPHOTO;ENCODING=b:{iconResume}\nEND:VCARD\n"
+    @cards = "BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Download from clipboard;;;;\nORG;CHARSET=utf-8:Uses the most recently copied link;\nPHOTO;ENCODING=b:{iconDownload}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Enter a link;;;;\nORG;CHARSET=utf-8:Type or paste a link to a post or video;\nPHOTO;ENCODING=b:{iconPencil}\nEND:VCARD\n"
+    @probe = "[{@resumeBlob}]"
+    if @probe != "[]" {
+        @cards = "{@cards}BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Resume last download;;;;\nORG;CHARSET=utf-8:Continues the download that was interrupted;\nPHOTO;ENCODING=b:{iconResume}\nEND:VCARD\n"
     }
-    @cards = "{@cards}BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Settings;;;;\nORG;CHARSET=utf-8:Album and download options;\nPHOTO;ENCODING=b:{iconSettings}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Sign in to a site;;;;\nORG;CHARSET=utf-8:For private or age-restricted posts;\nPHOTO;ENCODING=b:{iconKey}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Update tools;;;;\nORG;CHARSET=utf-8:Get the newest yt-dlp and gallery-dl;\nPHOTO;ENCODING=b:{iconUpdate}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:About UMDL;;;;\nORG;CHARSET=utf-8:Version {@umdlVersion} and diagnostics;\nPHOTO;ENCODING=b:{iconInfo}\nEND:VCARD\n"
+    @cards = "{@cards}BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Settings;;;;\nORG;CHARSET=utf-8:Album and download options;\nPHOTO;ENCODING=b:{iconSettings}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Sign in to a site;;;;\nORG;CHARSET=utf-8:Required for private or age-restricted posts;\nPHOTO;ENCODING=b:{iconKey}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Update tools;;;;\nORG;CHARSET=utf-8:Installs the latest yt-dlp and gallery-dl;\nPHOTO;ENCODING=b:{iconUpdate}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:About UMDL;;;;\nORG;CHARSET=utf-8:Version {@umdlVersion}. Updates and diagnostics;\nPHOTO;ENCODING=b:{iconInfo}\nEND:VCARD\n"
 
     // The third argument keeps the name exactly as written, so the text becomes a .vcf file.
     const cardsFile = setName(@cards, "umdl-menu.vcf", true)
@@ -417,10 +454,12 @@ if @needsMenu == "1" {
         const clipLinks = getURLs(@clipText)
         const clipFirst = getFirstItem(clipLinks)
         @link = "{clipFirst}"
-        if !@link {
-            alert("Copy a post or video link first, then try again.", "No link on the clipboard")
+        @probe = "[{@link}]"
+        if @probe == "[]" {
+            alert("The clipboard does not contain a link. Copy the link to a post or video, then try again.", "No link found")
             stop()
         }
+        @hasLink = "1"
     }
 
     if @choice == "Enter a link" {
@@ -429,14 +468,16 @@ if @needsMenu == "1" {
         const typedLinks = getURLs(@typedText)
         const typedFirst = getFirstItem(typedLinks)
         @link = "{typedFirst}"
-        if !@link {
-            alert("That does not look like a web link.", "No link found")
+        @probe = "[{@link}]"
+        if @probe == "[]" {
+            alert("The text entered is not a web link.", "No link found")
             stop()
         }
+        @hasLink = "1"
     }
 
     if @choice == "Resume last download" {
-        @toolCmd = "run"
+        @toolCmd = "resume"
     }
 
     if @choice == "Update tools" {
@@ -444,7 +485,7 @@ if @needsMenu == "1" {
     }
 
     if @choice == "Sign in to a site" {
-        menu "Sign in to which site?\n\nThe login stays on this device, inside a-Shell." {
+        menu "Choose a site to sign in to.\n\nThe sign-in is stored on this device, inside a-Shell." {
             item "Instagram":
                 @signInTo = "https://www.instagram.com/accounts/login/"
             item "X (Twitter)":
@@ -456,13 +497,14 @@ if @needsMenu == "1" {
             item "Facebook":
                 @signInTo = "https://m.facebook.com/login/"
             item "Another site":
-                const siteTyped = prompt("Address of the site's login page", "URL", "https://")
+                const siteTyped = prompt("Address of the site's sign-in page", "URL", "https://")
                 @siteText = "{siteTyped}"
                 const siteLinks = getURLs(@siteText)
                 const siteFirst = getFirstItem(siteLinks)
                 @siteLink = "{siteFirst}"
-                if !@siteLink {
-                    alert("That does not look like a web address.", "Sign in")
+                @probe = "[{@siteLink}]"
+                if @probe == "[]" {
+                    alert("The text entered is not a web address.", "Sign in")
                     stop()
                 }
                 // Host only: a query string would not survive a-Shell's command line.
@@ -473,7 +515,7 @@ if @needsMenu == "1" {
 
     if @choice == "About UMDL" {
         menu "UMDL {@umdlVersion}\n\nA free, open-source media downloader.\nPowered by yt-dlp, gallery-dl and a-Shell." {
-            item "Check for a new version":
+            item "🔄 Check for a new version":
                 const latestRaw = rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
                     "command": "curl -fsL --max-time 10 https://raw.githubusercontent.com/TheKfcBandit/UMDL/main/version.json",
                     "openWindow": "close",
@@ -482,25 +524,25 @@ if @needsMenu == "1" {
                 })
                 @latestText = "{latestRaw}"
                 if @latestText !contains "\"shortcut\"" {
-                    alert("Could not reach GitHub. Check your connection and try again.", "Update check")
+                    alert("GitHub could not be reached. Check the internet connection, then try again.", "Update check")
                     stop()
                 }
                 const latest = getDictionary(@latestText)
                 @latestVersion = "{latest['shortcut']}"
                 if @latestVersion == @umdlVersion {
-                    alert("You have the latest version, {@umdlVersion}.", "UMDL is up to date")
+                    alert("Version {@umdlVersion} is the latest version.", "UMDL is up to date")
                     stop()
                 }
-                menu "UMDL {@latestVersion} is available. You have {@umdlVersion}.\n\n{latest['notes']}" {
-                    item "Get the update":
+                menu "UMDL {@latestVersion} is available. The installed version is {@umdlVersion}.\n\n{latest['notes']}" {
+                    item "⬇️ Get the update":
                         openURL("{latest['url']}")
                     item "Later":
                         @latestVersion = ""
                 }
                 stop()
-            item "Run diagnostics":
+            item "🩺 Run diagnostics":
                 @toolCmd = "doctor"
-            item "Open the project page":
+            item "🌐 Open the project page":
                 openURL("https://github.com/TheKfcBandit/UMDL")
                 stop()
             item "Done":
@@ -518,7 +560,11 @@ if @needsMenu == "1" {
 
         // Commas, semicolons and backslashes are separators inside a vCard.
         const albumShown = replaceText("[\\\\;,]", " ", @cfgAlbum, true, true)
-        @convertShown = "Convert them for Photos"
+        @albumDetail = "{albumShown}"
+        if @cfgAlbum == "Recents" {
+            @albumDetail = "Photo library. No album"
+        }
+        @convertShown = "Convert for Photos"
         if @cfgConvert == "0" {
             @convertShown = "Keep the original in Files"
         }
@@ -527,7 +573,7 @@ if @needsMenu == "1" {
             @afterShown = "Open Photos"
         }
 
-        @settingCards = "BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Save to;;;;\nORG;CHARSET=utf-8:{albumShown};\nPHOTO;ENCODING=b:{iconAlbum}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Ask before big downloads;;;;\nORG;CHARSET=utf-8:When a link has more than {@cfgThreshold} items;\nPHOTO;ENCODING=b:{iconStack}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Videos Photos cannot play;;;;\nORG;CHARSET=utf-8:{@convertShown};\nPHOTO;ENCODING=b:{iconConvert}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:When a download finishes;;;;\nORG;CHARSET=utf-8:{@afterShown};\nPHOTO;ENCODING=b:{iconFinish}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Forget saved logins;;;;\nORG;CHARSET=utf-8:Sign out of every site;\nPHOTO;ENCODING=b:{iconForget}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Reset UMDL;;;;\nORG;CHARSET=utf-8:Remove the tools and all settings;\nPHOTO;ENCODING=b:{iconReset}\nEND:VCARD\n"
+        @settingCards = "BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Save to;;;;\nORG;CHARSET=utf-8:{@albumDetail};\nPHOTO;ENCODING=b:{iconAlbum}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Ask before large downloads;;;;\nORG;CHARSET=utf-8:When a link contains more than {@cfgThreshold} items;\nPHOTO;ENCODING=b:{iconStack}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Unsupported video formats;;;;\nORG;CHARSET=utf-8:{@convertShown};\nPHOTO;ENCODING=b:{iconConvert}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:When a download finishes;;;;\nORG;CHARSET=utf-8:{@afterShown};\nPHOTO;ENCODING=b:{iconFinish}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Forget saved sign-ins;;;;\nORG;CHARSET=utf-8:Signs out of every site;\nPHOTO;ENCODING=b:{iconForget}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Reset UMDL;;;;\nORG;CHARSET=utf-8:Removes the helper and all settings;\nPHOTO;ENCODING=b:{iconReset}\nEND:VCARD\n"
 
         const settingsFile = setName(@settingCards, "umdl-settings.vcf", true)
         @settingsContacts = settingsFile.contact
@@ -539,12 +585,13 @@ if @needsMenu == "1" {
             @settingsChanged = "1"
         }
 
-        if @setting == "Ask before big downloads" {
-            const thresholdTyped = prompt("Ask first when a link has more than this many items", "Number", "{@cfgThreshold}")
+        if @setting == "Ask before large downloads" {
+            const thresholdTyped = prompt("Ask first when a link contains more than this many items", "Number", "{@cfgThreshold}")
             @thresholdText = "{thresholdTyped}"
             const thresholdMatch = matchText("^[1-9][0-9]?[0-9]?[0-9]?$", @thresholdText)
             @thresholdValid = "{thresholdMatch}"
-            if !@thresholdValid {
+            @probe = "[{@thresholdValid}]"
+            if @probe == "[]" {
                 alert("Enter a whole number from 1 to 9999.", "Not saved")
                 stop()
             }
@@ -553,36 +600,36 @@ if @needsMenu == "1" {
             @settingsChanged = "1"
         }
 
-        if @setting == "Videos Photos cannot play" {
+        if @setting == "Unsupported video formats" {
             @askConvert = "1"
             @settingsChanged = "1"
         }
 
         if @setting == "When a download finishes" {
             menu "When a download finishes" {
-                item "Show a notification":
+                item "🔔 Show a notification":
                     @cfgAfter = "notify"
-                item "Open Photos":
+                item "🖼️ Open Photos":
                     @cfgAfter = "photos"
             }
             @saveCfg = "1"
             @settingsChanged = "1"
         }
 
-        if @setting == "Forget saved logins" {
+        if @setting == "Forget saved sign-ins" {
             @toolCmd = "logout"
         }
 
         if @setting == "Reset UMDL" {
-            menu "Remove UMDL's download tools and settings from a-Shell?\n\nYour Photos and the shortcut itself are not touched. Files kept under a-Shell, UMDL, Saved are deleted." {
-                item "Reset UMDL":
+            menu "Remove UMDL's helper, settings and working files from a-Shell?\n\nPhotos and the shortcut itself are not affected. Files kept under a-Shell, UMDL, Saved are deleted." {
+                item "🗑️ Reset UMDL":
                     rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
                         "command": "rm -rf $HOME/Documents/UMDL",
                         "openWindow": "close",
                         "keepGoing": false,
                         "ShowWhenRun": false
                     })
-                    alert("Everything UMDL installed is gone. Run UMDL again to set it up, or delete the shortcut.", "UMDL was reset")
+                    alert("UMDL's files have been removed. Run UMDL again to set it up, or delete the shortcut.", "UMDL was reset")
                     stop()
                 item "Cancel":
                     stop()
@@ -592,37 +639,39 @@ if @needsMenu == "1" {
 }
 
 /* ------------------------------------------------------------------------
- * 7. Questions shared by first-run setup and Settings
+ * 7. Questions shared by custom setup and Settings
  * ---------------------------------------------------------------------- */
 
 if @askAlbum == "1" {
     menu "Where should downloads be saved?" {
-        item "A new album":
+        item "🆕 A new album":
             const newAlbum = prompt("Name for the new album", nil, "UMDL")
             @newAlbumName = "{newAlbum}"
-            if !@newAlbumName {
+            @probe = "[{@newAlbumName}]"
+            if @probe == "[]" {
                 @newAlbumName = "UMDL"
             }
             createAlbum("{@newAlbumName}")
             @cfgAlbum = @newAlbumName
-        item "An album I already have":
-            const oldAlbum = prompt("Type the album's name exactly as Photos shows it", nil, "{@cfgAlbum}")
+        item "🖼️ An existing album":
+            const oldAlbum = prompt("Enter the album name exactly as Photos shows it", nil, "{@cfgAlbum}")
             @oldAlbumName = "{oldAlbum}"
-            if !@oldAlbumName {
+            @probe = "[{@oldAlbumName}]"
+            if @probe == "[]" {
                 @oldAlbumName = "Recents"
             }
             @cfgAlbum = @oldAlbumName
-        item "No album, just my library":
+        item "📚 The photo library, without an album":
             @cfgAlbum = "Recents"
     }
     @saveCfg = "1"
 }
 
 if @askConvert == "1" {
-    menu "UMDL picks the best quality Photos can play. When a site only offers a format Photos cannot play, what should happen?" {
-        item "Convert it for Photos (slower)":
+    menu "UMDL downloads the best quality that Photos can play. When a site only offers a format Photos cannot play, what should happen?" {
+        item "🎞️ Convert it for Photos (slower)":
             @cfgConvert = "1"
-        item "Keep the original in Files":
+        item "📁 Keep the original in Files":
             @cfgConvert = "0"
     }
     @saveCfg = "1"
@@ -641,16 +690,17 @@ if @saveCfg == "1" {
 }
 
 if @settingsChanged == "1" {
-    showNotification("Your settings were saved.", "UMDL")
+    showNotification("Settings saved.", "UMDL")
     stop()
 }
 
 /* ------------------------------------------------------------------------
- * 8. Hand over to a-Shell
+ * 8. Fetch the helper if needed, then hand over to a-Shell
  * ---------------------------------------------------------------------- */
 
-if @signInTo {
-    alert("a-Shell will open the site. Sign in as usual, then come back to the app you were in.\n\nTo leave the page, swipe right from the left edge of the screen.", "Sign in")
+@probe = "[{@signInTo}]"
+if @probe != "[]" {
+    alert("a-Shell will open the site's sign-in page. Sign in, then return to the previous app.\n\nTo close the page, swipe right from the left edge of the screen.", "Sign in")
     openApp("AsheKube.app.a-Shell")
     wait(1)
     rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
@@ -662,43 +712,61 @@ if @signInTo {
     stop()
 }
 
+if @toolCmd == "none" {
+    if @hasLink == "1" {
+        @toolCmd = "run"
+    } else {
+        if @firstRun == "1" {
+            @toolCmd = "setup"
+        } else {
+            stop()
+        }
+    }
+}
+
+@fetchInApp = "0"
+if @needsHelper == "1" {
+    // Downloaded without opening a-Shell when possible.
+    // "env" is the virtual environment version 1.0 used; it is no longer needed.
+    const helperFetch = rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
+        "command": "dash -c 'W=\"$HOME/Documents/UMDL\"; mkdir -p $W; rm -rf $W/env $W/umdl.new; curl -fsL --max-time 60 https://raw.githubusercontent.com/TheKfcBandit/UMDL/main/src/umdl.py -o $W/umdl.new && mv -f $W/umdl.new $W/umdl.py && echo {@umdlVersion} > $W/helper.for; if [ -f $W/umdl.py ] && [ -f $W/helper.for ]; then echo \"FOR:$(cat $W/helper.for):END\"; fi; echo DONE'",
+        "openWindow": "close",
+        "keepGoing": false,
+        "ShowWhenRun": false
+    })
+    @helperState = "{helperFetch}"
+    if @helperState !contains "FOR:{@umdlVersion}:END" {
+        // The background extension could not fetch it. Download it in the app instead.
+        @fetchInApp = "1"
+    }
+}
+
 const payload = {"v": "{@umdlVersion}", "p": "{@protocol}", "name": "UMDL", "url": "{@link}", "mode": "{@runMode}", "limit": "{@runLimit}", "force_update": "{@forceUpdate}", "cfg": {"album": "{@cfgAlbum}", "threshold": "{@cfgThreshold}", "convert": "{@cfgConvert}", "after": "{@cfgAfter}"}}
 const payloadText = text("{payload}")
 const payloadBlob = base64Encode(payloadText, "None")
 @blob = "{payloadBlob}"
 
-if @needsInstall == "1" {
-    alert("a-Shell will now open and install the download tools. This takes a minute or two and needs an internet connection.\n\nKeep a-Shell open until it sends you back here.", "One-time install")
-    openApp("AsheKube.app.a-Shell")
-    wait(1)
-    rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
-        "command": "clear\nhideKeyboard\necho \"UMDL is installing its download tools. Keep a-Shell open.\"\nmkdir -p $HOME/Documents/UMDL\npython -m venv $HOME/Documents/UMDL/env\nsource $HOME/Documents/UMDL/env/bin/activate\npip install chardet requests certifi mutagen -q --disable-pip-version-check --upgrade\npip install yt-dlp yt-dlp-ejs yt-dlp-apple-webkit-jsi gallery-dl -q --disable-pip-version-check --upgrade\ncurl -sL https://raw.githubusercontent.com/TheKfcBandit/UMDL/main/src/umdl.py -o $HOME/Documents/UMDL/umdl.py\npython $HOME/Documents/UMDL/umdl.py installed {@blob}\ndeactivate\ncd",
-        "openWindow": "open",
-        "keepGoing": false,
-        "ShowWhenRun": false
-    })
-    stop()
-}
-
-if !@toolCmd {
-    @toolCmd = "run"
-    if !@link {
-        if @firstRun == "1" {
-            alert("Share any post or video to UMDL and it lands in your Photos.\n\nOpen UMDL on its own for settings.", "UMDL is ready")
-        }
-        stop()
-    }
-}
-
 // "Resume last download" replays the interrupted request exactly as it was sent.
-if @choice == "Resume last download" {
+if @toolCmd == "resume" {
+    @toolCmd = "run"
     @blob = @resumeBlob
+}
+
+@appCommand = "cd $HOME/Documents/UMDL\npython umdl.py {@toolCmd} {@blob}\nclear && cd"
+if @needsHelper == "1" {
+    // First run, or first run after an update: install the download tools before the
+    // helper starts. The helper installs anything still missing by itself.
+    @appCommand = "cd $HOME/Documents/UMDL\npip install -q --disable-pip-version-check --upgrade yt-dlp gallery-dl\npython umdl.py {@toolCmd} {@blob}\nclear && cd"
+}
+if @fetchInApp == "1" {
+    // If the download fails here too, the shortcut is reopened to report it (section 1).
+    @appCommand = "mkdir -p $HOME/Documents/UMDL\ncd $HOME/Documents/UMDL\nrm -rf env umdl.py helper.for\ncurl -fsL --max-time 60 https://raw.githubusercontent.com/TheKfcBandit/UMDL/main/src/umdl.py -o umdl.py\ndash -c 'if [ -s umdl.py ]; then echo {@umdlVersion} > helper.for; else open \"shortcuts://run-shortcut?name=UMDL&input=text&text=UMDL-HELPER-MISSING\"; fi'\npip install -q --disable-pip-version-check --upgrade yt-dlp gallery-dl\npython umdl.py {@toolCmd} {@blob}\nclear && cd"
 }
 
 openApp("AsheKube.app.a-Shell")
 wait(1)
 rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
-    "command": "cd $HOME/Documents/UMDL\nsource env/bin/activate\npython umdl.py {@toolCmd} {@blob}\ndeactivate\nclear && cd",
+    "command": "{@appCommand}",
     "openWindow": "open",
     "keepGoing": false,
     "ShowWhenRun": false

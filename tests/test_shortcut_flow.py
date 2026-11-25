@@ -1,6 +1,7 @@
 """End-to-end flows: the compiled shortcut and the real helper, together.
 
-Needs the compiled plist. Build it first (from the repository root):
+Each test class covers one section of docs/BEHAVIOR.md, and each test names
+the behaviour it pins down. Needs the compiled plist. From the repository root:
 
     cherri src/UMDL.cherri --skip-sign --debug     # writes src/UMDL.plist
     python -m unittest discover -s tests -v
@@ -20,7 +21,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tests"))
 
-from shortcut_sim import SimError, World  # noqa: E402
+from shortcut_sim import ASHELL, PREFIX, SimError, World  # noqa: E402
 
 
 def find_plist():
@@ -35,10 +36,19 @@ def find_plist():
 PLIST = find_plist()
 HAVE_DASH = shutil.which("dash") is not None
 CONFIG = {"album": "Clips", "threshold": "10", "convert": "1", "after": "notify"}
+DEFAULTS = {"album": "UMDL", "threshold": "10", "convert": "1", "after": "notify"}
+VIDEO = "https://video.test/watch/abc"
+TOOLS = ["yt-dlp", "gallery-dl", "yt-dlp-ejs", "yt-dlp-apple-webkit-jsi"]
+# First run: the shortcut installs the two required tools in the a-Shell window,
+# then the helper's first daily check brings everything up to date.
+FIRST_RUN_PIP = ["yt-dlp gallery-dl", " ".join(TOOLS)]
+MAIN_MENU = ["Download from clipboard", "Enter a link", "Settings", "Sign in to a site",
+             "Update tools", "About UMDL"]
+SETTINGS_MENU = ["Save to", "Ask before large downloads", "Unsupported video formats",
+                 "When a download finishes", "Forget saved sign-ins", "Reset UMDL"]
 
 with open(os.path.join(ROOT, "version.json")) as _handle:
     VERSION = json.load(_handle)
-VIDEO = "https://video.test/watch/abc"
 
 
 @unittest.skipUnless(PLIST, "compile the shortcut first (see the top of this file)")
@@ -69,51 +79,108 @@ class Flow(unittest.TestCase):
                     handle.write(data)
 
     def setUp(self):
-        self.world = World(PLIST)
-        self.addCleanup(self.world.close)
+        self.world = self.new_world()
+
+    def new_world(self):
+        world = World(PLIST)
+        self.addCleanup(world.close)
+        return world
 
     def one_video(self, title="My clip"):
         return {"ytdlp": {"raw": {"_type": "video", "id": "abc", "title": title},
                           "files": [["abc.mp4", self.clip, title]]},
                 "gallery": {"found": False}}
 
-    def notifications(self):
-        return [e[1:] for e in self.world.seen("notification")]
+    @staticmethod
+    def notifications(world):
+        return [e[1:] for e in world.seen("notification")]
 
-    def alerts(self):
-        return [e[1:] for e in self.world.seen("alert")]
+    @staticmethod
+    def alerts(world):
+        return [e[1:] for e in world.seen("alert")]
 
-    def jobs_left(self):
-        jobs = os.path.join(self.world.workspace, "jobs")
+    @staticmethod
+    def helper_commands(world):
+        return [command for command, _ in world.helper_runs]
+
+    @staticmethod
+    def jobs_left(world):
+        jobs = os.path.join(world.workspace, "jobs")
         return os.listdir(jobs) if os.path.isdir(jobs) else []
 
-    # ------------------------------------------------------------ first run
+    @staticmethod
+    def foreground_commands(world):
+        return [text for window, text in world.commands if window == "open"]
 
-    def test_first_run_from_share_sheet_sets_up_then_downloads(self):
+
+class Onboarding(Flow):
+    """docs/BEHAVIOR.md, "First run"."""
+
+    def test_quick_setup_from_the_share_sheet_is_one_tap_and_downloads(self):
         w = self.world
         w.set_scenario(self.one_video())
-        w.script(("menu", "Set up UMDL"), ("menu", "A new album"), ("ask", "Clips"),
-                 ("menu", "Convert it"))
+        w.script(("menu", "Quick setup"))
         w.share("Watch this " + VIDEO)
 
-        self.assertEqual(w.albums, ["Clips"])
-        self.assertEqual(w.read_config(), CONFIG)
-        self.assertEqual([c for c, _ in w.helper_runs], ["installed", "run"])
-        self.assertEqual(w.helper_runs[0][1]["url"], VIDEO)
-        self.assertEqual(w.photos, [("001.mp4", "Clips", os.path.getsize(self.clip))])
-        self.assertEqual(self.notifications(), [("My clip", "Saved to the Clips album.")])
-        self.assertIn("One-time install", [a[0] for a in self.alerts()])
-        self.assertEqual(self.jobs_left(), [])
-        self.assertFalse(os.path.exists(os.path.join(w.workspace, "pending")))
+        welcome = w.seen("menu")[0]
+        self.assertTrue(welcome[1].startswith("Welcome to UMDL"))
+        self.assertEqual(welcome[2], ["✅ Quick setup (recommended)", "⚙️ Custom setup", "Not now"])
+        self.assertEqual(len(w.seen("menu")), 1)           # nothing else was asked
+        self.assertEqual(w.albums, ["UMDL"])
+        self.assertEqual(w.read_config(), DEFAULTS)
+        self.assertEqual(w.pip_log(), FIRST_RUN_PIP)        # tools installed with no further input
+        self.assertEqual(self.helper_commands(w), ["run"])  # straight into the download
+        self.assertEqual(w.photos, [("001.mp4", "UMDL", os.path.getsize(self.clip))])
+        self.assertEqual(self.notifications(w), [("My clip", "Saved to the UMDL album.")])
+        self.assertEqual(self.alerts(w), [])
+        self.assertEqual(self.jobs_left(w), [])
 
-    def test_first_run_without_a_link_ends_ready(self):
+    def test_quick_setup_opened_from_the_app_installs_and_reports_ready(self):
         w = self.world
-        w.script(("menu", "Set up UMDL"), ("menu", "No album"), ("menu", "Keep the original"))
+        w.script(("menu", "Quick setup"))
         w.share(None)
-        self.assertEqual(w.read_config(),
-                         {"album": "Recents", "threshold": "10", "convert": "0", "after": "notify"})
-        self.assertEqual(self.alerts()[-1][0], "UMDL is ready")
+        self.assertEqual(self.helper_commands(w), ["setup"])
+        self.assertEqual(w.pip_log(), FIRST_RUN_PIP)
+        self.assertEqual([a[0] for a in self.alerts(w)], ["UMDL is ready"])
+        self.assertEqual(len(w.seen("menu")), 1)
+        self.assertEqual(w.seen("list"), [])               # the main menu is not shown during setup
         self.assertEqual(w.photos, [])
+
+    def test_custom_setup_asks_album_then_conversion(self):
+        w = self.world
+        w.set_scenario(self.one_video())
+        w.script(("menu", "Custom setup"), ("menu", "A new album"), ("ask", "Clips"),
+                 ("menu", "Keep the original"))
+        w.share(VIDEO)
+        prompts = [m[1].split("\n")[0] for m in w.seen("menu")]
+        self.assertEqual(prompts[0], "Welcome to UMDL")
+        self.assertEqual(prompts[1], "Where should downloads be saved?")
+        self.assertTrue(prompts[2].startswith("UMDL downloads the best quality"))
+        self.assertEqual(w.seen("menu")[1][2], ["🆕 A new album", "🖼️ An existing album",
+                                                "📚 The photo library, without an album"])
+        self.assertEqual(w.albums, ["Clips"])
+        self.assertEqual(w.read_config(), dict(CONFIG, convert="0"))
+        self.assertEqual(w.photos[0][1], "Clips")
+
+    def test_custom_setup_with_an_existing_album_or_none(self):
+        w = self.world
+        w.script(("menu", "Custom setup"), ("menu", "An existing album"), ("ask", "Holiday"),
+                 ("menu", "Convert it"))
+        w.share(None)
+        self.assertEqual(w.read_config(), dict(DEFAULTS, album="Holiday"))
+        self.assertEqual(w.albums, [])                      # an existing album is not created again
+
+        w = self.new_world()
+        w.script(("menu", "Custom setup"), ("menu", "The photo library"), ("menu", "Convert it"))
+        w.share(None)
+        self.assertEqual(w.read_config(), dict(DEFAULTS, album="Recents"))
+
+    def test_an_empty_album_name_falls_back(self):
+        w = self.world
+        w.script(("menu", "Custom setup"), ("menu", "A new album"), ("ask", ""),
+                 ("menu", "Convert it"))
+        w.share(None)
+        self.assertEqual(w.read_config()["album"], "UMDL")
 
     def test_declining_setup_changes_nothing(self):
         w = self.world
@@ -121,32 +188,93 @@ class Flow(unittest.TestCase):
         w.share(VIDEO)
         self.assertFalse(os.path.exists(w.workspace))
         self.assertEqual(w.helper_runs, [])
+        self.assertEqual(w.albums, [])
 
-    def test_failed_install_is_reported_and_retried_next_time(self):
+    def test_no_connection_during_setup_is_reported_and_the_next_run_finishes(self):
         w = self.world
         w.set_scenario(self.one_video())
-        w.offline = True  # the helper script never arrives
-        w.script(("menu", "Set up UMDL"), ("menu", "No album"), ("menu", "Convert it"))
+        w.set_offline(True)
+        w.script(("menu", "Quick setup"))
         w.share(VIDEO)
-        self.assertEqual(w.seen("helper-missing")[0][0], "helper-missing")
+        self.assertEqual(self.alerts(w), [("Setup incomplete", "UMDL could not download its helper "
+                                           "script.\n\nCheck the internet connection, then run "
+                                           "UMDL again.")])
+        self.assertEqual(w.helper_runs, [])
         self.assertEqual(w.photos, [])
-        # Next tap: settings are kept, the questions are not asked again, install reruns.
-        w.offline = False
+        # The next attempt keeps the answers already given and finishes the job.
+        w.set_offline(False)
         w.share(VIDEO)
-        self.assertEqual([c for c, _ in w.helper_runs][-2:], ["installed", "run"])
+        self.assertEqual(len(w.seen("menu")), 1)
+        self.assertEqual(self.helper_commands(w), ["run"])
         self.assertEqual(len(w.photos), 1)
 
-    # ------------------------------------------------------------- one tap
+    def test_helper_is_downloaded_in_the_app_when_the_background_cannot(self):
+        w = self.world
+        w.set_scenario(self.one_video())
+        w.set_background_network(False)
+        w.script(("menu", "Quick setup"))
+        w.share(VIDEO)
+        self.assertEqual(self.alerts(w), [])
+        self.assertEqual(self.helper_commands(w), ["run"])
+        self.assertEqual(len(w.photos), 1)
+        self.assertIn("curl -fsL", self.foreground_commands(w)[0])
+        # Once fetched, later runs go straight to the helper.
+        w.share(VIDEO)
+        self.assertNotIn("curl", self.foreground_commands(w)[-1])
+        self.assertEqual(len(w.photos), 2)
 
-    def test_one_tap_download_asks_nothing(self):
+    def test_tools_that_fail_to_install_are_reported_and_retried_next_time(self):
+        w = self.world
+        w.set_scenario(self.one_video())
+        w.set_pip_failure("No matching distribution found for yt-dlp")
+        w.script(("menu", "Quick setup"))
+        w.share(VIDEO)
+        title, body = self.alerts(w)[0]
+        self.assertEqual(title, "Setup incomplete")
+        self.assertIn("Could not install yt-dlp and gallery-dl", body)
+        self.assertIn("No matching distribution found", body)
+        self.assertEqual(w.photos, [])
+        # Nothing to redo by hand: the next run installs and carries on.
+        w.set_pip_failure(None)
+        w.share(VIDEO)
+        self.assertEqual(len(w.seen("menu")), 1)
+        self.assertEqual(len(w.photos), 1)
+
+    def test_setup_never_reports_an_unsaved_download(self):
+        w = self.world
+        w.script(("menu", "Quick setup"))
+        w.share(None)
+        self.assertFalse(any("has not been saved" in m[1] for m in w.seen("menu")))
+
+    def test_upgrade_from_1_0_refetches_the_helper_and_removes_the_old_environment(self):
+        w = self.world
+        w.install(CONFIG)
+        os.remove(os.path.join(w.workspace, "helper.for"))
+        os.makedirs(os.path.join(w.workspace, "env", "bin"))
+        with open(os.path.join(w.workspace, "umdl.py"), "w") as handle:
+            handle.write("raise SystemExit('old helper')\n")
+        w.set_scenario(self.one_video())
+        w.share(VIDEO)
+        self.assertFalse(os.path.exists(os.path.join(w.workspace, "env")))
+        self.assertEqual(len(w.photos), 1)
+        with open(os.path.join(w.workspace, "helper.for")) as handle:
+            self.assertEqual(handle.read().strip(), VERSION["shortcut"])
+
+
+class OneTap(Flow):
+    """docs/BEHAVIOR.md, "Sharing a link"."""
+
+    def test_download_asks_nothing(self):
         w = self.world
         w.install(CONFIG)
         w.set_scenario(self.one_video())
         w.share(VIDEO)  # no scripted answers: any question would fail the test
         self.assertEqual(w.photos, [("001.mp4", "Clips", os.path.getsize(self.clip))])
+        self.assertEqual(w.seen("menu") + w.seen("list") + w.seen("alert"), [])
         payload = w.helper_runs[0][1]
         self.assertEqual((payload["mode"], payload["name"], payload["cfg"]), ("auto", "UMDL", CONFIG))
-        self.assertEqual(payload["v"], VERSION["shortcut"])
+        self.assertEqual((payload["v"], payload["p"]), (VERSION["shortcut"], str(VERSION["protocol"])))
+        self.assertEqual(self.foreground_commands(w)[0].split("\n")[0], "cd $HOME/Documents/UMDL")
         with open(w.record_path) as handle:
             opts = [json.loads(line) for line in handle]
         self.assertTrue(all("avc" in o["format"].split("/")[0] for o in opts))
@@ -159,13 +287,21 @@ class Flow(unittest.TestCase):
         self.assertEqual(w.helper_runs[0][1]["url"], "https://video.test/watch/abc?si=xyz&t=5")
         self.assertEqual(len(w.photos), 1)
 
+    def test_shared_text_without_a_link_opens_the_main_menu(self):
+        w = self.world
+        w.install(CONFIG)
+        w.script(("list", "About UMDL"), ("menu", "Done"))
+        w.share("just some words")
+        self.assertEqual(w.seen("list")[0][2], MAIN_MENU)
+        self.assertEqual(w.helper_runs, [])
+
     def test_no_album_saves_to_the_library(self):
         w = self.world
         w.install(dict(CONFIG, album="Recents"))
         w.set_scenario(self.one_video(title=""))
         w.share(VIDEO)
         self.assertEqual(w.photos[0][1], "Recents")
-        self.assertEqual(self.notifications(), [("UMDL", "Saved to Photos.")])
+        self.assertEqual(self.notifications(w), [("UMDL", "Saved to Photos.")])
 
     def test_open_photos_when_finished(self):
         w = self.world
@@ -182,7 +318,7 @@ class Flow(unittest.TestCase):
         w.set_scenario(self.one_video(title=title))
         w.share(VIDEO)
         self.assertEqual(w.photos[0][1], album)
-        self.assertEqual(self.notifications()[0][1], "Saved to the %s album." % album)
+        self.assertEqual(self.notifications(w)[0][1], "Saved to the %s album." % album)
         self.assertEqual(w.helper_runs[0][1]["cfg"]["album"], album)
 
     def test_gallery_post_saves_every_image(self):
@@ -192,7 +328,7 @@ class Flow(unittest.TestCase):
                         "gallery": {"found": True, "count": 4, "sample": self.jpg}})
         w.share("https://x.com/someone/status/123")
         self.assertEqual([p[0] for p in w.photos], ["001.jpg", "002.jpg", "003.jpg", "004.jpg"])
-        self.assertEqual(self.notifications()[0][1], "Saved 4 items to the Clips album.")
+        self.assertEqual(self.notifications(w)[0][1], "Saved 4 items to the Clips album.")
 
     def test_audio_is_kept_in_files(self):
         if not shutil.which("ffprobe"):
@@ -204,12 +340,94 @@ class Flow(unittest.TestCase):
                         "gallery": {"found": False}})
         w.share("https://audio.test/s")
         self.assertEqual(w.photos, [])
-        self.assertEqual(self.notifications()[0][1],
-                         "Nothing here could go into Photos.\n"
+        self.assertEqual(self.notifications(w)[0][1],
+                         "No items could be added to Photos.\n"
                          "1 kept in Files, under a-Shell, UMDL, Saved.")
         self.assertEqual(os.listdir(os.path.join(w.workspace, "Saved")), ["Song.m4a"])
 
-    # ------------------------------------------------------- big downloads
+    def test_partial_download_saves_what_arrived_and_says_what_did_not(self):
+        w = self.world
+        w.install(CONFIG)
+        files = [["a.mp4", self.clip, "A"], ["b.mp4", self.clip, "B"]]
+        w.set_scenario({"ytdlp": {"raw": {"_type": "playlist", "title": "Set", "playlist_count": 3,
+                                          "entries": []},
+                                  "files": files, "download_error": "HTTP Error 500"},
+                        "gallery": {"found": False}})
+        w.share("https://video.test/playlist/2")
+        self.assertEqual(len(w.photos), 2)
+        self.assertEqual(self.notifications(w)[0],
+                         ("Set", "Saved 2 items to the Clips album.\n1 could not be downloaded."))
+
+    def test_tools_removed_behind_umdls_back_are_reinstalled_on_the_way(self):
+        w = self.world
+        w.install(CONFIG, tools=False)
+        w.set_scenario(self.one_video())
+        w.share(VIDEO)
+        self.assertEqual(w.pip_log(), TOOLS)                # one at a time, by the helper
+        self.assertEqual(len(w.photos), 1)
+
+    def test_tools_installed_where_python_is_not_looking_are_found(self):
+        w = self.world
+        w.install(CONFIG, tools=False)
+        w.set_pip_target("elsewhere")
+        w.set_scenario(self.one_video())
+        w.share(VIDEO)
+        self.assertEqual(len(w.photos), 1)
+        self.assertEqual(self.alerts(w), [])
+        # The location is remembered, so nothing is installed again.
+        installs = len(w.pip_log())
+        w.share(VIDEO)
+        self.assertEqual(len(w.photos), 2)
+        self.assertEqual(len(w.pip_log()), installs)
+
+    def test_newer_release_is_offered_after_the_download(self):
+        w = self.world
+        w.install(CONFIG)
+        w.set_scenario(self.one_video())
+        w.set_version_json(dict(VERSION, shortcut="9.9.9", helper=VERSION["helper"]))
+        w.script(("menu", "Get the update"))
+        w.share(VIDEO)
+        self.assertEqual(len(w.photos), 1)
+        prompt = w.seen("menu")[0][1]
+        self.assertEqual(prompt, "UMDL 9.9.9 is available. The installed version is %s."
+                         % VERSION["shortcut"])
+        self.assertEqual(w.seen("openurl")[-1][1], VERSION["url"])
+
+    def test_declining_the_update_ends_quietly(self):
+        w = self.world
+        w.install(CONFIG)
+        w.set_scenario(self.one_video())
+        w.set_version_json(dict(VERSION, shortcut="9.9.9"))
+        w.script(("menu", "Later"))
+        w.share(VIDEO)
+        self.assertEqual(len(w.photos), 1)
+        self.assertEqual(w.seen("openurl"), [])
+        self.assertEqual(w.seen("list"), [])               # and no main menu afterwards
+
+    def test_unreadable_callback_falls_back_to_the_main_menu(self):
+        w = self.world
+        w.install(CONFIG)
+        w.script(("list", "About UMDL"), ("menu", "Done"))
+        w.share("UMDLCB:bm90IGpzb24")
+        self.assertEqual(w.seen("list")[0][2], MAIN_MENU)
+        self.assertEqual(w.photos, [])
+
+    def test_helper_from_another_version_is_reported_as_out_of_date(self):
+        w = self.world
+        w.install(CONFIG)
+        path = os.path.join(w.workspace, "umdl.py")
+        with open(path) as handle:
+            source = handle.read()
+        with open(path, "w") as handle:
+            handle.write(source.replace("PROTOCOL = %d" % VERSION["protocol"], "PROTOCOL = 99"))
+        w.script(("menu", "Get the latest version"))
+        w.share(VIDEO)
+        self.assertIn("out of date", w.seen("menu")[0][1])
+        self.assertEqual(w.seen("openurl")[0][1], VERSION["url"])
+
+
+class LargeDownloads(Flow):
+    """docs/BEHAVIOR.md, "Large downloads"."""
 
     def big_playlist(self):
         files = [["v%d.mp4" % i, self.clip, "Video %d" % i] for i in range(12)]
@@ -221,22 +439,22 @@ class Flow(unittest.TestCase):
         w = self.world
         w.install(CONFIG)
         w.set_scenario(self.big_playlist())
-        w.script(("menu", "Only the first 10"))
+        w.script(("menu", "Download the first 10"))
         w.share("https://video.test/playlist/1")
         menu = w.seen("menu")[0]
-        self.assertEqual(menu[1], "Mix\n\nThis link has 37 items.")
-        self.assertEqual(menu[2], ["Download everything", "Only the first 10",
-                                   "Only the first one", "Cancel"])
+        self.assertEqual(menu[1], "Mix\n\nThis link contains 37 items.")
+        self.assertEqual(menu[2], ["⬇️ Download all", "⬇️ Download the first 10",
+                                   "⬇️ Download the first item only", "Cancel"])
         self.assertEqual([(c, p["mode"], p["limit"]) for c, p in w.helper_runs],
                          [("run", "auto", ""), ("run", "limit", "10")])
         self.assertEqual(len(w.photos), 10)
-        self.assertEqual(self.notifications()[0], ("Mix", "Saved 10 items to the Clips album."))
+        self.assertEqual(self.notifications(w)[0], ("Mix", "Saved 10 items to the Clips album."))
 
-    def test_big_download_everything_first_and_cancel(self):
-        for choice, mode, saved in (("Download everything", "all", 12),
-                                    ("Only the first one", "first", 1), ("Cancel", None, 0)):
-            w = World(PLIST)
-            self.addCleanup(w.close)
+    def test_download_all_first_only_and_cancel(self):
+        for choice, mode, saved in (("Download all", "all", 12),
+                                    ("Download the first item only", "first", 1),
+                                    ("Cancel", None, 0)):
+            w = self.new_world()
             w.install(CONFIG)
             w.set_scenario(self.big_playlist())
             w.script(("menu", choice))
@@ -253,18 +471,21 @@ class Flow(unittest.TestCase):
         w.share("https://video.test/playlist/1")  # 37 items, limit 50: no question
         self.assertEqual(len(w.photos), 12)
 
-    def test_unknown_size_gallery_says_more_than(self):
+    def test_unknown_size_says_more_than(self):
         w = self.world
         w.install(CONFIG)
         w.set_scenario({"ytdlp": {"suitable": False},
                         "gallery": {"found": True, "count": 40, "sample": self.jpg}})
         w.script(("menu", "Cancel"))
         w.share("https://x.com/someone/media")
-        self.assertEqual(w.seen("menu")[0][1], "This link has more than 10 items.")
+        self.assertEqual(w.seen("menu")[0][1], "This link contains more than 10 items.")
 
-    # ---------------------------------------------------------------- errors
 
-    def failing(self, message):
+class Errors(Flow):
+    """docs/BEHAVIOR.md, "When a download fails"."""
+
+    @staticmethod
+    def failing(message):
         return {"ytdlp": {"error": message}, "gallery": {"found": False}}
 
     def test_error_menu_explains_and_cancels(self):
@@ -273,37 +494,58 @@ class Flow(unittest.TestCase):
         w.set_scenario(self.failing("Sign in to confirm your age"))
         w.script(("menu", "Cancel"))
         w.share(VIDEO)
-        prompt = w.seen("menu")[0][1]
-        self.assertIn("Sign in to confirm your age", prompt)
-        self.assertIn("needs an account", prompt)
+        menu = w.seen("menu")[0]
+        self.assertEqual(menu[1], "Download failed\n\nSign in to confirm your age\n\n"
+                                  "This post appears to require an account. "
+                                  "Sign in to the site, then try again.")
+        self.assertEqual(menu[2], ["🔄 Try again", "🛠️ Update tools and try again",
+                                   "🔑 Sign in to this site", "📋 Copy error details", "Cancel"])
         self.assertEqual(w.photos, [])
 
-    def test_error_then_try_again_succeeds(self):
+    def test_each_kind_of_failure_gets_its_own_advice(self):
+        cases = {
+            "HTTP Error 500": "Updating the download tools resolves most failures.",
+            "getaddrinfo failed": "Check the internet connection, then try again.",
+            "Video unavailable": "The post may be private, removed, or unavailable in your region.",
+            "This video is DRM protected": "This media is copy-protected and cannot be downloaded.",
+            "Unsupported URL": "This site may not be supported.",
+        }
+        for message, advice in cases.items():
+            w = self.new_world()
+            w.install(CONFIG)
+            w.set_scenario(self.failing(message))
+            w.script(("menu", "Cancel"))
+            w.share(VIDEO)
+            self.assertTrue(w.seen("menu")[0][1].endswith(advice), message)
+
+    def test_try_again_succeeds_once_the_site_recovers(self):
         w = self.world
         w.install(CONFIG)
         w.set_scenario(self.failing("HTTP Error 500"))
         w.script(("menu", "Try again"))
         w.run(VIDEO)
-        w.set_scenario(self.one_video())  # the site recovers before the retry
+        w.set_scenario(self.one_video())
         w.share(w.callbacks.pop(0))
         self.assertEqual(len(w.photos), 1)
         self.assertEqual(w.helper_runs[1][1]["force_update"], "")
 
-    def test_error_then_update_tools_and_retry(self):
+    def test_update_tools_and_try_again(self):
         w = self.world
         w.install(CONFIG)
         w.set_scenario(self.failing("Unable to extract player response"))
-        w.script(("menu", "Update tools and retry"), ("menu", "Cancel"))
+        w.script(("menu", "Update tools and try again"), ("menu", "Cancel"))
         w.share(VIDEO)
         self.assertEqual([p["force_update"] for _, p in w.helper_runs], ["", "1"])
+        self.assertEqual(w.pip_log(), [" ".join(TOOLS)] * 2)  # the daily check, then the forced one
 
-    def test_error_then_sign_in_opens_the_site(self):
+    def test_sign_in_opens_the_site(self):
         w = self.world
         w.install(CONFIG)
         w.set_scenario(self.failing("This post is private; log in"))
         w.script(("menu", "Sign in to this site"))
         w.share("https://www.video.test/watch/abc?x=1&y=2")
         self.assertEqual(w.seen("browser"), [("browser", "https://www.video.test")])
+        self.assertEqual(self.alerts(w)[0][0], "Sign in")
 
     def test_error_details_can_be_copied(self):
         w = self.world
@@ -311,10 +553,12 @@ class Flow(unittest.TestCase):
         w.set_scenario(self.failing("Unsupported URL: " + VIDEO))
         w.script(("menu", "Copy error details"))
         w.share(VIDEO)
-        self.assertIn("unsupported: Unsupported URL", w.clipboard)
-        self.assertIn(VIDEO, w.clipboard)
+        self.assertEqual(w.clipboard, "UMDL %s\n%s\nunsupported: Unsupported URL: %s"
+                         % (VERSION["shortcut"], VIDEO, VIDEO))
 
-    # ------------------------------------------------------------- recovery
+
+class Recovery(Flow):
+    """docs/BEHAVIOR.md, "Unsaved and interrupted downloads"."""
 
     def test_unsaved_download_is_offered_again(self):
         w = self.world
@@ -325,9 +569,12 @@ class Flow(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(w.workspace, "pending")))
         w.script(("menu", "Save it now"))
         w.share(None)
+        menu = w.seen("menu")[0]
+        self.assertEqual(menu[1], "A download from an earlier run has not been saved to Photos.")
+        self.assertEqual(menu[2], ["💾 Save it now", "🗑️ Discard it"])
         self.assertEqual(len(w.photos), 1)
-        self.assertEqual(self.jobs_left(), [])
-        self.assertEqual(self.notifications(), [("UMDL", "Saved to the Clips album.")])
+        self.assertEqual(self.jobs_left(w), [])
+        self.assertEqual(self.notifications(w), [("UMDL", "Saved to the Clips album.")])
 
     def test_unsaved_download_can_be_discarded(self):
         w = self.world
@@ -338,10 +585,10 @@ class Flow(unittest.TestCase):
         w.script(("menu", "Discard it"), ("list", "About UMDL"), ("menu", "Done"))
         w.share(None)
         self.assertEqual(w.photos, [])
-        self.assertEqual(self.jobs_left(), [])
+        self.assertEqual(self.jobs_left(w), [])
         self.assertFalse(os.path.exists(os.path.join(w.workspace, "pending")))
 
-    def test_saving_pending_then_continues_with_the_new_link(self):
+    def test_saving_an_earlier_download_then_continues_with_the_new_link(self):
         w = self.world
         w.install(CONFIG)
         w.set_scenario(self.one_video())
@@ -356,18 +603,19 @@ class Flow(unittest.TestCase):
         w = self.world
         w.install(CONFIG)
         blob = base64.b64encode(json.dumps({
-            "v": "1.0.0", "p": "1", "name": "UMDL", "url": VIDEO, "mode": "limit", "limit": "3",
-            "force_update": "", "cfg": CONFIG}).encode()).decode()
+            "v": VERSION["shortcut"], "p": str(VERSION["protocol"]), "name": "UMDL", "url": VIDEO,
+            "mode": "limit", "limit": "3", "force_update": "", "cfg": CONFIG}).encode()).decode()
         with open(os.path.join(w.workspace, "last.b64"), "w") as handle:
             handle.write(blob)
         w.set_scenario(self.one_video())
         w.script(("list", "Resume last download"))
         w.share(None)
+        self.assertEqual(w.seen("list")[0][2], MAIN_MENU[:2] + ["Resume last download"] + MAIN_MENU[2:])
         self.assertEqual(w.helper_runs[0], ("run", json.loads(base64.b64decode(blob))))
         self.assertEqual(len(w.photos), 1)
         self.assertFalse(os.path.exists(os.path.join(w.workspace, "last.b64")))
 
-    def test_damaged_settings_file_restarts_setup_instead_of_crashing(self):
+    def test_damaged_settings_file_restarts_setup_instead_of_failing(self):
         w = self.world
         w.install()
         with open(os.path.join(w.workspace, "config.b64"), "w") as handle:
@@ -376,17 +624,25 @@ class Flow(unittest.TestCase):
         w.share(VIDEO)
         self.assertIn("Welcome to UMDL", w.seen("menu")[0][1])
 
-    # ------------------------------------------------------------------ menu
 
-    def test_menu_lists_actions_with_subtitles(self):
+class MainMenu(Flow):
+    """docs/BEHAVIOR.md, "Opening UMDL from the Shortcuts app"."""
+
+    def test_opening_from_the_app_goes_straight_to_the_main_menu(self):
         w = self.world
         w.install(CONFIG)
         w.script(("list", "About UMDL"), ("menu", "Done"))
         w.share(None)
-        _, prompt, names, _, details = w.seen("list")[0]
-        self.assertEqual(names, ["Download from clipboard", "Enter a link", "Settings",
-                                 "Sign in to a site", "Update tools", "About UMDL"])
-        self.assertTrue(all(details))
+        self.assertEqual(w.events[0][0], "list")            # nothing is shown before the menu
+        kind, prompt, names, _, details = w.seen("list")[0]
+        self.assertEqual((prompt, names), ("UMDL", MAIN_MENU))
+        self.assertEqual(details, [
+            "Uses the most recently copied link", "Type or paste a link to a post or video",
+            "Album and download options", "Required for private or age-restricted posts",
+            "Installs the latest yt-dlp and gallery-dl",
+            "Version %s. Updates and diagnostics" % VERSION["shortcut"]])
+        self.assertEqual(w.helper_runs, [])
+        self.assertEqual(self.alerts(w), [])
 
     def test_download_from_clipboard(self):
         w = self.world
@@ -398,14 +654,15 @@ class Flow(unittest.TestCase):
         self.assertEqual(w.helper_runs[0][1]["url"], VIDEO)
         self.assertEqual(len(w.photos), 1)
 
-    def test_empty_clipboard_is_explained(self):
-        w = self.world
-        w.install(CONFIG)
-        w.clipboard = "nothing useful"
-        w.script(("list", "Download from clipboard"))
-        w.share(None)
-        self.assertEqual(self.alerts()[0][0], "No link on the clipboard")
-        self.assertEqual(w.helper_runs, [])
+    def test_clipboard_without_a_link_is_explained(self):
+        for clipboard in ("nothing useful", ""):
+            w = self.new_world()
+            w.install(CONFIG)
+            w.clipboard = clipboard
+            w.script(("list", "Download from clipboard"))
+            w.share(None)
+            self.assertEqual(self.alerts(w)[0][0], "No link found", repr(clipboard))
+            self.assertEqual(w.helper_runs, [])
 
     def test_enter_a_link(self):
         w = self.world
@@ -415,116 +672,144 @@ class Flow(unittest.TestCase):
         w.share(None)
         self.assertEqual(len(w.photos), 1)
 
-    def test_settings_change_threshold(self):
-        w = self.world
-        w.install(CONFIG)
-        w.script(("list", "Settings"), ("list", "Ask before big downloads"), ("ask", "25"))
-        w.share(None)
-        self.assertEqual(w.read_config(), dict(CONFIG, threshold="25"))
-        self.assertEqual(self.notifications(), [("UMDL", "Your settings were saved.")])
-        details = w.seen("list")[1][4]
-        self.assertEqual(details[:4], ["Clips", "When a link has more than 10 items",
-                                       "Convert them for Photos", "Show a notification"])
-
-    def test_settings_reject_a_bad_threshold(self):
-        for bad in ("0", "abc", "12.5", "-3", ""):
-            w = World(PLIST)
-            self.addCleanup(w.close)
+    def test_entering_something_that_is_not_a_link(self):
+        for typed in ("not a link", ""):
+            w = self.new_world()
             w.install(CONFIG)
-            w.script(("list", "Settings"), ("list", "Ask before big downloads"), ("ask", bad))
+            w.script(("list", "Enter a link"), ("ask", typed))
             w.share(None)
-            self.assertEqual(w.read_config(), CONFIG, bad)
-            self.assertEqual(self.alerts_of(w)[0][0], "Not saved", bad)
-
-    def alerts_of(self, world):
-        return [e[1:] for e in world.seen("alert")]
-
-    def test_settings_change_album_conversion_and_finish(self):
-        w = self.world
-        w.install(CONFIG)
-        w.script(("list", "Settings"), ("list", "Save to"), ("menu", "already have"),
-                 ("ask", "Holiday"))
-        w.share(None)
-        w.script(("list", "Settings"), ("list", "Videos Photos cannot play"),
-                 ("menu", "Keep the original"))
-        w.share(None)
-        w.script(("list", "Settings"), ("list", "When a download finishes"), ("menu", "Open Photos"))
-        w.share(None)
-        self.assertEqual(w.read_config(), {"album": "Holiday", "threshold": "10", "convert": "0",
-                                           "after": "photos"})
-        self.assertEqual(w.albums, [])  # an existing album is not created again
-        self.assertEqual(w.seen("list")[1][2][0], "Save to")
+            self.assertEqual(self.alerts(w)[0], ("No link found", "The text entered is not a web link."))
+            self.assertEqual(w.helper_runs, [])
 
     def test_sign_in_to_a_listed_site_and_a_typed_one(self):
         w = self.world
         w.install(CONFIG)
         w.script(("list", "Sign in to a site"), ("menu", "Instagram"))
         w.share(None)
+        self.assertEqual(w.seen("menu")[0][2], ["Instagram", "X (Twitter)", "Reddit", "TikTok",
+                                                "Facebook", "Another site"])
         w.script(("list", "Sign in to a site"), ("menu", "Another site"),
                  ("ask", "https://forum.example.org/login?next=/a&b=1"))
         w.share(None)
         self.assertEqual([e[1] for e in w.seen("browser")],
                          ["https://www.instagram.com/accounts/login/", "https://forum.example.org"])
 
-    def test_update_tools_and_diagnostics_report_back(self):
+    def test_update_tools_reports_back(self):
         w = self.world
         w.install(CONFIG)
         w.script(("list", "Update tools"))
         w.share(None)
-        w.script(("list", "About UMDL"), ("menu", "Run diagnostics"))
-        w.share(None)
-        self.assertEqual([c for c, _ in w.helper_runs], ["update", "doctor"])
-        title, body = self.alerts()[-1]
-        self.assertEqual(title, "UMDL diagnostics")
+        self.assertEqual(self.helper_commands(w), ["update"])
+        title, body = self.alerts(w)[-1]
+        self.assertEqual(title, "Download tools updated")
         self.assertIn("yt-dlp  2099.01.01-fake", body)
 
-    def test_forget_logins(self):
+    def test_about_diagnostics_project_page_and_done(self):
+        w = self.world
+        w.install(CONFIG)
+        w.script(("list", "About UMDL"), ("menu", "Run diagnostics"))
+        w.share(None)
+        about = w.seen("menu")[0]
+        self.assertTrue(about[1].startswith("UMDL %s\n" % VERSION["shortcut"]))
+        self.assertEqual(about[2], ["🔄 Check for a new version", "🩺 Run diagnostics",
+                                    "🌐 Open the project page", "Done"])
+        self.assertEqual(self.alerts(w)[-1][0], "UMDL diagnostics")
+        w.script(("list", "About UMDL"), ("menu", "Open the project page"))
+        w.share(None)
+        self.assertEqual(w.seen("openurl")[-1][1], "https://github.com/TheKfcBandit/UMDL")
+
+    def test_check_for_new_version(self):
+        w = self.world
+        w.install(CONFIG)
+        w.set_version_json(VERSION)
+        w.script(("list", "About UMDL"), ("menu", "Check for a new version"))
+        w.share(None)
+        self.assertEqual(self.alerts(w)[-1][0], "UMDL is up to date")
+
+        w.set_version_json(dict(VERSION, shortcut="9.9.9", notes="Faster."))
+        w.script(("list", "About UMDL"), ("menu", "Check for a new version"),
+                 ("menu", "Get the update"))
+        w.share(None)
+        self.assertEqual(w.seen("menu")[-1][1], "UMDL 9.9.9 is available. The installed version "
+                                                "is %s.\n\nFaster." % VERSION["shortcut"])
+        self.assertEqual(w.seen("openurl")[-1][1], VERSION["url"])
+
+        w.set_offline(True)
+        w.script(("list", "About UMDL"), ("menu", "Check for a new version"))
+        w.share(None)
+        self.assertEqual(self.alerts(w)[-1][0], "Update check")
+
+
+class Settings(Flow):
+    """docs/BEHAVIOR.md, "Settings"."""
+
+    def open_settings(self, world, *answers):
+        world.script(("list", "Settings"), *answers)
+        world.share(None)
+
+    def test_settings_menu_shows_current_values(self):
+        w = self.world
+        w.install(dict(CONFIG, album="Recents", convert="0", after="photos", threshold="25"))
+        self.open_settings(w, ("list", "When a download finishes"), ("menu", "Open Photos"))
+        _, prompt, names, _, details = w.seen("list")[1]
+        self.assertEqual((prompt, names), ("Settings", SETTINGS_MENU))
+        self.assertEqual(details, ["Photo library. No album", "When a link contains more than 25 items",
+                                   "Keep the original in Files", "Open Photos",
+                                   "Signs out of every site", "Removes the helper and all settings"])
+
+    def test_change_threshold(self):
+        w = self.world
+        w.install(CONFIG)
+        self.open_settings(w, ("list", "Ask before large downloads"), ("ask", "25"))
+        self.assertEqual(w.read_config(), dict(CONFIG, threshold="25"))
+        self.assertEqual(self.notifications(w), [("UMDL", "Settings saved.")])
+        self.assertEqual(w.seen("ask")[0][2], "10")         # the current value is offered
+
+    def test_reject_a_bad_threshold(self):
+        for bad in ("0", "abc", "12.5", "-3", ""):
+            w = self.new_world()
+            w.install(CONFIG)
+            self.open_settings(w, ("list", "Ask before large downloads"), ("ask", bad))
+            self.assertEqual(w.read_config(), CONFIG, bad)
+            self.assertEqual(self.alerts(w)[0][0], "Not saved", bad)
+
+    def test_change_album_conversion_and_finish_action(self):
+        w = self.world
+        w.install(CONFIG)
+        self.open_settings(w, ("list", "Save to"), ("menu", "An existing album"), ("ask", "Holiday"))
+        self.open_settings(w, ("list", "Unsupported video formats"), ("menu", "Keep the original"))
+        self.open_settings(w, ("list", "When a download finishes"), ("menu", "Open Photos"))
+        self.assertEqual(w.read_config(), {"album": "Holiday", "threshold": "10", "convert": "0",
+                                           "after": "photos"})
+        self.assertEqual(w.albums, [])
+        self.assertEqual(len(self.notifications(w)), 3)
+        self.assertEqual(w.helper_runs, [])                 # settings never open a-Shell
+
+    def test_forget_sign_ins(self):
         w = self.world
         w.install(CONFIG)
         cookies = os.path.join(w.home, "Library", "Cookies", "Cookies.binarycookies")
         os.makedirs(os.path.dirname(cookies))
         with open(cookies, "wb") as handle:
             handle.write(b"cook")
-        w.script(("list", "Settings"), ("list", "Forget saved logins"))
-        w.share(None)
+        self.open_settings(w, ("list", "Forget saved sign-ins"))
         self.assertFalse(os.path.exists(cookies))
-        self.assertEqual(self.alerts()[-1][0], "Logins forgotten")
+        self.assertEqual(self.alerts(w)[-1][0], "Sign-ins removed")
 
-    def test_reset_removes_everything(self):
+    def test_reset_removes_everything_and_can_be_cancelled(self):
         w = self.world
         w.install(CONFIG)
-        w.script(("list", "Settings"), ("list", "Reset UMDL"), ("menu", "Reset UMDL"))
-        w.share(None)
+        self.open_settings(w, ("list", "Reset UMDL"), ("menu", "Cancel"))
+        self.assertTrue(os.path.exists(w.workspace))
+        self.open_settings(w, ("list", "Reset UMDL"), ("menu", "Reset UMDL"))
         self.assertFalse(os.path.exists(w.workspace))
         w.script(("menu", "Not now"))
         w.share(None)  # and the next run is a first run again
         self.assertIn("Welcome to UMDL", w.seen("menu")[-1][1])
 
-    def test_check_for_new_version(self):
-        current = VERSION
-        w = self.world
-        w.install(CONFIG)
-        w.version_json = json.dumps(current)
-        w.script(("list", "About UMDL"), ("menu", "Check for a new version"))
-        w.share(None)
-        self.assertEqual(self.alerts()[-1][0], "UMDL is up to date")
 
-        w.version_json = json.dumps(dict(current, shortcut="9.9.9", notes="Faster."))
-        w.script(("list", "About UMDL"), ("menu", "Check for a new version"),
-                 ("menu", "Get the update"))
-        w.share(None)
-        self.assertIn("UMDL 9.9.9 is available", w.seen("menu")[-1][1])
-        self.assertEqual(w.seen("openurl")[-1][1], current["url"])
-
-        w.offline = True
-        w.script(("list", "About UMDL"), ("menu", "Check for a new version"))
-        w.share(None)
-        self.assertEqual(self.alerts()[-1][0], "Update check")
-
-    # --------------------------------------------------------------- hygiene
-
+class Hygiene(Flow):
     def test_every_action_in_the_shortcut_is_modelled(self):
-        from shortcut_sim import ASHELL, PREFIX
         known = {"gettext", "setvariable", "nothing", "exit", "number", "math", "count",
                  "dictionary", "detect.dictionary", "getvalueforkey", "text.replace", "text.match",
                  "text.match.getgroup", "base64encode", "detect.link", "getitemfromlist",
@@ -537,6 +822,14 @@ class Flow(unittest.TestCase):
         used = {a["WFWorkflowActionIdentifier"] for a in self.world.plist["WFWorkflowActions"]}
         self.assertEqual(used - known, set())
 
+    def test_no_condition_relies_on_has_any_value(self):
+        # An empty text counts as a value on a real device, so these conditions
+        # (codes 100 and 101) silently take the wrong branch. See src/UMDL.cherri.
+        offenders = [i for i, a in enumerate(self.world.plist["WFWorkflowActions"])
+                     if a["WFWorkflowActionIdentifier"] == PREFIX + "conditional"
+                     and a["WFWorkflowActionParameters"].get("WFCondition") in (100, 101)]
+        self.assertEqual(offenders, [])
+
     def test_shortcut_metadata(self):
         plist = self.world.plist
         self.assertEqual(plist["WFWorkflowTypes"], ["ActionExtension"])
@@ -545,10 +838,11 @@ class Flow(unittest.TestCase):
         self.assertTrue(plist["WFWorkflowIcon"]["WFWorkflowIconGlyphNumber"])
 
     def test_unscripted_question_fails_loudly(self):
-        w = self.world
         with self.assertRaises(SimError):
-            w.share(VIDEO)  # not installed, so the welcome menu appears unannounced
+            self.world.share(VIDEO)  # not set up, so the welcome menu appears unannounced
 
+
+del Flow  # only the subclasses hold tests
 
 if __name__ == "__main__":
     unittest.main()

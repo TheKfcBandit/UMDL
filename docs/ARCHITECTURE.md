@@ -17,8 +17,8 @@ flowchart TD
 
     C --> E["Read settings and state from a-Shell, in the background"]
     E --> F{"Settings exist?"}
-    F -- no --> G["Setup questions"] --> H["Save settings"]
-    H --> I{"Tools installed?"}
+    F -- no --> G["Welcome: quick setup, or custom setup questions"] --> H["Save settings"]
+    H --> I{"Helper present, and fetched by this version?"}
     F -- yes --> J{"Unsaved download waiting?"}
     J -- yes --> K["Offer to save or discard it"]
     J -- no --> L{"Have a link?"}
@@ -26,10 +26,11 @@ flowchart TD
     L -- no --> M["Menu: clipboard, enter link, settings, sign in, update, about"]
     M --> I
     L -- yes --> I
-    I -- no --> N["a-Shell: install tools, then helper 'installed'"]
-    I -- yes --> O["a-Shell: helper 'run' with the payload"]
+    I -- no --> N["Download the helper, in the background or in a-Shell"]
+    N --> O
+    I -- yes --> O["a-Shell: helper 'run' or 'setup' with the payload"]
 
-    O --> P["Update tools if a day has passed"]
+    O --> P["Install missing tools; update them if a day has passed"]
     P --> Q["Pick tool order for this site"]
     Q --> R["Count the items at the link"]
     R --> S{"More than the ask-first limit?"}
@@ -39,13 +40,12 @@ flowchart TD
     V --> W["Write manifest, callback: done"]
     U -- nothing downloaded --> X["Callback: error"]
 
-    N --> D
     T --> D
     W --> D
     X --> D
 
     D --> Y{"Callback type"}
-    Y -- setup --> L
+    Y -- setup --> AE["Say that UMDL is ready"]
     Y -- confirm --> Z["Menu: everything, first N, first one, cancel"] --> O
     Y -- error --> AA["Menu: try again, update and retry, sign in, copy details"]
     AA --> O
@@ -54,11 +54,13 @@ flowchart TD
     AC --> AD["Delete working files, notify, offer shortcut update"]
 ```
 
+The first-run part of this chart is drawn in full in [BEHAVIOR.md](BEHAVIOR.md#first-run), which also describes every screen.
+
 ## Why a-Shell opens
 
 a-Shell's Shortcuts actions run commands in two ways. "In extension" runs in the background and returns the output, but with tight memory and no Python. "In app" opens a-Shell and has the full environment.
 
-UMDL uses the background mode for small things: reading settings, writing settings, deleting working files, checking the version file. Downloads need Python, so they open the app. iOS suspends an app that leaves the foreground, which is why a-Shell has to stay in front until the helper hands back.
+UMDL uses the background mode for small things: reading settings, writing settings, deleting working files, checking the version file, downloading the helper script. Downloads need Python, so they open the app. iOS suspends an app that leaves the foreground, which is why a-Shell has to stay in front until the helper hands back.
 
 ## The payload (shortcut to helper)
 
@@ -79,7 +81,7 @@ python umdl.py run <base64 JSON>
 | `force_update` | `1` to upgrade the tools before downloading |
 | `cfg` | The settings: `album`, `threshold`, `convert`, `after` |
 
-Other commands take the same payload: `installed`, `update`, `doctor`, `logout`.
+Other commands take the same payload: `setup`, `update`, `doctor`, `logout`. A command the helper does not know, or a payload with another protocol number, is answered with an `outdated` error.
 
 ## The callback (helper to shortcut)
 
@@ -91,13 +93,15 @@ Every callback includes `cfg`, echoed from the payload, so the shortcut does not
 
 | `t` | Other fields | The shortcut then |
 |---|---|---|
-| `done` | `m` manifest path, `np` Photos count, `nk` kept-in-Files count, `nf` failed count, `title`, `up` newer release if any | Saves and notifies |
+| `done` | `m` manifest path, `np` Photos count, `nk` kept-in-Files count, `nf` failed count, `title`, and `upv` and `upurl` when a newer release exists | Saves and notifies |
 | `confirm` | `url`, `n` item count or empty when only "more than" is known, `thr`, `title` | Asks how much to download |
 | `error` | `kind`, `msg`, `url` | Explains and offers fixes |
-| `setup` | `url`, `ver` | Continues with the link, or says it is ready |
+| `setup` | `ver` | Says that UMDL is ready |
 | `info` | `title`, `msg` | Shows the message |
 
-Error kinds: `auth`, `network`, `gone`, `unsupported`, `drm`, `install`, `nolink`, `unknown`.
+Error kinds: `auth`, `network`, `gone`, `unsupported`, `drm`, `install`, `outdated`, `nolink`, `unknown`.
+
+One result does not come from the helper. When the helper script cannot be downloaded in a-Shell, the shell itself reopens the shortcut with the plain text `UMDL-HELPER-MISSING`.
 
 The file list is not in the callback. It is in the manifest (`jobs/<id>/manifest.json`), which the shortcut reads with a-Shell's "Get File", so a 500-item download does not need a 500-item URL.
 
@@ -108,9 +112,9 @@ Everything is under `~/Documents/UMDL`, visible in the Files app as *a-Shell ›
 | Path | Purpose |
 |---|---|
 | `umdl.py` | The helper |
-| `env/` | Python virtual environment with yt-dlp and gallery-dl |
+| `helper.for` | The shortcut version that downloaded the helper. A different version downloads it again |
 | `config.b64` | Settings, as base64 JSON |
-| `state.json` | When the tools and the version file were last checked |
+| `state.json` | When the tools and the version file were last checked, and any extra folder pip installs to |
 | `jobs/<id>/` | Working folder for one link. `<id>` is derived from the link, so sharing the same link again resumes |
 | `jobs/<id>/out/` | Finished files with plain names (`001.mp4`) |
 | `jobs/<id>/manifest.json` | What to save to Photos and what was kept |
@@ -151,7 +155,8 @@ The second tool runs only if the first produced nothing. If both fail, the first
 
 ## Staying current
 
-- **Tools**: upgraded with pip once a day, and on demand.
+- **Tools**: yt-dlp and gallery-dl are installed with a-Shell's own pip, with no virtual environment. The shortcut runs pip in the a-Shell window whenever it has just downloaded the helper. The helper then checks for itself on every run: a missing tool is installed, one package at a time so that one failure does not hold back the rest, and if pip reports a location Python is not searching, that folder is added and remembered. Tools are upgraded once a day, and on demand.
+- **Helper, first copy**: downloaded by the shortcut, which records its own version next to it. A shortcut of another version downloads the helper again, so the two always match after an update.
 - **Helper**: once a day the helper reads `version.json` from this repository. If `helper` is newer and `protocol` matches, it downloads the new `src/umdl.py`, checks that it compiles, and swaps it in for the next run.
 - **Shortcut**: the same check notes a newer `shortcut` version, and the shortcut offers the release page after the next download.
 
@@ -162,4 +167,5 @@ Bump `protocol` only when the payload or callback changes incompatibly. A helper
 - **File names are `001.mp4`, not titles.** a-Shell has no fork/exec, so commands are passed as one string. Names without spaces or symbols cannot be mis-parsed. Titles are restored for files kept in Files.
 - **The shortcut is linear, with flags.** Shortcuts has no functions or loops to speak of. Each section runs if its flag is set, and shared steps (the album question, saving settings, launching a-Shell) appear once near the end.
 - **"Open App" then a one-second wait before each foreground command.** Copied from SW-DLT, where it makes the hand-off to a-Shell reliable.
+- **Emptiness is never tested with "has any value".** On a device an empty text counts as a value, so that test is true when it looks like it should be false. The shortcut wraps the text in brackets and compares with `[]`. A test fails the build if a "has any value" condition appears.
 - **Dictionary conversions are guarded.** Shortcuts stops with an error if asked to turn non-JSON text into a dictionary, so anything that came over the network or from disk is checked for an expected key first.

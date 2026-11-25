@@ -1,7 +1,7 @@
 {
-  "shortcut": "1.0.0",
-  "helper": "1.0.0",
-  "protocol": 1,
+  "shortcut": "1.1.0",
+  "helper": "1.1.0",
+  "protocol": 2,
   "url": "https://github.com/TheKfcBandit/UMDL/releases/latest",
-  "notes": "First release."
+  "notes": "One-tap setup, a main menu, and fixes for the first-run problems in 1.0.0."
 }
