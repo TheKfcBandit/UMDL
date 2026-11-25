@@ -60,10 +60,11 @@ jobs:
       - name: Compile the shortcut (unsigned)
         run: cherri src/UMDL.cherri --skip-sign --no-ansi
       - name: Sign with the Shortcuts app on the runner
-        continue-on-error: true
+        # Works only where the Mac is signed in to iCloud (a self-hosted runner, say).
         run: |
           mkdir -p dist
-          shortcuts sign --mode anyone --input src/UMDL_unsigned.shortcut --output dist/UMDL.shortcut
+          shortcuts sign --mode anyone --input src/UMDL_unsigned.shortcut --output dist/UMDL.shortcut \
+            || echo "::notice::This runner cannot sign shortcuts by itself (it is not signed in to iCloud)."
       - name: Sign with RoutineHub instead, if that did not work
         env:
           ROUTINEHUB_API_KEY: ${{ secrets.ROUTINEHUB_API_KEY }}
