@@ -13,7 +13,7 @@ UMDL is a free and open-source Shortcut. Downloads run on your own device with [
 ## Install
 
 1. Install [a-Shell](https://apps.apple.com/app/a-shell/id1473805438) from the App Store and open it once.
-2. On your iPhone or iPad, download `UMDL.shortcut` from the [latest release](https://github.com/TheKfcBandit/UMDL/releases/latest) and tap **Add Shortcut**.
+2. On your iPhone or iPad, download `UMDL.shortcut` from the [latest release](https://github.com/TheKfcBandit/UMDL/releases/latest) and tap **Add Shortcut**. If there is no release yet, or you would rather not trust a prebuilt file, [sign your own copy in the Cherri Playground](docs/BUILDING.md#sign). It takes about two minutes and needs no Mac or account.
 3. Run UMDL once. It asks where to save, then a-Shell opens and installs the download tools. That takes a minute or two.
 
 Built for iOS and iPadOS 18 and later. Keep the shortcut's name as **UMDL**: a-Shell uses that name to hand results back.

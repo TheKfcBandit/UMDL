@@ -95,16 +95,16 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v7
-      - name: Stop if there is no signed shortcut
+      - name: Explain why nothing is published
         if: needs.sign.outputs.signed != 'true'
-        run: |
-          echo "A release needs a signed shortcut. See docs/BUILDING.md." >&2
-          exit 1
+        run: echo "No signed shortcut was built, so this tag has no automatic release. Sign in the Cherri Playground and attach UMDL.shortcut to the release by hand; see docs/BUILDING.md." >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/download-artifact@v8
+        if: needs.sign.outputs.signed == 'true'
         with:
           name: UMDL
           path: dist
       - name: Check the tag matches version.json
+        if: needs.sign.outputs.signed == 'true'
         run: |
           want="v$(python3 -c 'import json; print(json.load(open("version.json"))["shortcut"])')"
           if [ "$want" != "$GITHUB_REF_NAME" ]; then
@@ -112,6 +112,10 @@ jobs:
             exit 1
           fi
       - name: Publish the release
+        if: needs.sign.outputs.signed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/UMDL.shortcut --title "UMDL ${GITHUB_REF_NAME#v}" --notes-file .github/release-notes.md
+        run: |
+          gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --title "UMDL ${GITHUB_REF_NAME#v}" --notes-file .github/release-notes.md
+          gh release upload "$GITHUB_REF_NAME" dist/UMDL.shortcut --clobber

@@ -45,7 +45,15 @@ The simulator is a model of Shortcuts, not Shortcuts. It catches logic and proto
 
 iOS only imports signed shortcuts, and Apple's signing tool only works on a Mac that is signed in to iCloud. GitHub's build machines are not, so CI cannot sign on its own. Four ways to get a signed shortcut:
 
-**In the Cherri Playground**, with no Mac and no key. [`playground/UMDL.cherri`](../playground/UMDL.cherri) is the same source with the menu icons inlined, so it is one self-contained file. Copy all of it, paste it into the [Cherri Playground](https://playground.cherrilang.org), build, and export the signed shortcut. The Playground may run a different compiler version from the one UMDL is tested with. After changing `src/UMDL.cherri` or an icon, run `make playground` to refresh the copy; a test fails if you forget.
+**In the Cherri Playground**, with no Mac, no account and no key. This is the route to use until the project has a paid signing key.
+
+1. Open [`playground/UMDL.cherri`](../playground/UMDL.cherri) on GitHub and press **Copy raw file** (the two-squares icon above the code). It is the same source as `src/UMDL.cherri` with the menu icons inlined, so it is one self-contained file.
+2. Open the [Cherri Playground](https://playground.cherrilang.org), select everything in the editor and paste over it.
+3. Press the hammer to build. The preview on the right should be titled **UMDL**.
+4. Press the share icon, then **Sign Shortcut**. After a few seconds a QR code and a **Download Shortcut** button appear.
+5. On a computer, scan the QR code with the iPhone's camera. On the iPhone itself, tap **Download Shortcut** and open the file. Then **Add Shortcut**.
+
+The Playground signs through RoutineHub's HubSign at no charge. It reports the same compiler version UMDL is tested with (v2.4.0), but it is a separate service and may change. After changing `src/UMDL.cherri` or an icon, run `make playground` to refresh the copy; a test fails if you forget.
 
 **On a Mac.** Cherri signs with the built-in `shortcuts` command. The Mac must be signed in to iCloud.
 
@@ -73,7 +81,7 @@ cherri src/UMDL.cherri --signing-server=https://your.server/sign
 
 1. **Compile and test** on Linux. The unsigned shortcut is attached to the run as `UMDL-unsigned`.
 2. **Sign** on a macOS runner. It first tries the runner's own `shortcuts sign`, which currently fails with "you must be signed into iCloud". If the repository has a `ROUTINEHUB_API_KEY` secret, it then signs with HubSign, and the signed shortcut is attached to the run as `UMDL`. If the secret is missing or RoutineHub refuses the key, the job still passes and says so in its summary.
-3. **Release**, only for a `v*` tag: checks the tag against `version.json` and publishes the signed shortcut. It fails if there is no signed shortcut.
+3. **Release**, only for a `v*` tag: checks the tag against `version.json`, then creates the release (or reuses one you made by hand) and attaches the signed shortcut. With no signed shortcut it publishes nothing and says so in its summary.
 
 To add the secret: repository **Settings › Secrets and variables › Actions › New repository secret**, named `ROUTINEHUB_API_KEY`. Never commit the key or paste it into an issue.
 
@@ -84,6 +92,7 @@ To add the secret: repository **Settings › Secrets and variables › Actions �
 3. Put one line in `version.json` `notes`. It is shown in the update prompt.
 4. Run `make test` and the device checklist.
 5. Commit, then tag: `git tag v1.2.3 && git push origin main v1.2.3`.
+6. If CI cannot sign, sign in the Playground and attach `UMDL.shortcut` to the release by hand: **Releases › Draft a new release**, choose the tag, drop the file in, publish. `.github/release-notes.md` has the text for the description.
 
 Order matters for one reason. `version.json` on `main` is what installed copies read, so pushing it announces the update to everyone. Push it together with the tag, so the release exists when people tap **Get the update**.
 
