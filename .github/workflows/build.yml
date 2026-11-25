@@ -1,0 +1,115 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # The Cherri compiler commit UMDL is verified against.
+  CHERRI_REF: 98d5191ae121a6bcf663ed0e55495f4ee4c7a6e2
+
+jobs:
+  test:
+    name: Compile and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+      - name: Install the Cherri compiler
+        run: go install "github.com/electrikmilk/cherri@${CHERRI_REF}"
+      - name: Install ffmpeg
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+      - name: Compile the shortcut (unsigned)
+        run: cherri src/UMDL.cherri --skip-sign --debug --no-ansi > compile.log || (cat compile.log; exit 1)
+      - name: Run the tests
+        run: python3 -m unittest discover -s tests -v
+      - uses: actions/upload-artifact@v4
+        with:
+          name: UMDL-unsigned
+          path: src/UMDL_unsigned.shortcut
+          if-no-files-found: error
+
+  sign:
+    name: Sign
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: macos-latest
+    outputs:
+      signed: ${{ steps.result.outputs.signed }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+      - name: Install the Cherri compiler
+        run: go install "github.com/electrikmilk/cherri@${CHERRI_REF}"
+      - name: Compile the shortcut (unsigned)
+        run: cherri src/UMDL.cherri --skip-sign --no-ansi
+      - name: Sign with the Shortcuts app on the runner
+        continue-on-error: true
+        run: |
+          mkdir -p dist
+          shortcuts sign --mode anyone --input src/UMDL_unsigned.shortcut --output dist/UMDL.shortcut
+      - name: Sign with RoutineHub instead, if that did not work
+        env:
+          ROUTINEHUB_API_KEY: ${{ secrets.ROUTINEHUB_API_KEY }}
+        run: |
+          if [ -s dist/UMDL.shortcut ]; then echo "Already signed by the runner."; exit 0; fi
+          if [ -z "$ROUTINEHUB_API_KEY" ]; then echo "No ROUTINEHUB_API_KEY secret; skipping."; exit 0; fi
+          mkdir -p dist
+          cherri src/UMDL.cherri --hubsign --routinehub-api-key="$ROUTINEHUB_API_KEY" --output=dist/UMDL.shortcut --no-ansi
+      - name: Check the result
+        id: result
+        run: |
+          if [ -s dist/UMDL.shortcut ] && [ "$(head -c 4 dist/UMDL.shortcut)" = "AEA1" ]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+            echo "Signed UMDL.shortcut is attached to this run as the UMDL artifact." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "The shortcut compiled but could not be signed here. See docs/BUILDING.md for the ways to sign it." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: steps.result.outputs.signed == 'true'
+        with:
+          name: UMDL
+          path: dist/UMDL.shortcut
+
+  release:
+    name: Release
+    needs: sign
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stop if there is no signed shortcut
+        if: needs.sign.outputs.signed != 'true'
+        run: |
+          echo "A release needs a signed shortcut. See docs/BUILDING.md." >&2
+          exit 1
+      - uses: actions/download-artifact@v4
+        with:
+          name: UMDL
+          path: dist
+      - name: Check the tag matches version.json
+        run: |
+          want="v$(python3 -c 'import json; print(json.load(open("version.json"))["shortcut"])')"
+          if [ "$want" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match version.json ($want)." >&2
+            exit 1
+          fi
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/UMDL.shortcut --title "UMDL ${GITHUB_REF_NAME#v}" --generate-notes

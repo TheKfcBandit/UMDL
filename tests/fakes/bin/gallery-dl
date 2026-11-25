@@ -1,0 +1,31 @@
+#!/usr/bin/env python3
+"""Stand-in for the gallery-dl command line, driven by UMDL_FAKE_SCENARIO."""
+import json
+import os
+import shutil
+import sys
+
+args = sys.argv[1:]
+scenario = {}
+if os.environ.get("UMDL_FAKE_SCENARIO"):
+    with open(os.environ["UMDL_FAKE_SCENARIO"]) as handle:
+        scenario = json.load(handle).get("gallery") or {}
+count = int(os.environ.get("FAKE_GALLERY_COUNT") or scenario.get("count", 3))
+sample = os.environ.get("FAKE_GALLERY_SAMPLE") or scenario.get("sample", "")
+fail = os.environ.get("FAKE_GALLERY_FAIL") or scenario.get("fail", "")
+if fail:
+    sys.stderr.write("[fakegallery][error] " + fail + "\n")
+    sys.exit(4)
+limit = count
+if "--range" in args:
+    limit = min(count, int(args[args.index("--range") + 1].split("-")[-1]))
+if "--get-urls" in args:
+    for i in range(limit):
+        print("https://example.test/img%d.jpg" % i)
+        print("| https://mirror.test/img%d.jpg" % i)
+    sys.exit(0)
+folder = args[args.index("--directory") + 1]
+for i in range(limit):
+    target = os.path.join(folder, "pic %d.jpg" % i)
+    shutil.copy(sample, target)
+    print(target)
