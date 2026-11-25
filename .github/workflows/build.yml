@@ -6,6 +6,11 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      release:
+        description: Publish a release for the version in version.json
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -110,33 +115,40 @@ jobs:
   release:
     name: Release
     needs: sign
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Runs for a v* tag, or when the workflow is started by hand on main with "Publish a release" ticked.
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v7
-      - name: Explain why nothing is published
+      - name: Stop if there is no signed shortcut
         if: needs.sign.outputs.signed != 'true'
-        run: echo "No signed shortcut was built, so this tag has no automatic release. See docs/BUILDING.md." >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          echo "No signed shortcut was built, so nothing was published. See docs/BUILDING.md." >> "$GITHUB_STEP_SUMMARY"
+          exit 1
       - uses: actions/download-artifact@v8
-        if: needs.sign.outputs.signed == 'true'
         with:
           name: UMDL
           path: dist
-      - name: Check the tag matches version.json
-        if: needs.sign.outputs.signed == 'true'
+      - name: Work out the release tag
+        id: tag
         run: |
-          want="v$(python3 -c 'import json; print(json.load(open("version.json"))["shortcut"])')"
-          if [ "$want" != "$GITHUB_REF_NAME" ]; then
-            echo "Tag $GITHUB_REF_NAME does not match version.json ($want)." >&2
+          tag="v$(python3 -c 'import json; print(json.load(open("version.json"))["shortcut"])')"
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$tag" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match version.json ($tag)." >&2
             exit 1
           fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
       - name: Publish the release
-        if: needs.sign.outputs.signed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
         run: |
-          gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1 \
-            || gh release create "$GITHUB_REF_NAME" --title "UMDL ${GITHUB_REF_NAME#v}" --notes-file .github/release-notes.md
-          gh release upload "$GITHUB_REF_NAME" dist/UMDL.shortcut --clobber
+          if ! gh release view "$TAG" > /dev/null 2>&1; then
+            gh release create "$TAG" --target "$GITHUB_SHA" --title "UMDL ${TAG#v}" --notes-file .github/release-notes.md
+          elif [ -z "$(gh release view "$TAG" --json body --jq .body)" ]; then
+            gh release edit "$TAG" --notes-file .github/release-notes.md
+          fi
+          gh release upload "$TAG" dist/UMDL.shortcut --clobber
+          echo "Published $TAG: $(gh release view "$TAG" --json url --jq .url)" >> "$GITHUB_STEP_SUMMARY"

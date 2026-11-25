@@ -82,7 +82,9 @@ cherri src/UMDL.cherri --hubsign --routinehub-api-key=YOUR_KEY
 
 1. **Compile and test.** The unsigned shortcut is attached to the run as `UMDL-unsigned`.
 2. **Sign.** Sends the unsigned shortcut to the Shortcuty service, then runs `tools/verifysigned` on what comes back. If the contents differ from the build, the job fails. The signed shortcut is attached to the run as `UMDL`, with its SHA-256 in the run summary. If the service is unreachable and the repository has a `ROUTINEHUB_API_KEY` secret, HubSign is tried instead. If nothing could sign, the job still passes and says so.
-3. **Release**, only for a `v*` tag: checks the tag against `version.json`, then creates the release (or reuses one you made by hand) and attaches the signed shortcut. With no signed shortcut it publishes nothing and says so in its summary.
+3. **Release**, when you ask for one: creates the release for the version in `version.json` (or reuses one you made by hand) and attaches the signed shortcut. It fails if there is no signed shortcut. Two ways to ask:
+   - On GitHub: **Actions › Build › Run workflow**, branch `main`, tick **Publish a release**.
+   - Push a tag: `git tag v1.2.3 && git push origin v1.2.3`. The tag must match `version.json`.
 
 ## Release
 
@@ -90,10 +92,11 @@ cherri src/UMDL.cherri --hubsign --routinehub-api-key=YOUR_KEY
 2. Set the new version in three places: `@umdlVersion` in `src/UMDL.cherri`, `HELPER_VERSION` in `src/umdl.py` (if the helper changed) and `version.json`. `tests/test_versions.py` fails if they disagree.
 3. Put one line in `version.json` `notes`. It is shown in the update prompt.
 4. Run `make test` and the device checklist.
-5. Commit, then tag: `git tag v1.2.3 && git push origin main v1.2.3`.
-6. CI signs, verifies and publishes the release. If the signing service is down, re-run the workflow later, or sign another way and attach `UMDL.shortcut` to the release by hand.
+5. Commit and push to `main`. Wait for CI to pass.
+6. Ask for the release: **Actions › Build › Run workflow**, tick **Publish a release**. Or push the tag.
+7. CI signs, verifies and publishes. If the signing service is down, run it again later, or sign another way and attach `UMDL.shortcut` to the release by hand.
 
-Order matters for one reason. `version.json` on `main` is what installed copies read, so pushing it announces the update to everyone. Push it together with the tag, so the release exists when people tap **Get the update**.
+Do steps 5 and 6 close together. `version.json` on `main` is what installed copies read, so pushing it announces the update to everyone, and the release should exist when people tap **Get the update**.
 
 A helper-only fix needs no release: bump `HELPER_VERSION` and `helper` in `version.json`, push to `main`, and installed copies pick it up within a day.
 
