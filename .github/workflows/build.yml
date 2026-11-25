@@ -35,9 +35,7 @@ jobs:
         run: python3 -m unittest discover -s tests -v
       - name: Test the signed-file checker
         working-directory: tools/verifysigned
-        env:
-          GOFLAGS: -mod=mod
-        run: go test ./... && cat go.sum
+        run: go test ./...
       - uses: actions/upload-artifact@v7
         with:
           name: UMDL-unsigned
@@ -65,11 +63,20 @@ jobs:
         # Free, no account. See docs/BUILDING.md for what this service is.
         run: |
           mkdir -p dist
-          curl --fail --show-error --silent --retry 3 --retry-delay 10 --max-time 180 \
+          status=$(curl --show-error --silent --max-time 180 \
+            --user-agent "UMDL-CI (+https://github.com/${GITHUB_REPOSITORY})" \
             --form 'file=@src/UMDL_unsigned.shortcut;filename=UMDL.shortcut' \
-            --dump-header dist/headers.txt --output dist/UMDL.shortcut \
-            "$SIGNING_API" \
-            || { rm -f dist/UMDL.shortcut; echo "::warning::The Shortcuty signing service did not sign the shortcut."; }
+            --dump-header dist/headers.txt --output dist/response.bin \
+            --write-out '%{http_code}' "$SIGNING_API" || true)
+          if [ "$status" = "200" ] && [ "$(head -c 4 dist/response.bin)" = "AEA1" ]; then
+            mv dist/response.bin dist/UMDL.shortcut
+            echo "Signed by the Shortcuty service."
+          else
+            echo "::warning::The Shortcuty signing service answered ${status:-nothing} and did not sign the shortcut."
+            grep -i -E '^(HTTP|server|content-type|cf-|retry-after|x-)' dist/headers.txt || true
+            head -c 600 dist/response.bin | tr -c '[:print:]\n' '.' || true
+            rm -f dist/response.bin
+          fi
       - name: Sign with RoutineHub instead, if that did not work
         env:
           ROUTINEHUB_API_KEY: ${{ secrets.ROUTINEHUB_API_KEY }}
@@ -87,7 +94,7 @@ jobs:
             echo "The shortcut compiled but could not be signed. See docs/BUILDING.md for the ways to sign it." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          (cd tools/verifysigned && GOFLAGS=-mod=mod go run . ../../src/UMDL_unsigned.shortcut ../../dist/UMDL.shortcut)
+          (cd tools/verifysigned && go run . ../../src/UMDL_unsigned.shortcut ../../dist/UMDL.shortcut)
           echo "signed=true" >> "$GITHUB_OUTPUT"
           {
             echo "Signed \`UMDL.shortcut\` is attached to this run as the **UMDL** artifact."
