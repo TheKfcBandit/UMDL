@@ -247,6 +247,9 @@ func normalize(value any) any {
 }
 
 // compare lists the differences between the built and the signed workflow.
+// Two changes are made by Apple's signing tool itself and are expected: the
+// client version is replaced, and empty top-level collections are dropped.
+// Every action, and every other setting, must be identical.
 func compare(built, signed map[string]any) []string {
 	var problems []string
 	keys := map[string]bool{}
@@ -266,6 +269,10 @@ func compare(built, signed map[string]any) []string {
 		a, inBuilt := built[key]
 		b, inSigned := signed[key]
 		switch {
+		case key == "WFWorkflowClientVersion":
+			// Apple's signing tool stamps the version of the Shortcuts app that signed.
+		case !inSigned && isEmpty(a):
+			// Apple's signing tool drops empty lists and dictionaries.
 		case !inSigned:
 			problems = append(problems, key+" is missing from the signed shortcut")
 		case !inBuilt:
@@ -277,6 +284,16 @@ func compare(built, signed map[string]any) []string {
 		}
 	}
 	return problems
+}
+
+func isEmpty(value any) bool {
+	switch v := value.(type) {
+	case []any:
+		return len(v) == 0
+	case map[string]any:
+		return len(v) == 0
+	}
+	return false
 }
 
 func compareActions(a, b any) []string {

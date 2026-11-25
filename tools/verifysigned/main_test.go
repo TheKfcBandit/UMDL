@@ -109,6 +109,20 @@ func TestAddedAndMissingKeysAreReported(t *testing.T) {
 	}
 }
 
+func TestChangesMadeBySigningAreAccepted(t *testing.T) {
+	built, _ := decode(sample(t, plist.XMLFormat, "hello"))
+	built["WFWorkflowTriggers"] = []any{}
+	signed, _ := decode(sample(t, plist.XMLFormat, "hello"))
+	signed["WFWorkflowClientVersion"] = "5037.0.17"
+	if problems := compare(built, signed); len(problems) != 0 {
+		t.Fatalf("expected a match, got %v", problems)
+	}
+	built["WFWorkflowTypes"] = []any{"ActionExtension"}
+	if problems := compare(built, signed); len(problems) != 1 {
+		t.Fatalf("a dropped non-empty setting must be reported, got %v", problems)
+	}
+}
+
 func TestUnsignedFileIsRejected(t *testing.T) {
 	if _, err := workflowFromSigned(sample(t, plist.XMLFormat, "hello")); err == nil {
 		t.Fatal("an unsigned property list was accepted as signed")
