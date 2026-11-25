@@ -266,9 +266,6 @@ if @haveCfg == "0" {
             @askAlbum = "1"
             @askConvert = "1"
             @firstRun = "1"
-        item "Get a-Shell from the App Store":
-            openURL("https://apps.apple.com/app/a-shell/id1473805438")
-            stop()
         item "Not now":
             stop()
     }
@@ -409,7 +406,8 @@ if @needsMenu == "1" {
     }
     @cards = "{@cards}BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Settings;;;;\nORG;CHARSET=utf-8:Album and download options;\nPHOTO;ENCODING=b:{iconSettings}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Sign in to a site;;;;\nORG;CHARSET=utf-8:For private or age-restricted posts;\nPHOTO;ENCODING=b:{iconKey}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Update tools;;;;\nORG;CHARSET=utf-8:Get the newest yt-dlp and gallery-dl;\nPHOTO;ENCODING=b:{iconUpdate}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:About UMDL;;;;\nORG;CHARSET=utf-8:Version {@umdlVersion} and diagnostics;\nPHOTO;ENCODING=b:{iconInfo}\nEND:VCARD\n"
 
-    const cardsFile = setName(@cards, "umdl-menu.vcf")
+    // The third argument keeps the name exactly as written, so the text becomes a .vcf file.
+    const cardsFile = setName(@cards, "umdl-menu.vcf", true)
     @cardsContacts = cardsFile.contact
     const cardsPick = chooseFromList(@cardsContacts, "UMDL")
     @choice = "{cardsPick}"
@@ -531,7 +529,7 @@ if @needsMenu == "1" {
 
         @settingCards = "BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Save to;;;;\nORG;CHARSET=utf-8:{albumShown};\nPHOTO;ENCODING=b:{iconAlbum}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Ask before big downloads;;;;\nORG;CHARSET=utf-8:When a link has more than {@cfgThreshold} items;\nPHOTO;ENCODING=b:{iconStack}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Videos Photos cannot play;;;;\nORG;CHARSET=utf-8:{@convertShown};\nPHOTO;ENCODING=b:{iconConvert}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:When a download finishes;;;;\nORG;CHARSET=utf-8:{@afterShown};\nPHOTO;ENCODING=b:{iconFinish}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Forget saved logins;;;;\nORG;CHARSET=utf-8:Sign out of every site;\nPHOTO;ENCODING=b:{iconForget}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Reset UMDL;;;;\nORG;CHARSET=utf-8:Remove the tools and all settings;\nPHOTO;ENCODING=b:{iconReset}\nEND:VCARD\n"
 
-        const settingsFile = setName(@settingCards, "umdl-settings.vcf")
+        const settingsFile = setName(@settingCards, "umdl-settings.vcf", true)
         @settingsContacts = settingsFile.contact
         const settingsPick = chooseFromList(@settingsContacts, "Settings")
         @setting = "{settingsPick}"

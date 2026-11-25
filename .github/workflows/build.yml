@@ -19,8 +19,8 @@ jobs:
     name: Compile and test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: stable
           cache: false
@@ -32,10 +32,14 @@ jobs:
         run: cherri src/UMDL.cherri --skip-sign --debug --no-ansi > compile.log || (cat compile.log; exit 1)
       - name: Run the tests
         run: python3 -m unittest discover -s tests -v
-      - uses: actions/upload-artifact@v4
+      - name: Make the single-file source for the Cherri Playground
+        run: python3 tools/make_playground.py build/UMDL.playground.cherri
+      - uses: actions/upload-artifact@v7
         with:
           name: UMDL-unsigned
-          path: src/UMDL_unsigned.shortcut
+          path: |
+            src/UMDL_unsigned.shortcut
+            build/UMDL.playground.cherri
           if-no-files-found: error
 
   sign:
@@ -46,8 +50,8 @@ jobs:
     outputs:
       signed: ${{ steps.result.outputs.signed }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: stable
           cache: false
@@ -76,9 +80,9 @@ jobs:
             echo "Signed UMDL.shortcut is attached to this run as the UMDL artifact." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "signed=false" >> "$GITHUB_OUTPUT"
-            echo "The shortcut compiled but could not be signed here. See docs/BUILDING.md for the ways to sign it." >> "$GITHUB_STEP_SUMMARY"
+            echo "The shortcut compiled but could not be signed here: GitHub's runners are not signed in to iCloud, and no ROUTINEHUB_API_KEY secret is set. See docs/BUILDING.md for the ways to sign it." >> "$GITHUB_STEP_SUMMARY"
           fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: steps.result.outputs.signed == 'true'
         with:
           name: UMDL
@@ -92,13 +96,13 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Stop if there is no signed shortcut
         if: needs.sign.outputs.signed != 'true'
         run: |
           echo "A release needs a signed shortcut. See docs/BUILDING.md." >&2
           exit 1
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: UMDL
           path: dist

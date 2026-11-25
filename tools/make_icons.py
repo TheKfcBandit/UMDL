@@ -76,12 +76,6 @@ def download(draw, color):
     line(draw, [(31, 70), (65, 70)])
 
 
-def upload(draw, color):
-    line(draw, [(48, 60), (48, 30)])
-    line(draw, [(35, 41), (48, 28), (61, 41)])
-    line(draw, [(31, 70), (65, 70)])
-
-
 def pencil(draw, color):
     line(draw, [(34, 62), (60, 36)], width=11)
     draw.polygon([(u(27), u(69)), (u(29), u(58)), (u(38), u(67))], fill=WHITE)
@@ -163,7 +157,6 @@ ICONS = {
     "settings": (gear, GRAY),
     "key": (key, PURPLE),
     "update": (cycle, GREEN),
-    "upgrade": (upload, GREEN),
     "info": (info, TEAL),
     "album": (album, PINK),
     "stack": (stack, ORANGE),

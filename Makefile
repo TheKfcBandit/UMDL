@@ -3,11 +3,12 @@
 #   make test    build, then run every test
 #   make sign    compile and sign (macOS, or anywhere with ROUTINEHUB_API_KEY set)
 #   make icons   redraw the menu icons
+#   make playground   write build/UMDL.playground.cherri, a single file for the Cherri Playground
 
 CHERRI ?= cherri
 PYTHON ?= python3
 
-.PHONY: build test sign icons clean
+.PHONY: build test sign icons playground clean
 
 build:
 	$(CHERRI) src/UMDL.cherri --skip-sign --debug --no-ansi > /dev/null
@@ -27,6 +28,9 @@ sign:
 
 icons:
 	$(PYTHON) tools/make_icons.py
+
+playground:
+	$(PYTHON) tools/make_playground.py
 
 clean:
 	rm -rf build dist src/UMDL.plist src/UMDL_processed.cherri src/*.shortcut
