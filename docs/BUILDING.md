@@ -50,12 +50,15 @@ iOS only imports signed shortcuts, and Apple's signing tool only works on a Mac 
 ```sh
 make sign
 # which runs:
-curl --fail --form 'file=@src/UMDL_unsigned.shortcut;filename=UMDL.shortcut' \
+curl --fail --user-agent "UMDL (+https://github.com/TheKfcBandit/UMDL)" \
+     --form 'file=@src/UMDL_unsigned.shortcut;filename=UMDL.shortcut' \
      --output dist/UMDL.shortcut https://sign.shortcuty.app/api/v1/sign
 cd tools/verifysigned && go run . ../../src/UMDL_unsigned.shortcut ../../dist/UMDL.shortcut
 ```
 
-The service is run by a third party, so the result is not taken on trust. A signed shortcut is signed but not encrypted, and `tools/verifysigned` reads the workflow back out of it and compares it with the build, action for action. CI refuses to publish a signed file that differs.
+Send a User-Agent that says who is calling: the one request made with curl's default was refused with `403`.
+
+The service is run by a third party, so the result is not taken on trust. A signed shortcut is signed but not encrypted, and `tools/verifysigned` reads the workflow back out of it and compares it with the build, action for action. Signing itself changes two things, which the check allows: the Shortcuts version stamp, and an empty triggers list that Apple's tool drops. CI refuses to publish a signed file that differs in any other way.
 
 Save the signed file as `UMDL.shortcut`. Shortcuts names an imported shortcut after its file, and UMDL has to be called UMDL.
 

@@ -7,3 +7,5 @@
 Then share any post or video to UMDL. Full guide: [README](https://github.com/TheKfcBandit/UMDL#readme).
 
 Something not working? [Open an issue](https://github.com/TheKfcBandit/UMDL/issues/new/choose).
+
+Built and signed by this repository's CI. Signing uses the Shortcuty signing service; CI then reads the workflow back out of the signed file and publishes it only if it matches the build.

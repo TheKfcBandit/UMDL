@@ -24,6 +24,7 @@ test: build
 sign: build
 	@mkdir -p dist
 	curl --fail --show-error --silent --max-time 180 \
+		--user-agent "UMDL (+https://github.com/TheKfcBandit/UMDL)" \
 		--form 'file=@src/UMDL_unsigned.shortcut;filename=UMDL.shortcut' \
 		--output dist/UMDL.shortcut $(SIGNING_API)
 	cd tools/verifysigned && go run . ../../src/UMDL_unsigned.shortcut ../../dist/UMDL.shortcut
