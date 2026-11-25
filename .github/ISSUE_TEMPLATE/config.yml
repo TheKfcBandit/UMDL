@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: A site that yt-dlp or gallery-dl does not support
+    url: https://github.com/yt-dlp/yt-dlp/issues
+    about: UMDL can only download from sites its tools support. Requests for new sites belong with yt-dlp or gallery-dl.

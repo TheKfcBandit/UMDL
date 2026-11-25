@@ -117,4 +117,4 @@ jobs:
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/UMDL.shortcut --title "UMDL ${GITHUB_REF_NAME#v}" --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" dist/UMDL.shortcut --title "UMDL ${GITHUB_REF_NAME#v}" --notes-file .github/release-notes.md

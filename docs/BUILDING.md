@@ -79,10 +79,11 @@ To add the secret: repository **Settings › Secrets and variables › Actions �
 
 ## Release
 
-1. Set the new version in three places: `@umdlVersion` in `src/UMDL.cherri`, `HELPER_VERSION` in `src/umdl.py` (if the helper changed) and `version.json`. `tests/test_versions.py` fails if they disagree.
-2. Put one line in `version.json` `notes`. It is shown in the update prompt.
-3. Run `make test` and the device checklist.
-4. Commit, then tag: `git tag v1.2.3 && git push origin main v1.2.3`.
+1. Add a section for the new version at the top of `CHANGELOG.md`.
+2. Set the new version in three places: `@umdlVersion` in `src/UMDL.cherri`, `HELPER_VERSION` in `src/umdl.py` (if the helper changed) and `version.json`. `tests/test_versions.py` fails if they disagree.
+3. Put one line in `version.json` `notes`. It is shown in the update prompt.
+4. Run `make test` and the device checklist.
+5. Commit, then tag: `git tag v1.2.3 && git push origin main v1.2.3`.
 
 Order matters for one reason. `version.json` on `main` is what installed copies read, so pushing it announces the update to everyone. Push it together with the tag, so the release exists when people tap **Get the update**.
 
@@ -115,4 +116,5 @@ tools/make_playground.py writes a single-file source for the Cherri Playground
 tests/                   tests, the shortcut simulator, stand-in download tools
 docs/                    requirements, architecture, this file
 version.json             what installed copies check for updates
+CHANGELOG.md             what changed in each version
 ```

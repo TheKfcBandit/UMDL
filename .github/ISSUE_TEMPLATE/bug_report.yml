@@ -1,0 +1,39 @@
+name: Something did not work
+description: A download failed, or UMDL behaved in a way you did not expect
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Most failed downloads are fixed by **Update tools and retry** in the error menu, so please try that first.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you got instead.
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Error details
+      description: In the error menu choose **Copy error details** and paste here. Remove the link if it is private.
+      render: text
+  - type: input
+    id: site
+    attributes:
+      label: Site
+      description: Which site the link was from, and what kind of post (video, photos, playlist, profile).
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: Open UMDL on its own, choose **About UMDL**, then **Run diagnostics**, and paste what it shows.
+      render: text
+  - type: input
+    id: device
+    attributes:
+      label: Device and iOS version
+      placeholder: iPhone 16, iOS 26.1
+    validations:
+      required: true
