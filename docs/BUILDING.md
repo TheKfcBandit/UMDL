@@ -6,7 +6,7 @@
 |---|---|
 | Compile | The [Cherri](https://github.com/electrikmilk/cherri) compiler. `brew install electrikmilk/cherri/cherri`, or `go install github.com/electrikmilk/cherri@98d5191ae121a6bcf663ed0e55495f4ee4c7a6e2` for the exact commit UMDL is verified against |
 | Test | Python 3.9 or later, `dash`, and ffmpeg with ffprobe (tests that need a missing tool are skipped) |
-| Sign | A Mac, or a signing service (see below) |
+| Sign | `curl` and Go (for the check afterwards), or a Mac |
 | Redraw icons | `pip install pillow` |
 
 Always run the compiler from the repository root. The menu icons are embedded by paths relative to where the compiler runs.
@@ -43,17 +43,21 @@ The simulator is a model of Shortcuts, not Shortcuts. It catches logic and proto
 
 ## Sign
 
-iOS only imports signed shortcuts, and Apple's signing tool only works on a Mac that is signed in to iCloud. GitHub's build machines are not, so CI cannot sign on its own. Four ways to get a signed shortcut:
+iOS only imports signed shortcuts, and Apple's signing tool only works on a Mac that is signed in to iCloud. GitHub's build machines are not, so UMDL is signed by a signing service and then checked.
 
-**In the Cherri Playground**, with no Mac, no account and no key. This is the route to use until the project has a paid signing key.
+**With the Shortcuty signing service.** This is what CI and `make sign` use. It is free and needs no account: you upload the unsigned shortcut and get the signed one back. [API documentation](https://github.com/Shortcuty/Signing-Server-API-Documentation).
 
-1. Open [`playground/UMDL.cherri`](../playground/UMDL.cherri) on GitHub and press **Copy raw file** (the two-squares icon above the code). It is the same source as `src/UMDL.cherri` with the menu icons inlined, so it is one self-contained file.
-2. Open the [Cherri Playground](https://playground.cherrilang.org), select everything in the editor and paste over it.
-3. Press the hammer to build. The preview on the right should be titled **UMDL**.
-4. Press the share icon, then **Sign Shortcut**. After a few seconds a QR code and a **Download Shortcut** button appear.
-5. On a computer, scan the QR code with the iPhone's camera. On the iPhone itself, tap **Download Shortcut** and open the file. Then **Add Shortcut**.
+```sh
+make sign
+# which runs:
+curl --fail --form 'file=@src/UMDL_unsigned.shortcut;filename=UMDL.shortcut' \
+     --output dist/UMDL.shortcut https://sign.shortcuty.app/api/v1/sign
+cd tools/verifysigned && go run . ../../src/UMDL_unsigned.shortcut ../../dist/UMDL.shortcut
+```
 
-The Playground signs through RoutineHub's HubSign at no charge. It reports the same compiler version UMDL is tested with (v2.4.0), but it is a separate service and may change. After changing `src/UMDL.cherri` or an icon, run `make playground` to refresh the copy; a test fails if you forget.
+The service is run by a third party, so the result is not taken on trust. A signed shortcut is signed but not encrypted, and `tools/verifysigned` reads the workflow back out of it and compares it with the build, action for action. CI refuses to publish a signed file that differs.
+
+Save the signed file as `UMDL.shortcut`. Shortcuts names an imported shortcut after its file, and UMDL has to be called UMDL.
 
 **On a Mac.** Cherri signs with the built-in `shortcuts` command. The Mac must be signed in to iCloud.
 
@@ -61,29 +65,21 @@ The Playground signs through RoutineHub's HubSign at no charge. It reports the s
 cherri src/UMDL.cherri --share=anyone      # writes src/UMDL.shortcut
 ```
 
-**With RoutineHub's HubSign**, from any platform. This needs a RoutineHub API key from an account with a paid Developer membership. A key from a free account is refused with `401 Unauthorized`.
+**In the Cherri Playground**, in a browser. Open [`playground/UMDL.cherri`](../playground/UMDL.cherri) on GitHub and press **Copy raw file**; it is the same source with the menu icons inlined. Paste it over the sample in the [Cherri Playground](https://playground.cherrilang.org), press the hammer to build, then the share icon and **Sign Shortcut**. A QR code and a download button appear. After changing `src/UMDL.cherri` or an icon, run `make playground` to refresh the copy; a test fails if you forget.
+
+**With RoutineHub's HubSign.** This needs an API key from an account with a paid Developer membership. A key from a free account is refused with `401 Unauthorized`.
 
 ```sh
 cherri src/UMDL.cherri --hubsign --routinehub-api-key=YOUR_KEY
 ```
 
-**With your own signing server** running [shortcut-signing-server](https://github.com/scaxyz/shortcut-signing-server) on a Mac:
-
-```sh
-cherri src/UMDL.cherri --signing-server=https://your.server/sign
-```
-
-`make sign` uses HubSign when `ROUTINEHUB_API_KEY` is set and the Mac's own signing otherwise.
-
 ## Continuous integration
 
 `.github/workflows/build.yml` runs on every push and pull request:
 
-1. **Compile and test** on Linux. The unsigned shortcut is attached to the run as `UMDL-unsigned`.
-2. **Sign** on a macOS runner. It first tries the runner's own `shortcuts sign`, which currently fails with "you must be signed into iCloud". If the repository has a `ROUTINEHUB_API_KEY` secret, it then signs with HubSign, and the signed shortcut is attached to the run as `UMDL`. If the secret is missing or RoutineHub refuses the key, the job still passes and says so in its summary.
+1. **Compile and test.** The unsigned shortcut is attached to the run as `UMDL-unsigned`.
+2. **Sign.** Sends the unsigned shortcut to the Shortcuty service, then runs `tools/verifysigned` on what comes back. If the contents differ from the build, the job fails. The signed shortcut is attached to the run as `UMDL`, with its SHA-256 in the run summary. If the service is unreachable and the repository has a `ROUTINEHUB_API_KEY` secret, HubSign is tried instead. If nothing could sign, the job still passes and says so.
 3. **Release**, only for a `v*` tag: checks the tag against `version.json`, then creates the release (or reuses one you made by hand) and attaches the signed shortcut. With no signed shortcut it publishes nothing and says so in its summary.
-
-To add the secret: repository **Settings › Secrets and variables › Actions › New repository secret**, named `ROUTINEHUB_API_KEY`. Never commit the key or paste it into an issue.
 
 ## Release
 
@@ -92,7 +88,7 @@ To add the secret: repository **Settings › Secrets and variables › Actions �
 3. Put one line in `version.json` `notes`. It is shown in the update prompt.
 4. Run `make test` and the device checklist.
 5. Commit, then tag: `git tag v1.2.3 && git push origin main v1.2.3`.
-6. If CI cannot sign, sign in the Playground and attach `UMDL.shortcut` to the release by hand: **Releases › Draft a new release**, choose the tag, drop the file in, publish. `.github/release-notes.md` has the text for the description.
+6. CI signs, verifies and publishes the release. If the signing service is down, re-run the workflow later, or sign another way and attach `UMDL.shortcut` to the release by hand.
 
 Order matters for one reason. `version.json` on `main` is what installed copies read, so pushing it announces the update to everyone. Push it together with the tag, so the release exists when people tap **Get the update**.
 
@@ -122,6 +118,7 @@ assets/icons/            menu icons, embedded at compile time
 tools/make_icons.py      draws the icons
 tools/dump_shortcut.py   prints a compiled shortcut as pseudo-code
 tools/make_playground.py refreshes the single-file source
+tools/verifysigned/      checks a signed shortcut against the build
 playground/UMDL.cherri   the source as one file, for the Cherri Playground
 tests/                   tests, the shortcut simulator, stand-in download tools
 docs/                    requirements, architecture, this file

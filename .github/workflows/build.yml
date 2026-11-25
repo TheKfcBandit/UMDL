@@ -13,6 +13,7 @@ permissions:
 env:
   # The Cherri compiler commit UMDL is verified against.
   CHERRI_REF: 98d5191ae121a6bcf663ed0e55495f4ee4c7a6e2
+  SIGNING_API: https://sign.shortcuty.app/api/v1/sign
 
 jobs:
   test:
@@ -32,6 +33,11 @@ jobs:
         run: cherri src/UMDL.cherri --skip-sign --debug --no-ansi > compile.log || (cat compile.log; exit 1)
       - name: Run the tests
         run: python3 -m unittest discover -s tests -v
+      - name: Test the signed-file checker
+        working-directory: tools/verifysigned
+        env:
+          GOFLAGS: -mod=mod
+        run: go test ./... && cat go.sum
       - uses: actions/upload-artifact@v7
         with:
           name: UMDL-unsigned
@@ -42,7 +48,7 @@ jobs:
     name: Sign
     needs: test
     if: github.event_name != 'pull_request'
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     outputs:
       signed: ${{ steps.result.outputs.signed }}
     steps:
@@ -51,35 +57,43 @@ jobs:
         with:
           go-version: stable
           cache: false
-      - name: Install the Cherri compiler
-        run: go install "github.com/electrikmilk/cherri@${CHERRI_REF}"
-      - name: Compile the shortcut (unsigned)
-        run: cherri src/UMDL.cherri --skip-sign --no-ansi
-      - name: Sign with the Shortcuts app on the runner
-        # Works only where the Mac is signed in to iCloud (a self-hosted runner, say).
+      - uses: actions/download-artifact@v8
+        with:
+          name: UMDL-unsigned
+          path: src
+      - name: Sign with the Shortcuty signing service
+        # Free, no account. See docs/BUILDING.md for what this service is.
         run: |
           mkdir -p dist
-          shortcuts sign --mode anyone --input src/UMDL_unsigned.shortcut --output dist/UMDL.shortcut \
-            || echo "::notice::This runner cannot sign shortcuts by itself (it is not signed in to iCloud)."
+          curl --fail --show-error --silent --retry 3 --retry-delay 10 --max-time 180 \
+            --form 'file=@src/UMDL_unsigned.shortcut;filename=UMDL.shortcut' \
+            --dump-header dist/headers.txt --output dist/UMDL.shortcut \
+            "$SIGNING_API" \
+            || { rm -f dist/UMDL.shortcut; echo "::warning::The Shortcuty signing service did not sign the shortcut."; }
       - name: Sign with RoutineHub instead, if that did not work
         env:
           ROUTINEHUB_API_KEY: ${{ secrets.ROUTINEHUB_API_KEY }}
         run: |
-          if [ -s dist/UMDL.shortcut ]; then echo "Already signed by the runner."; exit 0; fi
+          if [ -s dist/UMDL.shortcut ]; then echo "Already signed."; exit 0; fi
           if [ -z "$ROUTINEHUB_API_KEY" ]; then echo "No ROUTINEHUB_API_KEY secret; skipping."; exit 0; fi
-          mkdir -p dist
+          go install "github.com/electrikmilk/cherri@${CHERRI_REF}"
           cherri src/UMDL.cherri --hubsign --routinehub-api-key="$ROUTINEHUB_API_KEY" --output=dist/UMDL.shortcut --no-ansi \
             || echo "::warning::RoutineHub refused to sign. A 401 means the key is wrong or the account has no Developer membership, which HubSign requires."
-      - name: Check the result
+      - name: Check that the signed file holds exactly what was built
         id: result
         run: |
-          if [ -s dist/UMDL.shortcut ] && [ "$(head -c 4 dist/UMDL.shortcut)" = "AEA1" ]; then
-            echo "signed=true" >> "$GITHUB_OUTPUT"
-            echo "Signed UMDL.shortcut is attached to this run as the UMDL artifact." >> "$GITHUB_STEP_SUMMARY"
-          else
+          if [ ! -s dist/UMDL.shortcut ]; then
             echo "signed=false" >> "$GITHUB_OUTPUT"
-            echo "The shortcut compiled but could not be signed here: GitHub's runners are not signed in to iCloud, and RoutineHub did not sign it (no ROUTINEHUB_API_KEY secret, or the key was refused). See docs/BUILDING.md for the ways to sign it." >> "$GITHUB_STEP_SUMMARY"
+            echo "The shortcut compiled but could not be signed. See docs/BUILDING.md for the ways to sign it." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
           fi
+          (cd tools/verifysigned && GOFLAGS=-mod=mod go run . ../../src/UMDL_unsigned.shortcut ../../dist/UMDL.shortcut)
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+          {
+            echo "Signed \`UMDL.shortcut\` is attached to this run as the **UMDL** artifact."
+            echo
+            echo "SHA-256: \`$(sha256sum dist/UMDL.shortcut | cut -d' ' -f1)\`"
+          } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v7
         if: steps.result.outputs.signed == 'true'
         with:
@@ -97,7 +111,7 @@ jobs:
       - uses: actions/checkout@v7
       - name: Explain why nothing is published
         if: needs.sign.outputs.signed != 'true'
-        run: echo "No signed shortcut was built, so this tag has no automatic release. Sign in the Cherri Playground and attach UMDL.shortcut to the release by hand; see docs/BUILDING.md." >> "$GITHUB_STEP_SUMMARY"
+        run: echo "No signed shortcut was built, so this tag has no automatic release. See docs/BUILDING.md." >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/download-artifact@v8
         if: needs.sign.outputs.signed == 'true'
         with:

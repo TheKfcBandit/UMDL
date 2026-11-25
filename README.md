@@ -13,7 +13,7 @@ UMDL is a free and open-source Shortcut. Downloads run on your own device with [
 ## Install
 
 1. Install [a-Shell](https://apps.apple.com/app/a-shell/id1473805438) from the App Store and open it once.
-2. On your iPhone or iPad, download `UMDL.shortcut` from the [latest release](https://github.com/TheKfcBandit/UMDL/releases/latest) and tap **Add Shortcut**. If there is no release yet, or you would rather not trust a prebuilt file, [sign your own copy in the Cherri Playground](docs/BUILDING.md#sign). It takes about two minutes and needs no Mac or account.
+2. On your iPhone or iPad, download `UMDL.shortcut` from the [latest release](https://github.com/TheKfcBandit/UMDL/releases/latest) and tap **Add Shortcut**.
 3. Run UMDL once. It asks where to save, then a-Shell opens and installs the download tools. That takes a minute or two.
 
 Built for iOS and iPadOS 18 and later. Keep the shortcut's name as **UMDL**: a-Shell uses that name to hand results back.
@@ -86,9 +86,11 @@ The shortcut is the front end; a Python helper in a-Shell does the downloading a
 The shortcut is written in [Cherri](https://cherrilang.org) and lives in [`src/UMDL.cherri`](src/UMDL.cherri). See [docs/BUILDING.md](docs/BUILDING.md).
 
 ```sh
-cherri src/UMDL.cherri          # compile and sign (macOS)
-make test                       # compile unsigned and run every test
+make test       # compile unsigned and run every test
+make sign       # compile, sign and verify
 ```
+
+Release files are built and signed by this repository's [CI](https://github.com/TheKfcBandit/UMDL/actions/workflows/build.yml). Signing goes through a third-party service, so CI reads the workflow back out of the signed file and publishes it only if it matches the build exactly.
 
 ## Credits
 

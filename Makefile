@@ -1,12 +1,13 @@
 # UMDL developer tasks. Run from the repository root.
 #   make build   compile the shortcut unsigned, with a plist for inspection
 #   make test    build, then run every test
-#   make sign    compile and sign (macOS, or anywhere with ROUTINEHUB_API_KEY set)
+#   make sign    compile, sign through the Shortcuty service, and verify the result
 #   make icons   redraw the menu icons
 #   make playground   refresh playground/UMDL.cherri, the single file for the Cherri Playground
 
 CHERRI ?= cherri
 PYTHON ?= python3
+SIGNING_API ?= https://sign.shortcuty.app/api/v1/sign
 
 .PHONY: build test sign icons playground clean
 
@@ -17,13 +18,15 @@ build:
 test: build
 	$(PYTHON) -m unittest discover -s tests
 
-sign:
+# Signs through the free Shortcuty service, then checks the signed file holds
+# exactly what was built. On a Mac signed in to iCloud you can instead run:
+#   cherri src/UMDL.cherri --share=anyone
+sign: build
 	@mkdir -p dist
-	@if [ -n "$$ROUTINEHUB_API_KEY" ]; then \
-		$(CHERRI) src/UMDL.cherri --hubsign --routinehub-api-key="$$ROUTINEHUB_API_KEY" --output=dist/UMDL.shortcut; \
-	else \
-		$(CHERRI) src/UMDL.cherri --share=anyone --output=dist/UMDL.shortcut; \
-	fi
+	curl --fail --show-error --silent --max-time 180 \
+		--form 'file=@src/UMDL_unsigned.shortcut;filename=UMDL.shortcut' \
+		--output dist/UMDL.shortcut $(SIGNING_API)
+	cd tools/verifysigned && go run . ../../src/UMDL_unsigned.shortcut ../../dist/UMDL.shortcut
 	@ls -l dist/UMDL.shortcut
 
 icons:
