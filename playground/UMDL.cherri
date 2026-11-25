@@ -1,0 +1,705 @@
+/*
+ * UMDL - Universal Media Downloader
+ * One tap from the share sheet: the best available quality, saved straight to Photos.
+ *
+ * This shortcut is the front end. The download itself is done by src/umdl.py,
+ * which runs yt-dlp and gallery-dl inside the free a-Shell app.
+ *
+ * Build from the repository root:   cherri src/UMDL.cherri
+ * Project: https://github.com/TheKfcBandit/UMDL   Licence: MIT
+ *
+ * How a run flows (see docs/ARCHITECTURE.md):
+ *   1. Read what was shared. Text starting with "UMDLCB:" is the helper
+ *      calling back with a result; anything else is searched for a link.
+ *   2. Load settings from a-Shell (skipped when a callback carries them).
+ *   3. First run: ask the setup questions, then install the tools.
+ *   4. Save a finished download to Photos, or open the menu, or hand the
+ *      link to the helper in a-Shell.
+ *
+ * Cherri functions are deliberately not used: they re-run the shortcut and
+ * read its input, which is the same channel the helper's callback uses.
+ */
+
+#define name UMDL
+#define color blue
+#define glyph downloadArrow
+#define inputs url, text
+#define from sharesheet
+
+#include 'actions/crypto'
+#include 'actions/text'
+#include 'actions/web'
+#include 'actions/photos'
+#include 'actions/device'
+#include 'actions/sharing'
+
+// Keep in step with version.json. The protocol number only changes when the
+// payload or callback format does.
+@umdlVersion = "1.0.0"
+@protocol = "1"
+
+@shared = "{ShortcutInput}"
+@link = nil
+@runMode = "auto"
+@runLimit = nil
+@forceUpdate = nil
+@toolCmd = nil
+@signInTo = nil
+@saveManifest = nil
+@resumeBlob = nil
+@choice = ""
+@firstRun = "0"
+
+@cfgAlbum = "UMDL"
+@cfgThreshold = "10"
+@cfgConvert = "1"
+@cfgAfter = "notify"
+@haveCfg = "0"
+@needsInstall = "0"
+@saveCfg = "0"
+@askAlbum = "0"
+@askConvert = "0"
+@settingsChanged = "0"
+
+@failedCount = nil
+@jobTitle = nil
+@updateVersion = nil
+@updateLink = nil
+
+/* ------------------------------------------------------------------------
+ * 1. Callback from the helper
+ * ---------------------------------------------------------------------- */
+
+if @shared beginsWith "UMDLCB:" {
+    const cbBlob = replaceText("UMDLCB:", "", @shared)
+    const cbData = base64Decode(cbBlob)
+    const cbText = text("{cbData}")
+    const cb = getDictionary(cbText)
+    @cbType = "{cb['t']}"
+
+    // Every callback carries the settings back, so no second trip to a-Shell.
+    const cbCfgRaw = getValue(cb, "cfg")
+    const cbCfg = getDictionary(cbCfgRaw)
+    @cbAlbum = "{cbCfg['album']}"
+    if @cbAlbum {
+        @cfgAlbum = @cbAlbum
+        @cfgThreshold = "{cbCfg['threshold']}"
+        @cfgConvert = "{cbCfg['convert']}"
+        @cfgAfter = "{cbCfg['after']}"
+        @haveCfg = "1"
+    }
+
+    if @cbType == "done" {
+        @saveManifest = "{cb['m']}"
+        @failedCount = "{cb['nf']}"
+        @jobTitle = "{cb['title']}"
+        const upRaw = getValue(cb, "up")
+        @upText = "{upRaw}"
+        if @upText {
+            const up = getDictionary(upRaw)
+            @updateVersion = "{up['v']}"
+            @updateLink = "{up['url']}"
+        }
+    }
+
+    if @cbType == "confirm" {
+        @link = "{cb['url']}"
+        @confirmCount = "{cb['n']}"
+        @confirmLimit = "{cb['thr']}"
+        @confirmTitle = "{cb['title']}"
+        @confirmPrompt = "This link has more than {@confirmLimit} items."
+        if @confirmCount {
+            @confirmPrompt = "This link has {@confirmCount} items."
+        }
+        if @confirmTitle {
+            @confirmPrompt = "{@confirmTitle}\n\n{@confirmPrompt}"
+        }
+        menu "{@confirmPrompt}" {
+            item "Download everything":
+                @runMode = "all"
+            item "Only the first {@confirmLimit}":
+                @runMode = "limit"
+                @runLimit = @confirmLimit
+            item "Only the first one":
+                @runMode = "first"
+            item "Cancel":
+                stop()
+        }
+    }
+
+    if @cbType == "error" {
+        @errKind = "{cb['kind']}"
+        @errText = "{cb['msg']}"
+        @errLink = "{cb['url']}"
+        if @errKind == "install" {
+            // Forget the half-finished install so the next run starts it again.
+            rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
+                "command": "rm -f $HOME/Documents/UMDL/umdl.py",
+                "openWindow": "close",
+                "keepGoing": false,
+                "ShowWhenRun": false
+            })
+            alert("{@errText}", "Setup did not finish")
+            stop()
+        }
+        if @errKind == "nolink" {
+            alert("UMDL needs a web link. Share a post or video to UMDL, or copy its link first.", "No link found")
+            stop()
+        }
+        @errHint = "Updating the tools fixes most failures."
+        if @errKind == "auth" {
+            @errHint = "This looks like it needs an account. Sign in to the site and try again."
+        }
+        if @errKind == "network" {
+            @errHint = "Check your connection and try again."
+        }
+        if @errKind == "gone" {
+            @errHint = "The post may be private, removed or unavailable in your region."
+        }
+        if @errKind == "drm" {
+            @errHint = "This media is copy-protected and cannot be downloaded."
+        }
+        if @errKind == "unsupported" {
+            @errHint = "This site may not be supported yet."
+        }
+        menu "Download failed\n\n{@errText}\n\n{@errHint}" {
+            item "Try again":
+                @link = @errLink
+            item "Update tools and retry":
+                @link = @errLink
+                @forceUpdate = "1"
+            item "Sign in to this site":
+                const errHost = getURLDetail(@errLink, "Host")
+                @signInTo = "https://{errHost}"
+            item "Copy error details":
+                @errReport = "UMDL {@umdlVersion}\n{@errLink}\n{@errKind}: {@errText}"
+                setClipboard(@errReport)
+                stop()
+            item "Cancel":
+                stop()
+        }
+    }
+
+    if @cbType == "info" {
+        alert("{cb['msg']}", "{cb['title']}")
+        stop()
+    }
+
+    if @cbType == "setup" {
+        @link = "{cb['url']}"
+        if !@link {
+            alert("Share any post or video to UMDL and it lands in your Photos.\n\nOpen UMDL on its own for settings.", "UMDL is ready")
+            stop()
+        }
+    }
+} else {
+    const sharedLinks = getURLs(@shared)
+    const sharedFirst = getFirstItem(sharedLinks)
+    @link = "{sharedFirst}"
+}
+
+/* ------------------------------------------------------------------------
+ * 2. Settings and state, read from a-Shell without opening it
+ * ---------------------------------------------------------------------- */
+
+@pendingManifest = nil
+if @haveCfg == "0" {
+    const preflight = rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
+        "command": "dash -c 'W=\"$HOME/Documents/UMDL\"; if [ -f $W/config.b64 ]; then echo \"CFG:$(cat $W/config.b64)\"; fi; if [ ! -f $W/umdl.py ] || [ ! -d $W/env ]; then echo NEEDS_INSTALL; fi; if [ -f $W/pending ]; then echo \"PENDING:$(cat $W/pending)\"; fi; if [ -f $W/last.b64 ]; then echo \"LAST:$(cat $W/last.b64)\"; fi'",
+        "openWindow": "close",
+        "keepGoing": false,
+        "ShowWhenRun": false
+    })
+    @state = "{preflight}"
+
+    if @state contains "NEEDS_INSTALL" {
+        @needsInstall = "1"
+    }
+
+    const cfgMatch = matchText("CFG:(\\S+)", @state)
+    const cfgGroup = getMatchGroup(cfgMatch, 1)
+    @cfgBlob = "{cfgGroup}"
+    if @cfgBlob {
+        const cfgData = base64Decode(@cfgBlob)
+        @cfgJSON = "{cfgData}"
+        // A damaged settings file is treated as no settings, not as an error.
+        if @cfgJSON contains "\"album\"" {
+            const cfg = getDictionary(@cfgJSON)
+            @cfgAlbum = "{cfg['album']}"
+            @cfgThreshold = "{cfg['threshold']}"
+            @cfgConvert = "{cfg['convert']}"
+            @cfgAfter = "{cfg['after']}"
+            @haveCfg = "1"
+        }
+    }
+
+    const pendingMatch = matchText("PENDING:(\\S+)", @state)
+    const pendingGroup = getMatchGroup(pendingMatch, 1)
+    @pendingManifest = "{pendingGroup}"
+
+    const lastMatch = matchText("LAST:(\\S+)", @state)
+    const lastGroup = getMatchGroup(lastMatch, 1)
+    @resumeBlob = "{lastGroup}"
+}
+
+// Settings written by an older or damaged file fall back to the defaults.
+if !@cfgAlbum {
+    @cfgAlbum = "Recents"
+}
+if !@cfgThreshold {
+    @cfgThreshold = "10"
+}
+if !@cfgConvert {
+    @cfgConvert = "1"
+}
+if !@cfgAfter {
+    @cfgAfter = "notify"
+}
+
+/* ------------------------------------------------------------------------
+ * 3. First run
+ * ---------------------------------------------------------------------- */
+
+if @haveCfg == "0" {
+    menu "Welcome to UMDL\n\nShare a post or video and UMDL saves it to Photos at the best quality your library can play. Downloads run on this device, in the free a-Shell app.\n\nSetup takes about two minutes." {
+        item "Set up UMDL":
+            @askAlbum = "1"
+            @askConvert = "1"
+            @firstRun = "1"
+        item "Not now":
+            stop()
+    }
+}
+
+/* ------------------------------------------------------------------------
+ * 4. A finished download that never reached Photos
+ * ---------------------------------------------------------------------- */
+
+if @pendingManifest {
+    menu "An earlier download was not saved to Photos yet." {
+        item "Save it now":
+            @saveManifest = @pendingManifest
+        item "Discard it":
+            const discardDir = replaceText("/manifest.json", "", "{@pendingManifest}")
+            @discardPath = "{discardDir}"
+            if @discardPath contains "/Documents/UMDL/jobs/" {
+                rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
+                    "command": "rm -rf {@discardPath} $HOME/Documents/UMDL/pending",
+                    "openWindow": "close",
+                    "keepGoing": false,
+                    "ShowWhenRun": false
+                })
+            }
+    }
+}
+
+/* ------------------------------------------------------------------------
+ * 5. Save to Photos
+ * ---------------------------------------------------------------------- */
+
+if @saveManifest {
+    const manifestFile = rawAction("AsheKube.app.a-Shell.GetFileIntent", {
+        "fileName": "{@saveManifest}",
+        "errorIfNotFound": true,
+        "ShowWhenRun": false
+    })
+    const manifest = getDictionary(manifestFile)
+    const photoPaths = getValue(manifest, "photos")
+    const keptNames = getValue(manifest, "kept")
+    const keptTotal = count(keptNames)
+    @keptCount = "{keptTotal}"
+
+    @savedCount = 0
+    for photoPath in photoPaths {
+        const mediaFile = rawAction("AsheKube.app.a-Shell.GetFileIntent", {
+            "fileName": "{photoPath}",
+            "errorIfNotFound": true,
+            "ShowWhenRun": false
+        })
+        if @cfgAlbum == "Recents" {
+            savePhoto(mediaFile)
+        } else {
+            savePhoto(mediaFile, @cfgAlbum)
+        }
+        @savedCount += 1
+    }
+
+    // Everything is in Photos now, so the working copies can go.
+    const jobDir = replaceText("/manifest.json", "", "{@saveManifest}")
+    @jobPath = "{jobDir}"
+    if @jobPath contains "/Documents/UMDL/jobs/" {
+        rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
+            "command": "rm -rf {@jobPath} $HOME/Documents/UMDL/pending",
+            "openWindow": "close",
+            "keepGoing": false,
+            "ShowWhenRun": false
+        })
+    }
+
+    @albumLabel = "the {@cfgAlbum} album"
+    if @cfgAlbum == "Recents" {
+        @albumLabel = "Photos"
+    }
+    @summary = "Saved {@savedCount} items to {@albumLabel}."
+    if @savedCount == 1 {
+        @summary = "Saved to {@albumLabel}."
+    }
+    if @savedCount == 0 {
+        @summary = "Nothing here could go into Photos."
+    }
+    if @keptCount != "0" {
+        @summary = "{@summary}\n{@keptCount} kept in Files, under a-Shell, UMDL, Saved."
+    }
+    if @failedCount {
+        @summary = "{@summary}\n{@failedCount} could not be downloaded."
+    }
+    @summaryTitle = "UMDL"
+    if @jobTitle {
+        @summaryTitle = @jobTitle
+    }
+    showNotification("{@summary}", "{@summaryTitle}")
+
+    if @updateVersion {
+        menu "UMDL {@updateVersion} is available. You have {@umdlVersion}." {
+            item "Get the update":
+                openURL("{@updateLink}")
+                stop()
+            item "Later":
+                @updateVersion = ""
+        }
+    }
+    if !@link {
+        if @cfgAfter == "photos" {
+            openURL("photos-redirect://")
+        }
+        stop()
+    }
+}
+
+/* ------------------------------------------------------------------------
+ * 6. Opened without a link: the menu
+ * ---------------------------------------------------------------------- */
+
+@needsMenu = "1"
+if @link {
+    @needsMenu = "0"
+}
+if @signInTo {
+    @needsMenu = "0"
+}
+if @askAlbum == "1" {
+    @needsMenu = "0"
+}
+
+if @needsMenu == "1" {
+    const iconDownload = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEUKhP/9/v8AfP9KpP/A3/9vt/+SyP80mP+42//G4v9grv8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA9PvMMAAAAMHRSTlP//////////////wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACG2DDAAAABIklEQVR42u2Y2xKDIAxEMcjF/v8HVwUEUasDSWec2fPYhxwt2t1UKQAAAACAE4hIdLwz1gka6DPMWDmDG1a0lIFMEHgxgQ2CSUygpe8gCkYIIIAAgv8LtpQ8CFjys0jJSsCTn2VK7gVM+RlT0lAtIJ78TCm5GkpBmt+bPiklV0Mh2Ob35mcetBiSoPqY6RbmUTpddJ4/sXWV5TzjXJ/nW8Y2tEyOV53ns7zThaGCq0ReGfhK6rmBswSfGXhL9tHAXeJrA/+SsDdILCGlQWbJyQapJSoZ5Ja0YLD03jVWfhF/518T9/Sdqb6h59RDtbqn+bl1w0May9d1VNY0lq+isdzQWL7o8VfUWr6e3sLUsdJ478ffeG+k3zP8OAEAAABAKfUFuW8IProbi9oAAAAASUVORK5CYII="
+    const iconPencil = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEVdW+X9/f5gXuZ7eupjYebW1fnAv/WHhuyop/G2tfOUk+7Hxvbn5/tRT+QAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA87qeUAAAAMHRSTlP//////////////////wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABT2Q8YAAAA7ElEQVR42u2Y2w7CIBBE2QUECv7/74qJqQVqTFrGaJzz0rczlEvD1BhCCCGEEEJ+Hq0g9c0D4g8xBodKUGO9VMqCSXDGygNIwsYv4sB+idNfofWLnx3Q+acH9H5JcwMGv9ipAaM/gf0X7PzTTz/99NP/F34F+43N4PEH7PjVRKi/BmSovwZ4qL9uUqy/3aOA8atZtve3rv21HAxIq7+8a3t6Zo19vpe9zdLU8tcQ47ELsJaSU7B9RXJeRg4lOPec89en71wLGRdQr2lmwO4XcC9gYpmtxyP7nqllGfkDZI3ojpl+IJQQQgghX84NFOEGlcO4PHYAAAAASUVORK5CYII="
+    const iconResume = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEX/lQD//vz/jQD/qTP/6cz/s0z/xHP/26n/4rr/yoP/1Zr/8Nv/vGD/oR3/r0QAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA98tO+AAAAMHRSTlP///////////////////8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABd9rBbAAABeklEQVR42u1Y267DIAzLBSgt3f7/c08vNN2qsvNAIm1S/DrJKTE4zgAcDofD4fhS8Eim/DRjNK1AEyKbHiEgoqkECz8GUwlWTGYy0LAVwGRWASuYDCXYK9h0KEkBdaFp60mWAjhoNomA0xDwHXpCE4xX8g1KnrHQYwMqQlMMLX6cNAqkJv3ISuZ5iyGCigL3/CHVW9v9/S/yhjHCrsbEoHRBKQp9fq7frNiaHUXe1MYaS2JSpD8bJNZJP2XN4pxmw6UY+fJ1tljFoKND4XfHe7DtkFzSBxgXAC/wn8hmWZ2y8TU9vDQ3X/qjz7pl2nBTo97h8zEi1kWhJ1lIoLh/y/XHohHVP1yBLic57G4xVGqdroDKtlHehyadKb7PCl/WjfFMWgSz2o4gTVrj1rMeK51huKj5RdUi56Ae39vZXSvO5BZ90YpLjf1m0HM9vjlE0B3V8VIizMopddtiJcknBoMZsb4zjjE+wIL9rGL7f53D4XA4HA6H42vxB3CSBr/H0xu8AAAAAElFTkSuQmCC"
+    const iconSettings = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEWNjZL+/v6Tk5ioqKzm5ue2trnX19mbm6DFxce+vsHf3+EAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA8ZHqjAAAAMHRSTlP//////////////wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACG2DDAAAABiElEQVR42u1Yi66CMAyFvjbu/3+wAl7ZZgO4UqNJT9RIxJadvjsMgUAgEAgEfg1wfyHC8sVHPsp4h6CPBhh4fIB9NOD4BLpQRJsCcqFoLHAdRavbNAw9Odp+7TRrWtyGUFeAC2mS+k2Opds0FBVO1W3ytAnkVyPzdpk6FUghEZjKE1CG4loucJt9gDWwjoDfqSCdV5DMuWEfZM9uHgzVrr4H7k8WfIIlYksyamNBchZq+bHkO66fdRWFf5VOU30vn1Zm8QDz51SFcUcn8F/fqX5SUE9G73cCoPgPQXWDKL4Epgho/g+2aKCjhKkdgUyJWloSJ0vSVhjKLcNo4chdgUoRHPnZO3WNjixoNPKJ89vcVA20+oZsCzQtVRRmhuqI1DM0aMmO51S3visKk2XsqZiQhwzIVxRkteDIhMhyYcHxLpneRd+9bfFuvNxbx9/vrt0HkGqEwia8CO0jVDMElkMZpUuGQPcx1n8Q914lfGQZ8sF1jvtCyn+l5r0U9F9rBgKBQCAQcMQNrFEKlhcUZ94AAAAASUVORK5CYII="
+    const iconKey = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEWvUt7+/f6rSdy+c+T05/qzW+DCeuXlyPTeuvHq0vbOleu5aOLWpu7gu/LJiummPtoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAItKT7AAAAMHRSTlP/////////////////////AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACpwcFTAAABW0lEQVR42u2YwXKEIBBEoWVAQM3//21wV0txraQqTh9SNe+0XpqVeQygc4ZhGIZhGMb/AA1qfi1TJI6AxTdG2ggY/IsF3HyfwM33Gdx8X8DNDw7UfIpGXf46Aqj5zSPdWTrPP0OkU/6Icful2DDO/7+1ull7gKs/SG9Vaf44aSOEASx/mqGI0YHnTxIHxvzPe3U1De38dIqGblPQ57dnFUPXTV3ktbkP1+6mYSikpFbOkKa6fHRPPDYUmPwnR3d+aihc+jH/KM9fpyf/lv9Qnrv8WTH/bv41V5Xc5Ku2/bI3nSISs/4ZC5tBQbDKsj8p7ozhfKpC3V6hQrsE0iu1qA9wcVaxyqFLlKC+uefd/DXya+pnTHOdpQrIRNC0Hss3U07quGmlmsvgqCunU9ydgdSvMhgCNX8t9KkOgXHjbpvu/H6LtDjSZRWuxjgI85ME+4OHYRiGYRiGocA31g4H4eUHy/0AAAAASUVORK5CYII="
+    const iconUpdate = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEUzxlj8/v1Ey2du14nO8dda0XiW4qmr6Lq568Y9yWCE3ZqL36DE7s7c9eJg030AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACZ0vfOAAAAMHRSTlP///////////////////8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABd9rBbAAABQUlEQVR42u2Xa46DMBCDM5MHCY/e/7hLUFhaRNof2NJWO98BGIiD7XHOMAzDMP4ocSAPGMVzBwwikTpAVpQpQR0QqBJUiELP2wAZqRJUHkwJhCj09DuAIbTqLkElg89mykFeScBXT4tcAPOMJB0wnuGly0B9fRkiyDwvyb443vNDUry8S/IagEdz0jfUK6nb0TCcTaY2b8I6UDpZJ9rflG3NCe85lwoER84WWg1q2bKw452mgAvkE1JuuB8Dytd/gX6tyPsAXgtNH5wiKihtYteqbuZyeV8R26LwAAS+fxsWiKqu/Stw7w7kPRFKv85gMvMstAZQ/x2Pqq6Xbeb2jpCfmqjfZpT4XOUL6nduWqzA63vol3fMelBm7vP7C0LGJVG8+IgF6+J+pj6+bbHH9sHqqupXlFYCDMMwDMMwjH/ND1stBmHnCzd6AAAAAElFTkSuQmCC"
+    const iconInfo = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEUwsMf9/v4nrMRkw9XL6/Go3udbwNJBtsyH0d635Ovc8vUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB3bVn6AAAAMHRSTlP//////////////wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACG2DDAAAAAoklEQVR42u2YWw7DMAjACHl07f0PvKzttv9J7lTJPgBWICCSCBERERH5gZyg4aPW4BQZvUx6JBW/lZ0GGbKXk57MAcoH5AhZv4J6TwGdIrzI/DXFG40fFfywu2JaB5qhXGaV18HVeAH7eBesh2DD2uDdySNhAZWjbAoUKFCgQIECBXdYWy7ci7An1DjiP7j1um5o/FcZRo2kf6RCRERE5A88AcTyA2ARwwv1AAAAAElFTkSuQmCC"
+
+    @cards = "BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Download from clipboard;;;;\nORG;CHARSET=utf-8:Use the link you copied last;\nPHOTO;ENCODING=b:{iconDownload}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Enter a link;;;;\nORG;CHARSET=utf-8:Type or paste any post or video link;\nPHOTO;ENCODING=b:{iconPencil}\nEND:VCARD\n"
+    if @resumeBlob {
+        @cards = "{@cards}BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Resume last download;;;;\nORG;CHARSET=utf-8:It was interrupted before it finished;\nPHOTO;ENCODING=b:{iconResume}\nEND:VCARD\n"
+    }
+    @cards = "{@cards}BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Settings;;;;\nORG;CHARSET=utf-8:Album and download options;\nPHOTO;ENCODING=b:{iconSettings}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Sign in to a site;;;;\nORG;CHARSET=utf-8:For private or age-restricted posts;\nPHOTO;ENCODING=b:{iconKey}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Update tools;;;;\nORG;CHARSET=utf-8:Get the newest yt-dlp and gallery-dl;\nPHOTO;ENCODING=b:{iconUpdate}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:About UMDL;;;;\nORG;CHARSET=utf-8:Version {@umdlVersion} and diagnostics;\nPHOTO;ENCODING=b:{iconInfo}\nEND:VCARD\n"
+
+    // The third argument keeps the name exactly as written, so the text becomes a .vcf file.
+    const cardsFile = setName(@cards, "umdl-menu.vcf", true)
+    @cardsContacts = cardsFile.contact
+    const cardsPick = chooseFromList(@cardsContacts, "UMDL")
+    @choice = "{cardsPick}"
+
+    if @choice == "Download from clipboard" {
+        @clipText = "{Clipboard}"
+        const clipLinks = getURLs(@clipText)
+        const clipFirst = getFirstItem(clipLinks)
+        @link = "{clipFirst}"
+        if !@link {
+            alert("Copy a post or video link first, then try again.", "No link on the clipboard")
+            stop()
+        }
+    }
+
+    if @choice == "Enter a link" {
+        const typed = prompt("Link to download", "URL")
+        @typedText = "{typed}"
+        const typedLinks = getURLs(@typedText)
+        const typedFirst = getFirstItem(typedLinks)
+        @link = "{typedFirst}"
+        if !@link {
+            alert("That does not look like a web link.", "No link found")
+            stop()
+        }
+    }
+
+    if @choice == "Resume last download" {
+        @toolCmd = "run"
+    }
+
+    if @choice == "Update tools" {
+        @toolCmd = "update"
+    }
+
+    if @choice == "Sign in to a site" {
+        menu "Sign in to which site?\n\nThe login stays on this device, inside a-Shell." {
+            item "Instagram":
+                @signInTo = "https://www.instagram.com/accounts/login/"
+            item "X (Twitter)":
+                @signInTo = "https://x.com/login"
+            item "Reddit":
+                @signInTo = "https://www.reddit.com/login/"
+            item "TikTok":
+                @signInTo = "https://www.tiktok.com/login"
+            item "Facebook":
+                @signInTo = "https://m.facebook.com/login/"
+            item "Another site":
+                const siteTyped = prompt("Address of the site's login page", "URL", "https://")
+                @siteText = "{siteTyped}"
+                const siteLinks = getURLs(@siteText)
+                const siteFirst = getFirstItem(siteLinks)
+                @siteLink = "{siteFirst}"
+                if !@siteLink {
+                    alert("That does not look like a web address.", "Sign in")
+                    stop()
+                }
+                // Host only: a query string would not survive a-Shell's command line.
+                const siteHost = getURLDetail(@siteLink, "Host")
+                @signInTo = "https://{siteHost}"
+        }
+    }
+
+    if @choice == "About UMDL" {
+        menu "UMDL {@umdlVersion}\n\nA free, open-source media downloader.\nPowered by yt-dlp, gallery-dl and a-Shell." {
+            item "Check for a new version":
+                const latestRaw = rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
+                    "command": "curl -fsL --max-time 10 https://raw.githubusercontent.com/TheKfcBandit/UMDL/main/version.json",
+                    "openWindow": "close",
+                    "keepGoing": false,
+                    "ShowWhenRun": false
+                })
+                @latestText = "{latestRaw}"
+                if @latestText !contains "\"shortcut\"" {
+                    alert("Could not reach GitHub. Check your connection and try again.", "Update check")
+                    stop()
+                }
+                const latest = getDictionary(@latestText)
+                @latestVersion = "{latest['shortcut']}"
+                if @latestVersion == @umdlVersion {
+                    alert("You have the latest version, {@umdlVersion}.", "UMDL is up to date")
+                    stop()
+                }
+                menu "UMDL {@latestVersion} is available. You have {@umdlVersion}.\n\n{latest['notes']}" {
+                    item "Get the update":
+                        openURL("{latest['url']}")
+                    item "Later":
+                        @latestVersion = ""
+                }
+                stop()
+            item "Run diagnostics":
+                @toolCmd = "doctor"
+            item "Open the project page":
+                openURL("https://github.com/TheKfcBandit/UMDL")
+                stop()
+            item "Done":
+                stop()
+        }
+    }
+
+    if @choice == "Settings" {
+        const iconAlbum = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEX/Nl7//P3/OGD/K1X/RGn/aYf/y9X/g5z/tMP/Wnv/ma3/rb3/2+L/6O3/1t7/jqT/sL8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABjb0JWAAAAMHRSTlP//////////////////////wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABKBZhFAAABa0lEQVR42u2X2XKDMAxFbcl4YSn9/6+tAIekLXE8svzAjM5Lwgy+F8mbZIyiKIqiKIqi3AUo0q7e/kZxtEHjigCaBgdAN37ZIvOUsEF/WOxnVm4MpG+rGBF4+XdLnYEdWA6AY6W+9TwDM9caWMeYBspQjh9Ky3Rh5+g02IYicfkW+nYDRw/B+3B5aAgZTNvvdJFnGQMMx5/wX0XIwL9djHcx6J2i7pP8ukz7GNByJw556GKwbzFSW+Of+0vM4BCjyf5+OmwBSRoApu3pjAGEI8j6pwPdFnSRyRmc+tlhz1dCuUlG97xdNod9881yy9TAa/USMW/uEY1UBL+roykfHpQkmZ0M76qvWcbgcZxelURR4jSNhXpC4tKf+lReD4Ml2l4GsFQXXolT/wLGWv2Z2XykWoPALK9xrdOPyG5yqurrCOwuiloQ/zH/wTR0adTiuaFIMtjUZ9JgLNLy+TV9eHsnriiKoiiKotyFH8MNDUvrUGYjAAAAAElFTkSuQmCC"
+        const iconStack = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEX/lAD//v3/jgD/sEH/473/qC//yHz/vmX/yoD/6cr/1p3/2KH/8NoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADMVdtuAAAAMHRSTlP/////////////////AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAC8AjCNAAAAg0lEQVR42u3USRKAIAxEURII4HD/84q61VgFWuXivz1pBu0QAAAAAOxUvx1vOdsZ4Qb17kKLNOVYnkWmdE1k7gwwOViLyuJKfQeo5+rajiAP7OuAqINXtPjz1/FHTt78ycY/02Dxlr3zo+kt+og2pU1pU9qUNgVtSpvSprQpAAAA8CcbYRcH23+VprkAAAAASUVORK5CYII="
+        const iconConvert = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEVdW+X9/f5gXuaHhuzV1PhmZed2dOnn5vupqPG6ufSVlO5OTOSAfuvHxvbg3/oAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADeEmLFAAAAMHRSTlP///////////////////8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABd9rBbAAABNElEQVR42u2X4W7DIAyEY4MhJO3e/3ELiKbqVhaE40mT7pP61xeMfVeWBQAAAAAAgH8P25aXYPz9QqvtIYTIi6VCFqDoDA9RBIiSToHrjz/RBMgHlYLIyQkym+IQayTf5SlAiecUeFlpjBh2xTUOsbKxwF2mWnQfrb/NzpAfKq+Z1Jvrc/TfaJu5TZDOLbjL0yrYzIxEu8Vn4SVqH3qrH4Jh4OQqjtz3YiUyL6uf6KfAcmF7yr45o2nJVbc6j0YCecoTNQH5vA+s61WIzRDcPpF65+15RU7sJlucM+v6baN+7efqb+OBc5u6hzQuMDdj+3HDp6nPyhk9/VexsG7LSm79Em6KTGg+Ua5xt3mKHLvQ2+S6zUozCl+GZlclJJkKdALnYolg/OQzfrECAAAAAADwFzwAOmkHhGpYdQIAAAAASUVORK5CYII="
+        const iconFinish = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEUzxlj8/v1a0Xiu6LxDy2XU89uE3Zpt1og8yWDC7s1g032U4ai568YfwUiN36IAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADZ5XGAAAAAMHRSTlP///////////////////8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABd9rBbAAAA1klEQVR42u2XWQ6DMAxEsU0WCu39j1upbZQAQXzg4afzDvDGLBk5w0AIIYQQQgj5H0as3UQmBfrlQ4IFhG+AoPzLzy8PjN+KH/SOql8ywj9Xf0T4Y/W/wP75CfCn6jfE/HqfPyCabGz8GdFkwWn+gybLweuAlZOqR/PLtZ7OfY95+dtPqV3/5QqdOgnmWUDN314Som/BpW1C9C7QzTMACmiVACmgNqGyYHrNreDOEnz9+wRv/y4BsIuuEiCLqIL9TQJszVXghnXPRQB/lSGEEEIIIYSc8Aa+OwN51z07VwAAAABJRU5ErkJggg=="
+        const iconForget = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEWNjZL+/v6RkZakpKjo6Om5ubzV1de9vcDf3+Cfn6TAwMMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADiKZDfAAAAMHRSTlP//////////////wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACG2DDAAAABC0lEQVR42u2X2Q6DMAwEsZPS4/8/uOpBiWOnKngrtdLOq6UdgtDGTBMhhBBCCCF/gu6cbTDovtmn8bPIXOJnfc5y+XInNLxmmfc/y9Cg9TGqgANEhiU/eQQZGdb8lGA6DQxNvqS+pCKhoc0/5j6j0ADMV29Qk3/IN4U3mHxFG9D53oDO7w34/N6Azx8YgPmhAZofGMD5zgDPv1FFxu0NOEI1rwhu6PLhBpcPNgT5UEOYDzSY/jzjDd39UrCG/v5ShRv6fgYbgvvL3XGY1a7pH5xh3U1tvxkDaDe1/WkMmN206+fWANlNXf83BsRuegl+D5ZZdjetowx9M9umKLpr9lu/soQQQgghhHyfKyeNBSaaR+ixAAAAAElFTkSuQmCC"
+        const iconReset = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEX/RTr//f3/Oy//dGz/zsv/UUf/09D/TEL/6un/uLT/bGT/npj/jIb/LyL/YFf/wb3/4N4AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAqdfc0AAAAMHRSTlP//////////////////////wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABKBZhFAAABBUlEQVR42u2Y6QqDMBCEk82xUXu9/9NWoVWaAzSMhdL5fkggsJNj3GxiDCGEEEII+TNEg6zMbbjAlGz00S9En+yg4PFPNsNj56ApF7AjVCEU8a2DCsiQx09g55j7Z/x4Qzhqc878yQQAjiqd06LTURXntOhzVNgdv9NRpXNa9DpK/b74j+5/Tka3B9Pv0y1/Vvqu7b7DOq6yWPGCyxOX+toPoGwkrrW7E0ZBmmZKelaqxqbsbwk4E0zMW1ABee/GR4sCFKAABShwUEDXsHqGwLiOezxnBkvBnrd+5Mh8HY81wql1F7DyatTxUXHX8NplZ1ABPlSURTv4uUIK+D5ECCGEEHKIJ2TGCeWfM7REAAAAAElFTkSuQmCC"
+
+        // Commas, semicolons and backslashes are separators inside a vCard.
+        const albumShown = replaceText("[\\\\;,]", " ", @cfgAlbum, true, true)
+        @convertShown = "Convert them for Photos"
+        if @cfgConvert == "0" {
+            @convertShown = "Keep the original in Files"
+        }
+        @afterShown = "Show a notification"
+        if @cfgAfter == "photos" {
+            @afterShown = "Open Photos"
+        }
+
+        @settingCards = "BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Save to;;;;\nORG;CHARSET=utf-8:{albumShown};\nPHOTO;ENCODING=b:{iconAlbum}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Ask before big downloads;;;;\nORG;CHARSET=utf-8:When a link has more than {@cfgThreshold} items;\nPHOTO;ENCODING=b:{iconStack}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Videos Photos cannot play;;;;\nORG;CHARSET=utf-8:{@convertShown};\nPHOTO;ENCODING=b:{iconConvert}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:When a download finishes;;;;\nORG;CHARSET=utf-8:{@afterShown};\nPHOTO;ENCODING=b:{iconFinish}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Forget saved logins;;;;\nORG;CHARSET=utf-8:Sign out of every site;\nPHOTO;ENCODING=b:{iconForget}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Reset UMDL;;;;\nORG;CHARSET=utf-8:Remove the tools and all settings;\nPHOTO;ENCODING=b:{iconReset}\nEND:VCARD\n"
+
+        const settingsFile = setName(@settingCards, "umdl-settings.vcf", true)
+        @settingsContacts = settingsFile.contact
+        const settingsPick = chooseFromList(@settingsContacts, "Settings")
+        @setting = "{settingsPick}"
+
+        if @setting == "Save to" {
+            @askAlbum = "1"
+            @settingsChanged = "1"
+        }
+
+        if @setting == "Ask before big downloads" {
+            const thresholdTyped = prompt("Ask first when a link has more than this many items", "Number", "{@cfgThreshold}")
+            @thresholdText = "{thresholdTyped}"
+            const thresholdMatch = matchText("^[1-9][0-9]?[0-9]?[0-9]?$", @thresholdText)
+            @thresholdValid = "{thresholdMatch}"
+            if !@thresholdValid {
+                alert("Enter a whole number from 1 to 9999.", "Not saved")
+                stop()
+            }
+            @cfgThreshold = @thresholdValid
+            @saveCfg = "1"
+            @settingsChanged = "1"
+        }
+
+        if @setting == "Videos Photos cannot play" {
+            @askConvert = "1"
+            @settingsChanged = "1"
+        }
+
+        if @setting == "When a download finishes" {
+            menu "When a download finishes" {
+                item "Show a notification":
+                    @cfgAfter = "notify"
+                item "Open Photos":
+                    @cfgAfter = "photos"
+            }
+            @saveCfg = "1"
+            @settingsChanged = "1"
+        }
+
+        if @setting == "Forget saved logins" {
+            @toolCmd = "logout"
+        }
+
+        if @setting == "Reset UMDL" {
+            menu "Remove UMDL's download tools and settings from a-Shell?\n\nYour Photos and the shortcut itself are not touched. Files kept under a-Shell, UMDL, Saved are deleted." {
+                item "Reset UMDL":
+                    rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
+                        "command": "rm -rf $HOME/Documents/UMDL",
+                        "openWindow": "close",
+                        "keepGoing": false,
+                        "ShowWhenRun": false
+                    })
+                    alert("Everything UMDL installed is gone. Run UMDL again to set it up, or delete the shortcut.", "UMDL was reset")
+                    stop()
+                item "Cancel":
+                    stop()
+            }
+        }
+    }
+}
+
+/* ------------------------------------------------------------------------
+ * 7. Questions shared by first-run setup and Settings
+ * ---------------------------------------------------------------------- */
+
+if @askAlbum == "1" {
+    menu "Where should downloads be saved?" {
+        item "A new album":
+            const newAlbum = prompt("Name for the new album", nil, "UMDL")
+            @newAlbumName = "{newAlbum}"
+            if !@newAlbumName {
+                @newAlbumName = "UMDL"
+            }
+            createAlbum("{@newAlbumName}")
+            @cfgAlbum = @newAlbumName
+        item "An album I already have":
+            const oldAlbum = prompt("Type the album's name exactly as Photos shows it", nil, "{@cfgAlbum}")
+            @oldAlbumName = "{oldAlbum}"
+            if !@oldAlbumName {
+                @oldAlbumName = "Recents"
+            }
+            @cfgAlbum = @oldAlbumName
+        item "No album, just my library":
+            @cfgAlbum = "Recents"
+    }
+    @saveCfg = "1"
+}
+
+if @askConvert == "1" {
+    menu "UMDL picks the best quality Photos can play. When a site only offers a format Photos cannot play, what should happen?" {
+        item "Convert it for Photos (slower)":
+            @cfgConvert = "1"
+        item "Keep the original in Files":
+            @cfgConvert = "0"
+    }
+    @saveCfg = "1"
+}
+
+if @saveCfg == "1" {
+    const cfgOut = {"album": "{@cfgAlbum}", "threshold": "{@cfgThreshold}", "convert": "{@cfgConvert}", "after": "{@cfgAfter}"}
+    const cfgOutText = text("{cfgOut}")
+    const cfgOutBlob = base64Encode(cfgOutText, "None")
+    rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
+        "command": "dash -c 'mkdir -p $HOME/Documents/UMDL; echo {cfgOutBlob} > $HOME/Documents/UMDL/config.b64'",
+        "openWindow": "close",
+        "keepGoing": false,
+        "ShowWhenRun": false
+    })
+}
+
+if @settingsChanged == "1" {
+    showNotification("Your settings were saved.", "UMDL")
+    stop()
+}
+
+/* ------------------------------------------------------------------------
+ * 8. Hand over to a-Shell
+ * ---------------------------------------------------------------------- */
+
+if @signInTo {
+    alert("a-Shell will open the site. Sign in as usual, then come back to the app you were in.\n\nTo leave the page, swipe right from the left edge of the screen.", "Sign in")
+    openApp("AsheKube.app.a-Shell")
+    wait(1)
+    rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
+        "command": "internalbrowser {@signInTo}",
+        "openWindow": "open",
+        "keepGoing": false,
+        "ShowWhenRun": false
+    })
+    stop()
+}
+
+const payload = {"v": "{@umdlVersion}", "p": "{@protocol}", "name": "UMDL", "url": "{@link}", "mode": "{@runMode}", "limit": "{@runLimit}", "force_update": "{@forceUpdate}", "cfg": {"album": "{@cfgAlbum}", "threshold": "{@cfgThreshold}", "convert": "{@cfgConvert}", "after": "{@cfgAfter}"}}
+const payloadText = text("{payload}")
+const payloadBlob = base64Encode(payloadText, "None")
+@blob = "{payloadBlob}"
+
+if @needsInstall == "1" {
+    alert("a-Shell will now open and install the download tools. This takes a minute or two and needs an internet connection.\n\nKeep a-Shell open until it sends you back here.", "One-time install")
+    openApp("AsheKube.app.a-Shell")
+    wait(1)
+    rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
+        "command": "clear\nhideKeyboard\necho \"UMDL is installing its download tools. Keep a-Shell open.\"\nmkdir -p $HOME/Documents/UMDL\npython -m venv $HOME/Documents/UMDL/env\nsource $HOME/Documents/UMDL/env/bin/activate\npip install chardet requests certifi mutagen -q --disable-pip-version-check --upgrade\npip install yt-dlp yt-dlp-ejs yt-dlp-apple-webkit-jsi gallery-dl -q --disable-pip-version-check --upgrade\ncurl -sL https://raw.githubusercontent.com/TheKfcBandit/UMDL/main/src/umdl.py -o $HOME/Documents/UMDL/umdl.py\npython $HOME/Documents/UMDL/umdl.py installed {@blob}\ndeactivate\ncd",
+        "openWindow": "open",
+        "keepGoing": false,
+        "ShowWhenRun": false
+    })
+    stop()
+}
+
+if !@toolCmd {
+    @toolCmd = "run"
+    if !@link {
+        if @firstRun == "1" {
+            alert("Share any post or video to UMDL and it lands in your Photos.\n\nOpen UMDL on its own for settings.", "UMDL is ready")
+        }
+        stop()
+    }
+}
+
+// "Resume last download" replays the interrupted request exactly as it was sent.
+if @choice == "Resume last download" {
+    @blob = @resumeBlob
+}
+
+openApp("AsheKube.app.a-Shell")
+wait(1)
+rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
+    "command": "cd $HOME/Documents/UMDL\nsource env/bin/activate\npython umdl.py {@toolCmd} {@blob}\ndeactivate\nclear && cd",
+    "openWindow": "open",
+    "keepGoing": false,
+    "ShowWhenRun": false
+})

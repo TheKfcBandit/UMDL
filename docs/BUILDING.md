@@ -45,7 +45,7 @@ The simulator is a model of Shortcuts, not Shortcuts. It catches logic and proto
 
 iOS only imports signed shortcuts, and Apple's signing tool only works on a Mac that is signed in to iCloud. GitHub's build machines are not, so CI cannot sign on its own. Four ways to get a signed shortcut:
 
-**In the Cherri Playground**, with no Mac and no key. Run `make playground` (or take `UMDL.playground.cherri` from the `UMDL-unsigned` artifact of any CI run). It is the same source with the menu icons inlined, so it is one self-contained file. Paste it into the [Cherri Playground](https://playground.cherrilang.org), build, and export the signed shortcut. The Playground may run a different compiler version from the one UMDL is tested with.
+**In the Cherri Playground**, with no Mac and no key. [`playground/UMDL.cherri`](../playground/UMDL.cherri) is the same source with the menu icons inlined, so it is one self-contained file. Copy all of it, paste it into the [Cherri Playground](https://playground.cherrilang.org), build, and export the signed shortcut. The Playground may run a different compiler version from the one UMDL is tested with. After changing `src/UMDL.cherri` or an icon, run `make playground` to refresh the copy; a test fails if you forget.
 
 **On a Mac.** Cherri signs with the built-in `shortcuts` command. The Mac must be signed in to iCloud.
 
@@ -53,7 +53,7 @@ iOS only imports signed shortcuts, and Apple's signing tool only works on a Mac 
 cherri src/UMDL.cherri --share=anyone      # writes src/UMDL.shortcut
 ```
 
-**With RoutineHub's HubSign**, from any platform. This needs a RoutineHub API key; check RoutineHub for what an account needs to have one.
+**With RoutineHub's HubSign**, from any platform. This needs a RoutineHub API key from an account with a paid Developer membership. A key from a free account is refused with `401 Unauthorized`.
 
 ```sh
 cherri src/UMDL.cherri --hubsign --routinehub-api-key=YOUR_KEY
@@ -71,15 +71,15 @@ cherri src/UMDL.cherri --signing-server=https://your.server/sign
 
 `.github/workflows/build.yml` runs on every push and pull request:
 
-1. **Compile and test** on Linux. The unsigned shortcut and the Playground source are attached to the run as `UMDL-unsigned`.
-2. **Sign** on a macOS runner. It first tries the runner's own `shortcuts sign`, which currently fails with "you must be signed into iCloud". If the repository has a `ROUTINEHUB_API_KEY` secret, it then signs with HubSign, and the signed shortcut is attached to the run as `UMDL`. Without the secret the job still passes and says so in its summary.
+1. **Compile and test** on Linux. The unsigned shortcut is attached to the run as `UMDL-unsigned`.
+2. **Sign** on a macOS runner. It first tries the runner's own `shortcuts sign`, which currently fails with "you must be signed into iCloud". If the repository has a `ROUTINEHUB_API_KEY` secret, it then signs with HubSign, and the signed shortcut is attached to the run as `UMDL`. If the secret is missing or RoutineHub refuses the key, the job still passes and says so in its summary.
 3. **Release**, only for a `v*` tag: checks the tag against `version.json` and publishes the signed shortcut. It fails if there is no signed shortcut.
 
 To add the secret: repository **Settings › Secrets and variables › Actions › New repository secret**, named `ROUTINEHUB_API_KEY`. Never commit the key or paste it into an issue.
 
 ## Release
 
-1. Add a section for the new version at the top of `CHANGELOG.md`.
+1. Add a section for the new version at the top of `CHANGELOG.md`, and run `make playground`.
 2. Set the new version in three places: `@umdlVersion` in `src/UMDL.cherri`, `HELPER_VERSION` in `src/umdl.py` (if the helper changed) and `version.json`. `tests/test_versions.py` fails if they disagree.
 3. Put one line in `version.json` `notes`. It is shown in the update prompt.
 4. Run `make test` and the device checklist.
@@ -112,7 +112,8 @@ src/umdl.py              the helper that runs in a-Shell
 assets/icons/            menu icons, embedded at compile time
 tools/make_icons.py      draws the icons
 tools/dump_shortcut.py   prints a compiled shortcut as pseudo-code
-tools/make_playground.py writes a single-file source for the Cherri Playground
+tools/make_playground.py refreshes the single-file source
+playground/UMDL.cherri   the source as one file, for the Cherri Playground
 tests/                   tests, the shortcut simulator, stand-in download tools
 docs/                    requirements, architecture, this file
 version.json             what installed copies check for updates

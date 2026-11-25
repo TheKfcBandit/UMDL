@@ -3,7 +3,7 @@
 #   make test    build, then run every test
 #   make sign    compile and sign (macOS, or anywhere with ROUTINEHUB_API_KEY set)
 #   make icons   redraw the menu icons
-#   make playground   write build/UMDL.playground.cherri, a single file for the Cherri Playground
+#   make playground   refresh playground/UMDL.cherri, the single file for the Cherri Playground
 
 CHERRI ?= cherri
 PYTHON ?= python3

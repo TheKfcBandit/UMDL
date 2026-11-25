@@ -32,14 +32,10 @@ jobs:
         run: cherri src/UMDL.cherri --skip-sign --debug --no-ansi > compile.log || (cat compile.log; exit 1)
       - name: Run the tests
         run: python3 -m unittest discover -s tests -v
-      - name: Make the single-file source for the Cherri Playground
-        run: python3 tools/make_playground.py build/UMDL.playground.cherri
       - uses: actions/upload-artifact@v7
         with:
           name: UMDL-unsigned
-          path: |
-            src/UMDL_unsigned.shortcut
-            build/UMDL.playground.cherri
+          path: src/UMDL_unsigned.shortcut
           if-no-files-found: error
 
   sign:
@@ -72,7 +68,8 @@ jobs:
           if [ -s dist/UMDL.shortcut ]; then echo "Already signed by the runner."; exit 0; fi
           if [ -z "$ROUTINEHUB_API_KEY" ]; then echo "No ROUTINEHUB_API_KEY secret; skipping."; exit 0; fi
           mkdir -p dist
-          cherri src/UMDL.cherri --hubsign --routinehub-api-key="$ROUTINEHUB_API_KEY" --output=dist/UMDL.shortcut --no-ansi
+          cherri src/UMDL.cherri --hubsign --routinehub-api-key="$ROUTINEHUB_API_KEY" --output=dist/UMDL.shortcut --no-ansi \
+            || echo "::warning::RoutineHub refused to sign. A 401 means the key is wrong or the account has no Developer membership, which HubSign requires."
       - name: Check the result
         id: result
         run: |
@@ -81,7 +78,7 @@ jobs:
             echo "Signed UMDL.shortcut is attached to this run as the UMDL artifact." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "signed=false" >> "$GITHUB_OUTPUT"
-            echo "The shortcut compiled but could not be signed here: GitHub's runners are not signed in to iCloud, and no ROUTINEHUB_API_KEY secret is set. See docs/BUILDING.md for the ways to sign it." >> "$GITHUB_STEP_SUMMARY"
+            echo "The shortcut compiled but could not be signed here: GitHub's runners are not signed in to iCloud, and RoutineHub did not sign it (no ROUTINEHUB_API_KEY secret, or the key was refused). See docs/BUILDING.md for the ways to sign it." >> "$GITHUB_STEP_SUMMARY"
           fi
       - uses: actions/upload-artifact@v7
         if: steps.result.outputs.signed == 'true'

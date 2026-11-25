@@ -40,5 +40,16 @@ class Versions(unittest.TestCase):
         self.assertIn(repo, self.meta["url"])
 
 
+class PlaygroundCopy(unittest.TestCase):
+    def test_single_file_source_is_current(self):
+        import sys
+        sys.path.insert(0, os.path.join(ROOT, "tools"))
+        import make_playground
+        expected, count = make_playground.render()
+        self.assertGreater(count, 0)
+        self.assertEqual(read("playground", "UMDL.cherri"), expected,
+                         "run `make playground` and commit the result")
+
+
 if __name__ == "__main__":
     unittest.main()
