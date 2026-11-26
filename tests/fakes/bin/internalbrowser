@@ -1,0 +1,20 @@
+#!/usr/bin/env python3
+"""Stand-in for a-Shell's internalbrowser. Records the page it was asked to
+open in $HOME/browser.log. If $HOME/.fake-signin exists (a JSON list of
+[domain, cookie name] pairs), it "signs in": those cookies are written to the
+cookie store, as a-Shell's browser does once a sign-in completes."""
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import cookiejar  # noqa: E402
+
+home = os.environ.get("HOME", "")
+with open(os.path.join(home, "browser.log"), "a") as handle:
+    handle.write(" ".join(sys.argv[1:]) + "\n")
+plan = os.path.join(home, ".fake-signin")
+if os.path.exists(plan):
+    with open(plan) as handle:
+        cookies = [tuple(pair) for pair in json.load(handle)]
+    cookiejar.write(os.path.join(home, "Library", "Cookies", "Cookies.binarycookies"), cookies)

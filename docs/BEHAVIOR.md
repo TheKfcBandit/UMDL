@@ -11,6 +11,7 @@ Labels are written exactly as they appear. Tests are in `tests/test_shortcut_flo
 - [When a download fails](#when-a-download-fails)
 - [Unsaved and interrupted downloads](#unsaved-and-interrupted-downloads)
 - [Opening UMDL from the Shortcuts app](#opening-umdl-from-the-shortcuts-app)
+- [Status](#status)
 - [Settings](#settings)
 - [What UMDL asks a-Shell to do](#what-umdl-asks-a-shell-to-do)
 - [Prompts that come from iOS](#prompts-that-come-from-ios)
@@ -139,6 +140,7 @@ The title is the post's title, or `UMDL` when the site gives none.
 | Several items | Saved *N* items to the *name* album. | `OneTap.test_gallery_post_saves_every_image` |
 | Nothing could go to Photos | No items could be added to Photos. | `OneTap.test_audio_is_kept_in_files` |
 | Some files were kept in Files | A second line: *N* kept in Files, under a-Shell, UMDL, Saved. | `OneTap.test_audio_is_kept_in_files` |
+| A file is over 1 GB | It is kept in Files, with a further line: *N* too large to pass to Photos (over 1 GB). | `OneTap.test_file_too_large_to_hand_over_is_kept_in_files` |
 | Some items failed | A further line: *N* could not be downloaded. | `OneTap.test_partial_download_saves_what_arrived_and_says_what_did_not` |
 
 ### After the notification
@@ -195,8 +197,8 @@ The last line depends on the kind of failure (`Errors.test_each_kind_of_failure_
 |---|---|---|
 | 🔄 Try again | Runs the same download again. Parts already downloaded are reused | `Errors.test_try_again_succeeds_once_the_site_recovers` |
 | 🛠️ Update tools and try again | Upgrades yt-dlp and gallery-dl first, then downloads | `Errors.test_update_tools_and_try_again` |
-| 🔑 Sign in to this site | Opens the site in a-Shell's browser. See [Sign in to a site](#sign-in-to-a-site) | `Errors.test_sign_in_opens_the_site` |
-| 📋 Copy error details | Copies the UMDL version, the link and the error to the clipboard, for a bug report | `Errors.test_error_details_can_be_copied` |
+| 🔑 Sign in to this site | Opens that site's sign-in page and confirms the sign-in. See [Sign in to a site](#sign-in-to-a-site) | `Errors.test_sign_in_from_a_failed_download_opens_that_sites_sign_in_page` |
+| 📋 Copy error details | Copies the UMDL version, the link, the error and the end of the helper's log to the clipboard, for a bug report. A notification confirms: "Error details copied to the clipboard." | `Errors.test_error_details_can_be_copied_with_the_log` |
 | Cancel | Stops | `Errors.test_error_menu_explains_and_cancels` |
 
 Two failures have their own screen in place of this menu: **Setup incomplete** (see [How setup ends](#how-setup-ends)) and **No link found**, "UMDL needs a web link. Share a post or video to UMDL, or copy its link first."
@@ -214,6 +216,8 @@ Two failures have their own screen in place of this menu: **Setup incomplete** (
 
 This prompt appears only when such a download exists. It is never shown during setup, or on a run that is itself delivering a download.
 
+If the files of that download have since been removed from a-Shell, **Save it now** shows the alert **Nothing to save**, "The files of that download are no longer in a-Shell. Download the link again.", and the prompt does not return (`Recovery.test_unsaved_download_whose_files_are_gone_is_explained`).
+
 **A download that was interrupted**, for example because a-Shell was closed. The main menu gains **Resume last download**, which repeats the request exactly as it was made (`Recovery.test_interrupted_download_can_be_resumed_from_the_menu`). Sharing the same link again has the same effect.
 
 **A damaged settings file** is treated as no settings: the welcome screen appears (`Recovery.test_damaged_settings_file_restarts_setup_instead_of_failing`).
@@ -228,9 +232,10 @@ With no link to work on, UMDL shows its main menu straight away (`MainMenu.test_
 | Enter a link | Type or paste a link to a post or video | Asks "Link to download" with the URL keyboard, then downloads. Anything that is not a link: alert **No link found**, "The text entered is not a web link." | `MainMenu.test_enter_a_link`, `MainMenu.test_entering_something_that_is_not_a_link` |
 | Resume last download | Continues the download that was interrupted | Listed only when a download was interrupted | `Recovery.test_interrupted_download_can_be_resumed_from_the_menu` |
 | Settings | Album and download options | Opens [Settings](#settings) | `Settings.test_settings_menu_shows_current_values` |
-| Sign in to a site | Required for private or age-restricted posts | See below | `MainMenu.test_sign_in_to_a_listed_site_and_a_typed_one` |
+| Sign in to a site | Required for private or age-restricted posts | See below | `MainMenu.test_sign_in_is_confirmed_once_the_site_has_stored_it` |
+| Status | Sign-ins, versions and logs | Opens [Status](#status) | `MainMenu.test_status_shows_sign_ins_versions_and_storage` |
 | Update tools | Installs the latest yt-dlp and gallery-dl | a-Shell upgrades the tools, then an alert **Download tools updated** lists the installed versions. If the upgrade fails the title is **The update could not be completed** | `MainMenu.test_update_tools_reports_back` |
-| About UMDL | Version *x*. Updates and diagnostics | See below | `MainMenu.test_about_diagnostics_project_page_and_done` |
+| About UMDL | Version *x*. Updates and project page | See below | `MainMenu.test_about_project_page_and_done` |
 
 Dismissing the menu stops the shortcut.
 
@@ -238,15 +243,26 @@ Dismissing the menu stops the shortcut.
 
 > Choose a site to sign in to.
 >
-> The sign-in is stored on this device, inside a-Shell.
+> The sign-in is stored on this device, inside a-Shell. Status shows which sites are signed in.
 
 Choices: **Instagram**, **X (Twitter)**, **Reddit**, **TikTok**, **Facebook**, **Another site**. "Another site" asks for the "Address of the site's sign-in page"; text that is not a web address gives the alert **Sign in**, "The text entered is not a web address."
 
-Then the alert **Sign in** explains what follows: "a-Shell will open the site's sign-in page. Sign in, then return to the previous app. To close the page, swipe right from the left edge of the screen." a-Shell opens the page in its own browser. UMDL does not see what is typed there.
+Then the alert **Sign in** explains what follows: "a-Shell will open the sign-in page. Sign in as usual. UMDL returns here and confirms as soon as the sign-in has been saved, usually within a few seconds. If it does not, swipe right from the left edge of the screen to close the page, then check Status in the UMDL menu."
+
+a-Shell opens the site's sign-in page in its own browser, and the helper watches a-Shell's cookie store. UMDL does not see what is typed, and never reads a cookie's value, only which site it belongs to and its name. yt-dlp and gallery-dl read the same store, so nothing is copied anywhere.
+
+| What happens | Shown | Test |
+|---|---|---|
+| The site stores a sign-in | Shortcuts returns to the front with the alert **Signed in to** *site*: "The sign-in is saved on this device, inside a-Shell. UMDL uses it for *site* links from now on." | `MainMenu.test_sign_in_is_confirmed_once_the_site_has_stored_it` |
+| The site was already signed in | The page is not opened. Alert **Already signed in to** *site*, which also says how to switch accounts | `MainMenu.test_signing_in_again_reports_the_existing_sign_in` |
+| No sign-in appears within 10 minutes | Alert **Sign-in not confirmed**: "No sign-in to *site* was found after 10 minutes. If you did sign in, open Status from the UMDL menu to check. Some sites do not allow signing in from an app's built-in browser." | `MainMenu.test_sign_in_that_was_not_completed_says_so` |
+| A site that is not in the list | The address entered is opened as it is. A sign-in is recognised by a session cookie for that site, and confirmed under the site's domain name | `MainMenu.test_sign_in_to_another_site` |
+
+For the five listed sites "signed in" means the site's own session cookie is present and has not expired. Visiting a site without signing in does not count.
 
 ### About UMDL
 
-> **UMDL 1.1.0**
+> **UMDL 1.2.0**
 >
 > A free, open-source media downloader.
 > Powered by yt-dlp, gallery-dl and a-Shell.
@@ -254,9 +270,56 @@ Then the alert **Sign in** explains what follows: "a-Shell will open the site's 
 | Choice | Result | Test |
 |---|---|---|
 | 🔄 Check for a new version | Up to date: alert **UMDL is up to date**. Newer release: "UMDL *new* is available…" and its release notes, with **⬇️ Get the update** and **Later**. No connection: alert **Update check**, "GitHub could not be reached. Check the internet connection, then try again." | `MainMenu.test_check_for_new_version` |
-| 🩺 Run diagnostics | a-Shell runs the helper's self-check; the alert **UMDL diagnostics** lists the versions of the helper, yt-dlp, gallery-dl, ffmpeg and Python | `MainMenu.test_about_diagnostics_project_page_and_done` |
-| 🌐 Open the project page | Opens the repository on GitHub | `MainMenu.test_about_diagnostics_project_page_and_done` |
-| Done | Closes the menu | `MainMenu.test_about_diagnostics_project_page_and_done` |
+| 🌐 Open the project page | Opens the repository on GitHub | `MainMenu.test_about_project_page_and_done` |
+| Done | Closes the menu | `MainMenu.test_about_project_page_and_done` |
+
+## Status
+
+**Status** in the main menu opens a-Shell for a few seconds, then shows the alert **UMDL status**. It answers "is everything in place?" and "am I signed in?" (`MainMenu.test_status_shows_sign_ins_versions_and_storage`).
+
+```
+UMDL 1.2.0, helper 1.2.0
+a-Shell 2.3.0 (512)
+Python 3.11.9
+yt-dlp 2026.11.20
+gallery-dl 1.31.2
+ffmpeg 6.1
+Tools last updated: 25 Nov 17:20
+
+Sign-ins
+Instagram: signed in
+X (Twitter): not signed in
+Reddit: signed in
+TikTok: not signed in
+Facebook: not signed in
+Other sites that may be signed in: example.org
+
+Storage
+Working files: 0 bytes
+Kept in Files: 2 items
+Unsaved download: none
+Free space: 41.3 GB
+
+Checks
+Download tools: ready
+GitHub: reachable
+Last download: 25 Nov 17:36, failed (auth)
+```
+
+The version numbers above are examples. When nothing has ever been stored, the sign-in section reads "No sign-ins are stored."
+
+After the alert:
+
+> Copy the status and the last log to the clipboard?
+>
+> Useful when reporting a problem.
+
+| Choice | Result | Test |
+|---|---|---|
+| 📋 Copy status and log | Copies the status text and the end of the helper's log of the last download. A notification confirms: "Status and log copied to the clipboard." Works when there is no log yet | `MainMenu.test_status_and_log_can_be_copied`, `MainMenu.test_copying_status_before_any_download_does_not_fail` |
+| Done | Closes the menu | `MainMenu.test_status_shows_sign_ins_versions_and_storage` |
+
+The log holds the link, which tool was tried, and the error each tool reported. It holds no cookies and no passwords.
 
 ## Settings
 
@@ -287,14 +350,19 @@ a-Shell runs commands for a shortcut in two ways. Background commands return the
 |---|---|---|
 | Start of every run that is not a result | Background | Print the settings file, the helper's version marker, and any unsaved or interrupted download |
 | Settings saved | Background | Write `config.b64` |
+| Before saving to Photos | Background | `cat` the list of files of that download |
+| Each file to save | a-Shell's Get File action, as a copy | Hand one file to Shortcuts |
 | Files saved to Photos, or discarded | Background | Delete that download's working folder |
+| Copy error details, copy status and log | Background | `tail` the last 40 lines of the helper's log |
 | Check for a new version | Background | `curl` this repository's `version.json` |
 | Reset UMDL | Background | Delete `~/Documents/UMDL` |
 | Helper missing, or from another version | Background | `curl` `src/umdl.py` from this repository, and record which shortcut version fetched it |
 | The same, when the background download fails | In the app | The same download, typed into the a-Shell window |
 | After the helper was fetched | In the app | `pip install --upgrade yt-dlp gallery-dl`, before the helper starts |
-| Download, setup, update tools, diagnostics, forget sign-ins | In the app | `python umdl.py <command> <request>` |
-| Sign in | In the app | `internalbrowser <address>` |
+| Download, setup, update tools, status, sign in, forget sign-ins | In the app | `python umdl.py <command> <request>` |
+| Sign in | By the helper | `internalbrowser <address>`, then it watches the cookie store |
+
+Every background command is run with a-Shell's "continue after an error" option, and every Get File asks for a copy. Without either, a-Shell reports a failed action and Shortcuts stops with "There was a problem running the shortcut", naming neither the action nor the reason (`Hygiene.test_background_commands_survive_a_failing_command`, `Hygiene.test_get_file_always_asks_for_a_copy`).
 
 The helper also keeps the tools current by itself: it installs any that are missing, upgrades them once a day, and replaces itself when this repository publishes a newer helper for the same protocol.
 
@@ -315,18 +383,22 @@ A first run from the share sheet can therefore need several taps on **Allow** be
 
 The flow tests run the compiled shortcut, action by action, in `tests/shortcut_sim.py`, against the real helper script. yt-dlp, gallery-dl, pip and curl are replaced by stand-ins in `tests/fakes`, so a test can stage an offline device, a failed install, a playlist of any size, or a site that returns an error.
 
-That shows the logic is right. It cannot show how iOS behaves. Version 1.0 passed its tests and failed on a device, because the simulator assumed an empty text has no value in an **If** action. On a device it has one. The simulator now behaves as the device does, the shortcut no longer uses that test at all, and `Hygiene.test_no_condition_relies_on_has_any_value` fails the build if one returns.
+That shows the logic is right. It cannot show how iOS behaves. Two device tests have each found something the simulator had wrong, and each is now part of the simulator, so the old build fails in it the way it failed on the phone:
+
+| Found on a device | What it caused | Now |
+|---|---|---|
+| An empty text counts as having a value in an **If** action (1.0.0) | A false "unsaved download" prompt on every run, and no main menu | The shortcut compares with `[]` instead; `Hygiene.test_no_condition_relies_on_has_any_value` |
+| On iOS 27.2, a-Shell's **Get File** stops the shortcut unless it is asked for a copy ([a-Shell issue 1138](https://github.com/holzschu/a-shell/issues/1138)) (1.1.0) | "There was a problem running the shortcut" after every successful download | Get File always asks for a copy; `Hygiene.test_get_file_always_asks_for_a_copy` |
 
 Confirmed on a device so far:
 
-- Background commands return their output, and the settings file is read correctly.
-- The helper starts in a-Shell and its result reaches the shortcut.
-- Text comparisons with **is**, **begins with** and **contains** behave as the simulator expects.
-- An empty text counts as having a value.
+- Setup, the download tools installing, and a download running in a-Shell.
+- The main menu and the menus under it.
+- The helper's result reaching the shortcut, the failed-download menu, and **Copy error details**.
+- The sign-in page opening in a-Shell.
 
 Not yet confirmed on a device, and so the first things to check ([device checklist](BUILDING.md#device-checklist)):
 
-- The icon menus (main menu and Settings).
-- Saving to an album, and the notification.
-- `curl` in a background command. If it does not work there, the helper is downloaded in the app.
-- `pip install` without a virtual environment, from the a-Shell window and from inside the helper.
+- Saving to the album and the notification. This is the step the Get File fault blocked.
+- The sign-in confirmation. It depends on a-Shell writing its cookie store while the page is still open; if it writes later, the result is **Sign-in not confirmed** and Status shows the sign-in afterwards.
+- Status, and copying the log.

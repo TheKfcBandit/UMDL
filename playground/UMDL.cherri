@@ -11,12 +11,17 @@
  * Every screen and every path through this file is described in
  * docs/BEHAVIOR.md. Keep the two in step.
  *
- * Two rules this file follows, both learned on a real device:
+ * Rules this file follows. The first three were learned on a real device.
  *
  *   1. Never test a text for "has any value". Shortcuts treats an empty text
  *      as a value. Emptiness is tested by wrapping the text in brackets and
  *      comparing with "[]".
- *   2. Cherri functions are not used. They re-run the shortcut and read its
+ *   2. a-Shell's "Get File" always asks for a copy ("copyFile"). Without it
+ *      the action stops the whole shortcut on iOS 27.2 with no message
+ *      (https://github.com/holzschu/a-shell/issues/1138).
+ *   3. Background a-Shell commands set "keepGoing". Without it a command
+ *      that exits with an error stops the shortcut in the same way.
+ *   4. Cherri functions are not used. They re-run the shortcut and read its
  *      input, which is the same channel the helper's callback uses.
  */
 
@@ -35,7 +40,7 @@
 
 // Keep in step with version.json. The protocol number only changes when the
 // payload or callback format does.
-@umdlVersion = "1.1.0"
+@umdlVersion = "1.2.0"
 @protocol = "2"
 
 @shared = "{ShortcutInput}"
@@ -65,6 +70,7 @@
 @settingsChanged = "0"
 
 @failedCount = ""
+@oversizeCount = ""
 @jobTitle = ""
 @updateVersion = ""
 @updateLink = ""
@@ -103,6 +109,7 @@ if @shared beginsWith "UMDLCB:" {
         if @cbType == "done" {
             @saveManifest = "{cb['m']}"
             @failedCount = "{cb['nf']}"
+            @oversizeCount = "{cb['nb']}"
             @jobTitle = "{cb['title']}"
             @updateVersion = "{cb['upv']}"
             @updateLink = "{cb['upurl']}"
@@ -177,11 +184,17 @@ if @shared beginsWith "UMDLCB:" {
                     @link = @errLink
                     @forceUpdate = "1"
                 item "🔑 Sign in to this site":
-                    const errHost = getURLDetail(@errLink, "Host")
-                    @signInTo = "https://{errHost}"
+                    @signInTo = @errLink
                 item "📋 Copy error details":
-                    @errReport = "UMDL {@umdlVersion}\n{@errLink}\n{@errKind}: {@errText}"
+                    const errLog = rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
+                        "command": "tail -n 40 $HOME/Documents/UMDL/last.log",
+                        "openWindow": "close",
+                        "keepGoing": true,
+                        "ShowWhenRun": false
+                    })
+                    @errReport = "UMDL {@umdlVersion}\n{@errLink}\n{@errKind}: {@errText}\n\nLog\n{errLog}"
                     setClipboard(@errReport)
+                    showNotification("Error details copied to the clipboard.", "UMDL")
                     stop()
                 item "Cancel":
                     stop()
@@ -191,6 +204,26 @@ if @shared beginsWith "UMDLCB:" {
         if @cbType == "info" {
             alert("{cb['msg']}", "{cb['title']}")
             stop()
+        }
+
+        if @cbType == "status" {
+            @statusText = "{cb['msg']}"
+            alert("{@statusText}", "UMDL status")
+            menu "Copy the status and the last log to the clipboard?\n\nUseful when reporting a problem." {
+                item "📋 Copy status and log":
+                    const statusLog = rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
+                        "command": "tail -n 40 $HOME/Documents/UMDL/last.log",
+                        "openWindow": "close",
+                        "keepGoing": true,
+                        "ShowWhenRun": false
+                    })
+                    @statusReport = "{@statusText}\n\nLog\n{statusLog}"
+                    setClipboard(@statusReport)
+                    showNotification("Status and log copied to the clipboard.", "UMDL")
+                    stop()
+                item "Done":
+                    stop()
+            }
         }
 
         if @cbType == "setup" {
@@ -217,7 +250,7 @@ if @haveCfg == "0" {
     const preflight = rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
         "command": "dash -c 'W=\"$HOME/Documents/UMDL\"; if [ -f $W/config.b64 ]; then echo \"CFG:$(cat $W/config.b64)\"; fi; if [ -f $W/umdl.py ] && [ -f $W/helper.for ]; then echo \"FOR:$(cat $W/helper.for):END\"; fi; if [ -f $W/pending ]; then echo \"PENDING:$(cat $W/pending)\"; fi; if [ -f $W/last.b64 ]; then echo \"LAST:$(cat $W/last.b64)\"; fi; echo DONE'",
         "openWindow": "close",
-        "keepGoing": false,
+        "keepGoing": true,
         "ShowWhenRun": false
     })
     @state = "{preflight}"
@@ -317,7 +350,7 @@ if @probe != "[]" {
                 rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
                     "command": "rm -rf {@discardPath} $HOME/Documents/UMDL/pending",
                     "openWindow": "close",
-                    "keepGoing": false,
+                    "keepGoing": true,
                     "ShowWhenRun": false
                 })
             }
@@ -330,12 +363,28 @@ if @probe != "[]" {
 
 @probe = "[{@saveManifest}]"
 if @probe != "[]" {
-    const manifestFile = rawAction("AsheKube.app.a-Shell.GetFileIntent", {
-        "fileName": "{@saveManifest}",
-        "errorIfNotFound": true,
-        "ShowWhenRun": false
-    })
-    const manifest = getDictionary(manifestFile)
+    // The list of files is read with a background command, not with Get File.
+    @manifestText = ""
+    if @saveManifest contains "/Documents/UMDL/jobs/" {
+        const manifestRaw = rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
+            "command": "cat {@saveManifest}",
+            "openWindow": "close",
+            "keepGoing": true,
+            "ShowWhenRun": false
+        })
+        @manifestText = "{manifestRaw}"
+    }
+    if @manifestText !contains "\"photos\"" {
+        rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
+            "command": "rm -f $HOME/Documents/UMDL/pending",
+            "openWindow": "close",
+            "keepGoing": true,
+            "ShowWhenRun": false
+        })
+        alert("The files of that download are no longer in a-Shell. Download the link again.", "Nothing to save")
+        stop()
+    }
+    const manifest = getDictionary(@manifestText)
     const photoPaths = getValue(manifest, "photos")
     const keptNames = getValue(manifest, "kept")
     const keptTotal = count(keptNames)
@@ -346,6 +395,7 @@ if @probe != "[]" {
         const mediaFile = rawAction("AsheKube.app.a-Shell.GetFileIntent", {
             "fileName": "{photoPath}",
             "errorIfNotFound": true,
+            "copyFile": true,
             "ShowWhenRun": false
         })
         if @cfgAlbum == "Recents" {
@@ -363,7 +413,7 @@ if @probe != "[]" {
         rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
             "command": "rm -rf {@jobPath} $HOME/Documents/UMDL/pending",
             "openWindow": "close",
-            "keepGoing": false,
+            "keepGoing": true,
             "ShowWhenRun": false
         })
     }
@@ -381,6 +431,10 @@ if @probe != "[]" {
     }
     if @keptCount != "0" {
         @summary = "{@summary}\n{@keptCount} kept in Files, under a-Shell, UMDL, Saved."
+    }
+    @probe = "[{@oversizeCount}]"
+    if @probe != "[]" {
+        @summary = "{@summary}\n{@oversizeCount} too large to pass to Photos (over 1 GB)."
     }
     @probe = "[{@failedCount}]"
     if @probe != "[]" {
@@ -435,13 +489,14 @@ if @needsMenu == "1" {
     const iconKey = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEWvUt7+/f6rSdy+c+T05/qzW+DCeuXlyPTeuvHq0vbOleu5aOLWpu7gu/LJiummPtoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAItKT7AAAAMHRSTlP/////////////////////AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACpwcFTAAABW0lEQVR42u2YwXKEIBBEoWVAQM3//21wV0txraQqTh9SNe+0XpqVeQygc4ZhGIZhGMb/AA1qfi1TJI6AxTdG2ggY/IsF3HyfwM33Gdx8X8DNDw7UfIpGXf46Aqj5zSPdWTrPP0OkU/6Icful2DDO/7+1ull7gKs/SG9Vaf44aSOEASx/mqGI0YHnTxIHxvzPe3U1De38dIqGblPQ57dnFUPXTV3ktbkP1+6mYSikpFbOkKa6fHRPPDYUmPwnR3d+aihc+jH/KM9fpyf/lv9Qnrv8WTH/bv41V5Xc5Ku2/bI3nSISs/4ZC5tBQbDKsj8p7ozhfKpC3V6hQrsE0iu1qA9wcVaxyqFLlKC+uefd/DXya+pnTHOdpQrIRNC0Hss3U07quGmlmsvgqCunU9ydgdSvMhgCNX8t9KkOgXHjbpvu/H6LtDjSZRWuxjgI85ME+4OHYRiGYRiGocA31g4H4eUHy/0AAAAASUVORK5CYII="
     const iconUpdate = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEUzxlj8/v1Ey2du14nO8dda0XiW4qmr6Lq568Y9yWCE3ZqL36DE7s7c9eJg030AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACZ0vfOAAAAMHRSTlP///////////////////8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABd9rBbAAABQUlEQVR42u2Xa46DMBCDM5MHCY/e/7hLUFhaRNof2NJWO98BGIiD7XHOMAzDMP4ocSAPGMVzBwwikTpAVpQpQR0QqBJUiELP2wAZqRJUHkwJhCj09DuAIbTqLkElg89mykFeScBXT4tcAPOMJB0wnuGly0B9fRkiyDwvyb443vNDUry8S/IagEdz0jfUK6nb0TCcTaY2b8I6UDpZJ9rflG3NCe85lwoER84WWg1q2bKw452mgAvkE1JuuB8Dytd/gX6tyPsAXgtNH5wiKihtYteqbuZyeV8R26LwAAS+fxsWiKqu/Stw7w7kPRFKv85gMvMstAZQ/x2Pqq6Xbeb2jpCfmqjfZpT4XOUL6nduWqzA63vol3fMelBm7vP7C0LGJVG8+IgF6+J+pj6+bbHH9sHqqupXlFYCDMMwDMMwjH/ND1stBmHnCzd6AAAAAElFTkSuQmCC"
     const iconInfo = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEUwsMf9/v4nrMRkw9XL6/Go3udbwNJBtsyH0d635Ovc8vUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB3bVn6AAAAMHRSTlP//////////////wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACG2DDAAAAAoklEQVR42u2YWw7DMAjACHl07f0PvKzttv9J7lTJPgBWICCSCBERERH5gZyg4aPW4BQZvUx6JBW/lZ0GGbKXk57MAcoH5AhZv4J6TwGdIrzI/DXFG40fFfywu2JaB5qhXGaV18HVeAH7eBesh2DD2uDdySNhAZWjbAoUKFCgQIECBXdYWy7ci7An1DjiP7j1um5o/FcZRo2kf6RCRERE5A88AcTyA2ARwwv1AAAAAElFTkSuQmCC"
+    const iconStatus = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEUxrOX8/v7L6vlqw+xQuemT0/I8seep3PS14faDze/d8fsao+Nhv+wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABt4JAtAAAAMHRSTlP/////////////////AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAC8AjCNAAABFUlEQVR42u2XUQ+CMAyEWdfBBv7/3ythjFWGMSD3oLnvycTZc+2Vlq4jhBBCCCGE/B8axUPju5kEFHALCovvs8AAE5AsMIIvgMtRLAIBaKEFwQiETQCTo3oB5yDNloxARAiMRsDhPBpgRZDVPyijriX2k9xp1L4vn6ahPCTS2xzV0yeML4UtM2qNOo8HMUdif7WxbINJNaruvz+Vub6NPxjdOh72/+ALgeXnjy1Hvj3hLz08Xy7QVaNKK3DOQ3IYfxWWtgJuPNt/6g2662nNxRBz6N6eS/mCaYKNZtxoCAeFgY0eBe5fwOlcOySBFyTUhqTQElujwtbgAC2xaebffVHIPsK9J+Q9Dxr/yg5BCCGEEELIR56JxgSo7rBKDAAAAABJRU5ErkJggg=="
 
     @cards = "BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Download from clipboard;;;;\nORG;CHARSET=utf-8:Uses the most recently copied link;\nPHOTO;ENCODING=b:{iconDownload}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Enter a link;;;;\nORG;CHARSET=utf-8:Type or paste a link to a post or video;\nPHOTO;ENCODING=b:{iconPencil}\nEND:VCARD\n"
     @probe = "[{@resumeBlob}]"
     if @probe != "[]" {
         @cards = "{@cards}BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Resume last download;;;;\nORG;CHARSET=utf-8:Continues the download that was interrupted;\nPHOTO;ENCODING=b:{iconResume}\nEND:VCARD\n"
     }
-    @cards = "{@cards}BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Settings;;;;\nORG;CHARSET=utf-8:Album and download options;\nPHOTO;ENCODING=b:{iconSettings}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Sign in to a site;;;;\nORG;CHARSET=utf-8:Required for private or age-restricted posts;\nPHOTO;ENCODING=b:{iconKey}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Update tools;;;;\nORG;CHARSET=utf-8:Installs the latest yt-dlp and gallery-dl;\nPHOTO;ENCODING=b:{iconUpdate}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:About UMDL;;;;\nORG;CHARSET=utf-8:Version {@umdlVersion}. Updates and diagnostics;\nPHOTO;ENCODING=b:{iconInfo}\nEND:VCARD\n"
+    @cards = "{@cards}BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Settings;;;;\nORG;CHARSET=utf-8:Album and download options;\nPHOTO;ENCODING=b:{iconSettings}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Sign in to a site;;;;\nORG;CHARSET=utf-8:Required for private or age-restricted posts;\nPHOTO;ENCODING=b:{iconKey}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Status;;;;\nORG;CHARSET=utf-8:Sign-ins, versions and logs;\nPHOTO;ENCODING=b:{iconStatus}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Update tools;;;;\nORG;CHARSET=utf-8:Installs the latest yt-dlp and gallery-dl;\nPHOTO;ENCODING=b:{iconUpdate}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:About UMDL;;;;\nORG;CHARSET=utf-8:Version {@umdlVersion}. Updates and project page;\nPHOTO;ENCODING=b:{iconInfo}\nEND:VCARD\n"
 
     // The third argument keeps the name exactly as written, so the text becomes a .vcf file.
     const cardsFile = setName(@cards, "umdl-menu.vcf", true)
@@ -484,8 +539,12 @@ if @needsMenu == "1" {
         @toolCmd = "update"
     }
 
+    if @choice == "Status" {
+        @toolCmd = "status"
+    }
+
     if @choice == "Sign in to a site" {
-        menu "Choose a site to sign in to.\n\nThe sign-in is stored on this device, inside a-Shell." {
+        menu "Choose a site to sign in to.\n\nThe sign-in is stored on this device, inside a-Shell. Status shows which sites are signed in." {
             item "Instagram":
                 @signInTo = "https://www.instagram.com/accounts/login/"
             item "X (Twitter)":
@@ -507,9 +566,7 @@ if @needsMenu == "1" {
                     alert("The text entered is not a web address.", "Sign in")
                     stop()
                 }
-                // Host only: a query string would not survive a-Shell's command line.
-                const siteHost = getURLDetail(@siteLink, "Host")
-                @signInTo = "https://{siteHost}"
+                @signInTo = @siteLink
         }
     }
 
@@ -519,7 +576,7 @@ if @needsMenu == "1" {
                 const latestRaw = rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
                     "command": "curl -fsL --max-time 10 https://raw.githubusercontent.com/TheKfcBandit/UMDL/main/version.json",
                     "openWindow": "close",
-                    "keepGoing": false,
+                    "keepGoing": true,
                     "ShowWhenRun": false
                 })
                 @latestText = "{latestRaw}"
@@ -540,8 +597,6 @@ if @needsMenu == "1" {
                         @latestVersion = ""
                 }
                 stop()
-            item "🩺 Run diagnostics":
-                @toolCmd = "doctor"
             item "🌐 Open the project page":
                 openURL("https://github.com/TheKfcBandit/UMDL")
                 stop()
@@ -626,7 +681,7 @@ if @needsMenu == "1" {
                     rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
                         "command": "rm -rf $HOME/Documents/UMDL",
                         "openWindow": "close",
-                        "keepGoing": false,
+                        "keepGoing": true,
                         "ShowWhenRun": false
                     })
                     alert("UMDL's files have been removed. Run UMDL again to set it up, or delete the shortcut.", "UMDL was reset")
@@ -684,7 +739,7 @@ if @saveCfg == "1" {
     rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
         "command": "dash -c 'mkdir -p $HOME/Documents/UMDL; echo {cfgOutBlob} > $HOME/Documents/UMDL/config.b64'",
         "openWindow": "close",
-        "keepGoing": false,
+        "keepGoing": true,
         "ShowWhenRun": false
     })
 }
@@ -698,18 +753,13 @@ if @settingsChanged == "1" {
  * 8. Fetch the helper if needed, then hand over to a-Shell
  * ---------------------------------------------------------------------- */
 
+// Signing in is done by the helper, which waits for the sign-in to be stored
+// and reports back, so there is no doubt about whether it worked.
 @probe = "[{@signInTo}]"
 if @probe != "[]" {
-    alert("a-Shell will open the site's sign-in page. Sign in, then return to the previous app.\n\nTo close the page, swipe right from the left edge of the screen.", "Sign in")
-    openApp("AsheKube.app.a-Shell")
-    wait(1)
-    rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
-        "command": "internalbrowser {@signInTo}",
-        "openWindow": "open",
-        "keepGoing": false,
-        "ShowWhenRun": false
-    })
-    stop()
+    alert("a-Shell will open the sign-in page. Sign in as usual.\n\nUMDL returns here and confirms as soon as the sign-in has been saved, usually within a few seconds. If it does not, swipe right from the left edge of the screen to close the page, then check Status in the UMDL menu.", "Sign in")
+    @toolCmd = "signin"
+    @link = @signInTo
 }
 
 if @toolCmd == "none" {
@@ -731,7 +781,7 @@ if @needsHelper == "1" {
     const helperFetch = rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
         "command": "dash -c 'W=\"$HOME/Documents/UMDL\"; mkdir -p $W; rm -rf $W/env $W/umdl.new; curl -fsL --max-time 60 https://raw.githubusercontent.com/TheKfcBandit/UMDL/main/src/umdl.py -o $W/umdl.new && mv -f $W/umdl.new $W/umdl.py && echo {@umdlVersion} > $W/helper.for; if [ -f $W/umdl.py ] && [ -f $W/helper.for ]; then echo \"FOR:$(cat $W/helper.for):END\"; fi; echo DONE'",
         "openWindow": "close",
-        "keepGoing": false,
+        "keepGoing": true,
         "ShowWhenRun": false
     })
     @helperState = "{helperFetch}"

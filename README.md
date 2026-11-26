@@ -8,7 +8,7 @@
 
 UMDL is a free and open-source Shortcut. Downloads run on your own device with [yt-dlp](https://github.com/yt-dlp/yt-dlp) and [gallery-dl](https://github.com/mikf/gallery-dl) inside the free [a-Shell](https://apps.apple.com/app/a-shell/id1473805438) app. Nothing you share is sent to a UMDL server, because there isn't one.
 
-> **Status: 1.1.0.** Version 1.0.0 was tested on a device and failed during setup; 1.1.0 fixes what that test found. The new version passes its automated tests, which run the compiled shortcut in a simulator against the real helper script, but has not yet been run on a device itself. [docs/BEHAVIOR.md](docs/BEHAVIOR.md) lists what is confirmed and what is not. Please [report](https://github.com/TheKfcBandit/UMDL/issues) what you find.
+> **Status: 1.2.0.** Two rounds of testing on a device have each found a fault, and each is fixed: setup (1.1.0), and a failure after every download on iOS 27.2 (1.2.0). On a device, setup, the menus, downloading and error reporting are confirmed; saving to Photos, the sign-in confirmation and the Status screen are not yet. [docs/BEHAVIOR.md](docs/BEHAVIOR.md) keeps the list. Please [report](https://github.com/TheKfcBandit/UMDL/issues) what you find.
 
 ## Install
 
@@ -28,6 +28,7 @@ In any app, tap **Share**, then **UMDL**. a-Shell opens and shows progress, then
 - **Posts with several photos or videos** are saved whole.
 - **Playlists, albums and profiles** with more than 10 items ask first: everything, the first 10, or just the first. You can change the number.
 - **Audio and other files** Photos has no place for are kept in the Files app under *a-Shell › UMDL › Saved*.
+- **Videos over 1 GB** are kept there too. a-Shell can only hand a file to Shortcuts by loading it into memory on iOS 27.2, and that fails for very large files.
 
 Open UMDL on its own, without sharing anything, for the menu:
 
@@ -37,9 +38,10 @@ Open UMDL on its own, without sharing anything, for the menu:
 | Enter a link | Type or paste one |
 | Resume last download | Appears when a download was interrupted |
 | Settings | Album, the ask-first limit, what to do with unsupported video formats, what happens when a download finishes, forget sign-ins, reset |
-| Sign in to a site | For private or age-restricted posts |
+| Sign in to a site | For private or age-restricted posts. UMDL confirms when the sign-in is saved |
+| Status | Which sites are signed in, tool versions, storage, and a button to copy the log |
 | Update tools | Installs the newest yt-dlp and gallery-dl now |
-| About UMDL | Version, update check, diagnostics |
+| About UMDL | Version, update check, project page |
 
 Every screen, choice and message is described in [docs/BEHAVIOR.md](docs/BEHAVIOR.md).
 
@@ -53,7 +55,11 @@ When a site offers no playable format at all, UMDL either converts the video on 
 
 ## Signing in
 
-Some posts need an account. Choose **Sign in to a site** in the menu: a-Shell opens the site's sign-in page in its own browser. Sign in, then swipe right from the left edge of the screen to leave. The sign-in is stored by a-Shell on your device and yt-dlp and gallery-dl read it from there. UMDL never sees your password.
+Some posts need an account, and some sites (Reddit and Instagram among them) often refuse downloads that are not signed in. Choose **Sign in to a site** in the menu: a-Shell opens the site's sign-in page in its own browser. Sign in as usual. As soon as the site has stored the sign-in, UMDL brings you back to Shortcuts and says **Signed in to** *site*.
+
+**Status** in the menu lists which sites are signed in at any time.
+
+The sign-in is a cookie kept by a-Shell on your device. yt-dlp and gallery-dl read it from there. UMDL never sees your password and never reads a cookie's value, only which site it belongs to. Some sites, Google among them, do not allow signing in from an app's built-in browser.
 
 **Forget saved sign-ins** in Settings deletes the cookie file the download tools read.
 
@@ -64,10 +70,12 @@ A failed download returns to Shortcuts with the reason and these choices:
 - **Try again**
 - **Update tools and try again.** Sites change often, and a newer yt-dlp fixes most failures.
 - **Sign in to this site**
-- **Copy error details**, for a bug report
+- **Copy error details**, for a bug report. This includes the end of the helper's log
 
 Other things worth knowing:
 
+- **"There was a problem running the shortcut."** With UMDL 1.1.0 or earlier on iOS 27.2 this appears after every download: a-Shell's Get File action fails on that iOS version ([a-Shell issue 1138](https://github.com/holzschu/a-shell/issues/1138)). Update UMDL; 1.2.0 uses the mode that still works. The download that failed is not lost: the next run offers to save it.
+- **Is it set up properly?** Open **Status**. It shows the tool versions, whether GitHub can be reached, which sites are signed in, and the result of the last download. **Copy status and log** puts all of it on the clipboard.
 - **You are left in a-Shell.** Keep a-Shell in the foreground while it works. iOS suspends it otherwise. Share the same link again and the download resumes where it stopped.
 - **"A download from an earlier run has not been saved to Photos."** The download finished but saving was interrupted, for example by a permission prompt. Choose **Save it now**.
 - **"Setup incomplete."** The helper script or the download tools could not be downloaded. The message says which, and why. Check the connection and run UMDL again; it continues from where it stopped.

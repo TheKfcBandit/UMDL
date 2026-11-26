@@ -1,7 +1,7 @@
 {
-  "shortcut": "1.1.0",
-  "helper": "1.1.0",
+  "shortcut": "1.2.0",
+  "helper": "1.2.0",
   "protocol": 2,
   "url": "https://github.com/TheKfcBandit/UMDL/releases/latest",
-  "notes": "One-tap setup, a main menu, and fixes for the first-run problems in 1.0.0."
+  "notes": "Fixes the failure after a download on iOS 27.2. Sign-in now confirms itself, and Status shows sign-ins, versions and logs."
 }

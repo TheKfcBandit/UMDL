@@ -28,7 +28,9 @@ os.environ["UMDL_PIP"] = "pip"   # the stand-in in tests/fakes/bin
 os.environ["HOME"] = WORK        # where that stand-in "installs" to
 os.environ["NO_COLOR"] = "1"
 sys.path.insert(0, os.path.join(ROOT, "src"))
+sys.path.insert(0, os.path.join(ROOT, "tests", "fakes"))
 
+import cookiejar  # noqa: E402
 import umdl  # noqa: E402
 
 umdl.SAFARI_COOKIES = os.path.join(WORK, "Library", "Cookies", "Cookies.binarycookies")
@@ -525,7 +527,7 @@ class EndToEnd(Base):
         self.assertEqual((data["t"], data["title"]), ("info", "Sign-ins removed"))
         self.assertFalse(os.path.exists(umdl.SAFARI_COOKIES))
 
-    def test_setup_and_doctor(self):
+    def test_setup_and_status(self):
         install_fake_ytdlp({"raw": {}})
         install_fake_gallery(True)
         code, (_, data) = self.run_helper("setup", payload(""))
@@ -534,9 +536,15 @@ class EndToEnd(Base):
         self.setUp()
         install_fake_ytdlp({"raw": {}})
         install_fake_gallery(True)
+        code, (_, data) = self.run_helper("status", payload(""))
+        self.assertEqual(data["t"], "status")
+        self.assertIn("gallery-dl fake", data["msg"].split("\n"))
+        self.assertIn("Download tools: ready", data["msg"])
+        # Shortcut 1.1.0 asks for the same report as "doctor" and shows it as a message.
+        self.out.seek(0)
+        self.out.truncate()
         code, (_, data) = self.run_helper("doctor", payload(""))
-        self.assertEqual(data["t"], "info")
-        self.assertIn("gallery-dl  fake", data["msg"])
+        self.assertEqual((data["t"], data["title"]), ("info", "UMDL diagnostics"))
 
     def test_tools_that_cannot_be_installed_are_reported(self):
         sys.modules["yt_dlp"] = None  # makes "import yt_dlp" raise ImportError
@@ -592,6 +600,64 @@ class EndToEnd(Base):
         self.assertEqual(code, 1)
         self.assertEqual((data["t"], data["kind"]), ("error", "unknown"))
         self.assertIn("ZeroDivisionError", data["msg"])
+
+
+class SignIns(Base):
+    def setUp(self):
+        super().setUp()
+        umdl.remove(umdl.SAFARI_COOKIES)
+        self.addCleanup(umdl.remove, umdl.SAFARI_COOKIES)
+        plan = os.path.join(WORK, ".fake-signin")
+        self.addCleanup(lambda: os.path.exists(plan) and os.remove(plan))
+        self.plan = plan
+        self.wait = umdl.SIGNIN_WAIT
+        umdl.SIGNIN_WAIT = 1
+        self.addCleanup(setattr, umdl, "SIGNIN_WAIT", self.wait)
+
+    def test_cookie_store_is_read_without_its_values(self):
+        cookiejar.write(umdl.SAFARI_COOKIES, [(".Instagram.com", "sessionid", 2000000000),
+                                              ("example.org", "théme")])
+        self.assertEqual(umdl.read_cookie_store(),
+                         [(".instagram.com", "sessionid", 2000000000.0),
+                          ("example.org", "théme", 4102444800.0)])
+
+    def test_missing_or_damaged_store_is_no_sign_ins(self):
+        self.assertIsNone(umdl.read_cookie_store())
+        os.makedirs(os.path.dirname(umdl.SAFARI_COOKIES), exist_ok=True)
+        for junk in (b"", b"cook", b"not a cookie file at all", b"cook\x00\x00\x00\x09short"):
+            with open(umdl.SAFARI_COOKIES, "wb") as handle:
+                handle.write(junk)
+            self.assertFalse(umdl.read_cookie_store(), junk)
+        self.assertEqual(umdl.sign_in_lines(None), ["No sign-ins are stored."])
+
+    def test_signed_in_needs_the_sites_own_session_cookie(self):
+        now = 1900000000
+        cookies = [(".instagram.com", "csrftoken", 0), (".x.com", "auth_token", now + 60),
+                   (".reddit.com", "reddit_session", now - 60), ("notreddit.com", "reddit_session", 0),
+                   ("forum.example.org", "PHPSESSID", 0), ("ads.example.net", "uid", 0)]
+        self.assertFalse(umdl.signed_in("www.instagram.com", cookies, now))   # visited only
+        self.assertTrue(umdl.signed_in("twitter.com", cookies, now))          # same site as x.com
+        self.assertFalse(umdl.signed_in("old.reddit.com", cookies, now))      # expired
+        self.assertTrue(umdl.signed_in("example.org", cookies, now))          # generic session cookie
+        self.assertFalse(umdl.signed_in("example.net", cookies, now))
+
+    def test_sign_in_waits_for_the_cookie_then_confirms(self):
+        with open(self.plan, "w") as handle:
+            json.dump([[".tiktok.com", "sid_tt"]], handle)
+        code, (_, data) = self.run_helper("signin", payload("https://www.tiktok.com/@someone/video/1"))
+        self.assertEqual((data["t"], data["title"]), ("info", "Signed in to TikTok"))
+        with open(os.path.join(WORK, "browser.log")) as handle:
+            self.assertEqual(handle.read().split()[-1], "https://www.tiktok.com/login")
+
+    def test_sign_in_gives_up_politely(self):
+        code, (_, data) = self.run_helper("signin", payload("https://www.facebook.com/x"))
+        self.assertEqual((data["t"], data["title"]), ("info", "Sign-in not confirmed"))
+
+    def test_forgetting_sign_ins_shows_in_status(self):
+        cookiejar.write(umdl.SAFARI_COOKIES, [(".facebook.com", "c_user")])
+        self.assertIn("Facebook: signed in", umdl.sign_in_lines(umdl.read_cookie_store()))
+        self.run_helper("logout", payload(""))
+        self.assertEqual(umdl.sign_in_lines(umdl.read_cookie_store()), ["No sign-ins are stored."])
 
 
 def tearDownModule():

@@ -43,7 +43,7 @@ TOOLS = ["yt-dlp", "gallery-dl", "yt-dlp-ejs", "yt-dlp-apple-webkit-jsi"]
 # then the helper's first daily check brings everything up to date.
 FIRST_RUN_PIP = ["yt-dlp gallery-dl", " ".join(TOOLS)]
 MAIN_MENU = ["Download from clipboard", "Enter a link", "Settings", "Sign in to a site",
-             "Update tools", "About UMDL"]
+             "Status", "Update tools", "About UMDL"]
 SETTINGS_MENU = ["Save to", "Ask before large downloads", "Unsupported video formats",
                  "When a download finishes", "Forget saved sign-ins", "Reset UMDL"]
 
@@ -358,6 +358,19 @@ class OneTap(Flow):
         self.assertEqual(self.notifications(w)[0],
                          ("Set", "Saved 2 items to the Clips album.\n1 could not be downloaded."))
 
+    def test_file_too_large_to_hand_over_is_kept_in_files(self):
+        w = self.world
+        w.install(CONFIG)
+        w.extra_env["UMDL_MAX_PHOTOS_MB"] = "0.00001"       # ten bytes
+        w.set_scenario(self.one_video())
+        w.share(VIDEO)
+        self.assertEqual(w.photos, [])
+        self.assertEqual(self.notifications(w)[0][1],
+                         "No items could be added to Photos.\n"
+                         "1 kept in Files, under a-Shell, UMDL, Saved.\n"
+                         "1 too large to pass to Photos (over 1 GB).")
+        self.assertEqual(os.listdir(os.path.join(w.workspace, "Saved")), ["My clip.mp4"])
+
     def test_tools_removed_behind_umdls_back_are_reinstalled_on_the_way(self):
         w = self.world
         w.install(CONFIG, tools=False)
@@ -538,23 +551,27 @@ class Errors(Flow):
         self.assertEqual([p["force_update"] for _, p in w.helper_runs], ["", "1"])
         self.assertEqual(w.pip_log(), [" ".join(TOOLS)] * 2)  # the daily check, then the forced one
 
-    def test_sign_in_opens_the_site(self):
+    def test_sign_in_from_a_failed_download_opens_that_sites_sign_in_page(self):
         w = self.world
         w.install(CONFIG)
         w.set_scenario(self.failing("This post is private; log in"))
+        w.set_sign_in([["instagram.com", "sessionid"]])
         w.script(("menu", "Sign in to this site"))
-        w.share("https://www.video.test/watch/abc?x=1&y=2")
-        self.assertEqual(w.seen("browser"), [("browser", "https://www.video.test")])
-        self.assertEqual(self.alerts(w)[0][0], "Sign in")
+        w.share("https://www.instagram.com/reel/abc/?igsh=1&x=2")
+        self.assertEqual(w.seen("browser"), [("browser", "https://www.instagram.com/accounts/login/")])
+        self.assertEqual([a[0] for a in self.alerts(w)], ["Sign in", "Signed in to Instagram"])
 
-    def test_error_details_can_be_copied(self):
+    def test_error_details_can_be_copied_with_the_log(self):
         w = self.world
         w.install(CONFIG)
         w.set_scenario(self.failing("Unsupported URL: " + VIDEO))
         w.script(("menu", "Copy error details"))
         w.share(VIDEO)
-        self.assertEqual(w.clipboard, "UMDL %s\n%s\nunsupported: Unsupported URL: %s"
+        head, log = w.clipboard.split("\n\nLog\n")
+        self.assertEqual(head, "UMDL %s\n%s\nunsupported: Unsupported URL: %s"
                          % (VERSION["shortcut"], VIDEO, VIDEO))
+        self.assertIn("mode=auto", log)                     # the helper's own log of that run
+        self.assertEqual(self.notifications(w), [("UMDL", "Error details copied to the clipboard.")])
 
 
 class Recovery(Flow):
@@ -615,6 +632,22 @@ class Recovery(Flow):
         self.assertEqual(len(w.photos), 1)
         self.assertFalse(os.path.exists(os.path.join(w.workspace, "last.b64")))
 
+    def test_unsaved_download_whose_files_are_gone_is_explained(self):
+        w = self.world
+        w.install(CONFIG)
+        w.set_scenario(self.one_video())
+        w.run(VIDEO)
+        w.callbacks.clear()
+        shutil.rmtree(os.path.join(w.workspace, "jobs"))
+        w.script(("menu", "Save it now"))
+        w.share(None)
+        self.assertEqual(self.alerts(w)[0][0], "Nothing to save")
+        self.assertFalse(os.path.exists(os.path.join(w.workspace, "pending")))
+        w.script(("list", "About UMDL"), ("menu", "Done"))
+        w.share(None)                                       # and it is not offered again
+        offers = [m for m in w.seen("menu") if "has not been saved" in m[1]]
+        self.assertEqual(len(offers), 1)
+
     def test_damaged_settings_file_restarts_setup_instead_of_failing(self):
         w = self.world
         w.install()
@@ -639,8 +672,8 @@ class MainMenu(Flow):
         self.assertEqual(details, [
             "Uses the most recently copied link", "Type or paste a link to a post or video",
             "Album and download options", "Required for private or age-restricted posts",
-            "Installs the latest yt-dlp and gallery-dl",
-            "Version %s. Updates and diagnostics" % VERSION["shortcut"]])
+            "Sign-ins, versions and logs", "Installs the latest yt-dlp and gallery-dl",
+            "Version %s. Updates and project page" % VERSION["shortcut"]])
         self.assertEqual(w.helper_runs, [])
         self.assertEqual(self.alerts(w), [])
 
@@ -681,18 +714,98 @@ class MainMenu(Flow):
             self.assertEqual(self.alerts(w)[0], ("No link found", "The text entered is not a web link."))
             self.assertEqual(w.helper_runs, [])
 
-    def test_sign_in_to_a_listed_site_and_a_typed_one(self):
+    def test_sign_in_is_confirmed_once_the_site_has_stored_it(self):
         w = self.world
         w.install(CONFIG)
-        w.script(("list", "Sign in to a site"), ("menu", "Instagram"))
+        w.set_sign_in([[".reddit.com", "reddit_session"], [".reddit.com", "csv"]])
+        w.script(("list", "Sign in to a site"), ("menu", "Reddit"))
         w.share(None)
         self.assertEqual(w.seen("menu")[0][2], ["Instagram", "X (Twitter)", "Reddit", "TikTok",
                                                 "Facebook", "Another site"])
+        self.assertEqual(self.helper_commands(w), ["signin"])
+        self.assertEqual(w.seen("browser"), [("browser", "https://www.reddit.com/login/")])
+        first, second = self.alerts(w)
+        self.assertEqual(first[0], "Sign in")
+        self.assertIn("UMDL returns here and confirms", first[1])
+        self.assertEqual(second, ("Signed in to Reddit", "The sign-in is saved on this device, "
+                                  "inside a-Shell. UMDL uses it for Reddit links from now on."))
+
+    def test_sign_in_that_was_not_completed_says_so(self):
+        w = self.world
+        w.install(CONFIG)
+        w.set_sign_in([[".instagram.com", "csrftoken"], [".instagram.com", "mid"]])  # visited only
+        w.script(("list", "Sign in to a site"), ("menu", "Instagram"))
+        w.share(None)
+        title, body = self.alerts(w)[-1]
+        self.assertEqual(title, "Sign-in not confirmed")
+        self.assertIn("open Status", body)
+
+    def test_signing_in_again_reports_the_existing_sign_in(self):
+        w = self.world
+        w.install(CONFIG)
+        w.set_cookies([(".x.com", "auth_token")])
+        w.script(("list", "Sign in to a site"), ("menu", "X (Twitter)"))
+        w.share(None)
+        self.assertEqual(self.alerts(w)[-1][0], "Already signed in to X (Twitter)")
+        self.assertEqual(w.seen("browser"), [])              # the page is not opened again
+
+    def test_sign_in_to_another_site(self):
+        w = self.world
+        w.install(CONFIG)
+        w.set_sign_in([["forum.example.org", "session_id"]])
         w.script(("list", "Sign in to a site"), ("menu", "Another site"),
                  ("ask", "https://forum.example.org/login?next=/a&b=1"))
         w.share(None)
-        self.assertEqual([e[1] for e in w.seen("browser")],
-                         ["https://www.instagram.com/accounts/login/", "https://forum.example.org"])
+        self.assertEqual(w.seen("browser"), [("browser", "https://forum.example.org/login?next=/a&b=1")])
+        self.assertEqual(self.alerts(w)[-1][0], "Signed in to example.org")
+
+        w.script(("list", "Sign in to a site"), ("menu", "Another site"), ("ask", "not an address"))
+        w.share(None)
+        self.assertEqual(self.alerts(w)[-1], ("Sign in", "The text entered is not a web address."))
+
+    def test_status_shows_sign_ins_versions_and_storage(self):
+        w = self.world
+        w.install(CONFIG)
+        w.set_cookies([(".instagram.com", "sessionid"), (".reddit.com", "reddit_session", 1000),
+                       ("forum.example.org", "session_id"), (".tiktok.com", "tt_webid")])
+        w.script(("list", "Status"), ("menu", "Done"))
+        w.share(None)
+        self.assertEqual(self.helper_commands(w), ["status"])
+        title, body = self.alerts(w)[0]
+        self.assertEqual(title, "UMDL status")
+        lines = body.split("\n")
+        self.assertEqual(lines[0], "UMDL %s, helper %s" % (VERSION["shortcut"], VERSION["helper"]))
+        self.assertIn("yt-dlp 2099.01.01-fake", lines)
+        self.assertIn("Instagram: signed in", lines)
+        self.assertIn("Reddit: not signed in", lines)       # that cookie expired long ago
+        self.assertIn("TikTok: not signed in", lines)       # visited, never signed in
+        self.assertIn("Other sites that may be signed in: example.org", lines)
+        self.assertIn("Unsaved download: none", lines)
+        self.assertIn("Download tools: ready", lines)
+        self.assertIn("Last download: none yet", lines)
+        self.assertEqual(w.seen("menu")[0][2], ["📋 Copy status and log", "Done"])
+        self.assertEqual(w.clipboard, "")
+
+    def test_status_and_log_can_be_copied(self):
+        w = self.world
+        w.install(CONFIG)
+        w.set_scenario({"ytdlp": {"error": "HTTP Error 500"}, "gallery": {"found": False}})
+        w.script(("menu", "Cancel"))
+        w.share(VIDEO)
+        w.script(("list", "Status"), ("menu", "Copy status and log"))
+        w.share(None)
+        status, log = w.clipboard.split("\n\nLog\n")
+        self.assertIn("No sign-ins are stored.", status)
+        self.assertRegex(status, r"Last download: \d\d \w+ \d\d:\d\d, failed \(unknown\)")
+        self.assertIn("HTTP Error 500", log)
+        self.assertEqual(self.notifications(w)[-1], ("UMDL", "Status and log copied to the clipboard."))
+
+    def test_copying_status_before_any_download_does_not_fail(self):
+        w = self.world
+        w.install(CONFIG)
+        w.script(("list", "Status"), ("menu", "Copy status and log"))
+        w.share(None)                                       # there is no log file yet
+        self.assertIn("UMDL %s" % VERSION["shortcut"], w.clipboard)
 
     def test_update_tools_reports_back(self):
         w = self.world
@@ -704,19 +817,18 @@ class MainMenu(Flow):
         self.assertEqual(title, "Download tools updated")
         self.assertIn("yt-dlp  2099.01.01-fake", body)
 
-    def test_about_diagnostics_project_page_and_done(self):
+    def test_about_project_page_and_done(self):
         w = self.world
         w.install(CONFIG)
-        w.script(("list", "About UMDL"), ("menu", "Run diagnostics"))
+        w.script(("list", "About UMDL"), ("menu", "Open the project page"))
         w.share(None)
         about = w.seen("menu")[0]
         self.assertTrue(about[1].startswith("UMDL %s\n" % VERSION["shortcut"]))
-        self.assertEqual(about[2], ["🔄 Check for a new version", "🩺 Run diagnostics",
-                                    "🌐 Open the project page", "Done"])
-        self.assertEqual(self.alerts(w)[-1][0], "UMDL diagnostics")
-        w.script(("list", "About UMDL"), ("menu", "Open the project page"))
-        w.share(None)
+        self.assertEqual(about[2], ["🔄 Check for a new version", "🌐 Open the project page", "Done"])
         self.assertEqual(w.seen("openurl")[-1][1], "https://github.com/TheKfcBandit/UMDL")
+        w.script(("list", "About UMDL"), ("menu", "Done"))
+        w.share(None)
+        self.assertEqual(w.helper_runs, [])
 
     def test_check_for_new_version(self):
         w = self.world
@@ -829,6 +941,23 @@ class Hygiene(Flow):
                      if a["WFWorkflowActionIdentifier"] == PREFIX + "conditional"
                      and a["WFWorkflowActionParameters"].get("WFCondition") in (100, 101)]
         self.assertEqual(offenders, [])
+
+    def test_get_file_always_asks_for_a_copy(self):
+        # Without it the action stops the shortcut on iOS 27.2, with no message.
+        # https://github.com/holzschu/a-shell/issues/1138
+        actions = [a["WFWorkflowActionParameters"] for a in self.world.plist["WFWorkflowActions"]
+                   if a["WFWorkflowActionIdentifier"] == ASHELL + "GetFileIntent"]
+        self.assertTrue(actions)
+        self.assertTrue(all(p.get("copyFile") is True for p in actions))
+
+    def test_background_commands_survive_a_failing_command(self):
+        # a-Shell fails the action, and Shortcuts the whole run, when a background
+        # command exits with an error and "keepGoing" is off.
+        actions = [a["WFWorkflowActionParameters"] for a in self.world.plist["WFWorkflowActions"]
+                   if a["WFWorkflowActionIdentifier"] == ASHELL + "ExecuteCommandIntent"]
+        background = [p for p in actions if p.get("openWindow") == "close"]
+        self.assertGreater(len(background), 8)
+        self.assertTrue(all(p.get("keepGoing") is True for p in background))
 
     def test_shortcut_metadata(self):
         plist = self.world.plist

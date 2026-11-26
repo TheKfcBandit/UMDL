@@ -9,8 +9,9 @@ Usage (the shortcut builds these commands, you never need to type them):
     python umdl.py run <payload>        download the link in the payload
     python umdl.py setup <payload>      install the download tools and report
     python umdl.py update <payload>     force-update the download tools
-    python umdl.py doctor <payload>     report tool versions
-    python umdl.py logout <payload>     forget saved site logins
+    python umdl.py status <payload>     report versions, sign-ins and storage
+    python umdl.py signin <payload>     open a site's sign-in page and confirm the sign-in
+    python umdl.py logout <payload>     forget saved site sign-ins
 
 Project: https://github.com/TheKfcBandit/UMDL   Licence: MIT
 """
@@ -26,6 +27,7 @@ import re
 import shlex
 import shutil
 import site
+import struct
 import subprocess
 import sys
 import threading
@@ -33,7 +35,7 @@ import time
 import traceback
 import urllib.parse
 
-HELPER_VERSION = "1.1.0"
+HELPER_VERSION = "1.2.0"
 # Bumped only when the payload/callback format changes incompatibly.
 PROTOCOL = 2
 
@@ -58,6 +60,24 @@ REQUIRED_TOOLS = {"yt-dlp": "yt_dlp", "gallery-dl": "gallery_dl"}
 OPTIONAL_TOOLS = ["yt-dlp-ejs", "yt-dlp-apple-webkit-jsi"]
 
 DAY = 86400
+
+# a-Shell hands files to Shortcuts by loading them into memory (its "as a copy"
+# mode, the only one that works on iOS 27.2). Around 2 GB that times out, so
+# anything above this size is kept in Files instead of being sent to Photos.
+MAX_PHOTOS_BYTES = int(float(os.environ.get("UMDL_MAX_PHOTOS_MB") or 1000) * 1000 * 1000)
+
+# Sites UMDL can open a sign-in page for: name, domains, the cookies that mean
+# "signed in", and the page to sign in on.
+SITES = (
+    ("Instagram", ("instagram.com",), ("sessionid",), "https://www.instagram.com/accounts/login/"),
+    ("X (Twitter)", ("x.com", "twitter.com"), ("auth_token",), "https://x.com/i/flow/login"),
+    ("Reddit", ("reddit.com",), ("reddit_session",), "https://www.reddit.com/login/"),
+    ("TikTok", ("tiktok.com",), ("sessionid", "sid_tt", "sid_guard"), "https://www.tiktok.com/login"),
+    ("Facebook", ("facebook.com",), ("c_user",), "https://m.facebook.com/login/"),
+)
+# For any other site: cookie names that usually mean a signed-in session.
+SESSION_COOKIE = re.compile(r"sess|auth|token|login|logged|(^|[_-])sid($|[_-])|user", re.I)
+SIGNIN_WAIT = int(os.environ.get("UMDL_SIGNIN_WAIT") or 600)
 
 IMAGE_EXTS = {"jpg", "jpeg", "png", "gif", "heic", "heif", "webp", "tif", "tiff", "bmp", "avif"}
 VIDEO_EXTS = {"mp4", "m4v", "mov", "mkv", "webm", "flv", "ts", "avi", "3gp", "wmv", "mpg", "mpeg", "ogv"}
@@ -397,6 +417,100 @@ def have_cookies():
 
 # ------------------------------------------------------------------ callback
 
+def read_cookie_store(path=None):
+    """Read a-Shell's cookie store (Apple's binarycookies format).
+
+    Returns a list of (domain, name, expires) with expires in Unix time, or
+    None when there is no readable store. Values are never read.
+    """
+    try:
+        with open(path or SAFARI_COOKIES, "rb") as handle:
+            data = handle.read()
+    except Exception:
+        return None
+    if data[:4] != b"cook" or len(data) < 8:
+        return None
+    cookies = []
+    try:
+        pages = struct.unpack(">i", data[4:8])[0]
+        sizes = struct.unpack(">%di" % pages, data[8:8 + 4 * pages])
+        offset = 8 + 4 * pages
+        for size in sizes:
+            page = data[offset:offset + size]
+            offset += size
+            if len(page) < 8:
+                continue
+            count = struct.unpack("<i", page[4:8])[0]
+            starts = struct.unpack("<%di" % count, page[8:8 + 4 * count])
+            for start in starts:
+                try:
+                    length = struct.unpack("<i", page[start:start + 4])[0]
+                    record = page[start:start + length]
+                    domain_at, name_at = struct.unpack("<ii", record[16:24])
+                    expires = struct.unpack("<d", record[40:48])[0]
+
+                    def text(at):
+                        end = record.index(b"\x00", at)
+                        return record[at:end].decode("utf-8", "replace")
+
+                    # Apple counts seconds from 1 January 2001.
+                    cookies.append((text(domain_at).lower(), text(name_at),
+                                    expires + 978307200 if expires else 0))
+                except Exception:
+                    continue
+    except Exception:
+        return cookies or None
+    return cookies
+
+
+def site_for(host):
+    """The SITES entry a host belongs to, or None."""
+    for entry in SITES:
+        if any(host == d or host.endswith("." + d) for d in entry[1]):
+            return entry
+    return None
+
+
+def base_domain(host):
+    parts = [p for p in host.split(".") if p]
+    return ".".join(parts[-2:]) if len(parts) >= 2 else host
+
+
+def signed_in(host, cookies, now=None):
+    """Whether the cookie store holds a session for this host."""
+    now = now or time.time()
+    entry = site_for(host)
+    domains = entry[1] if entry else (base_domain(host),)
+    for domain, name, expires in cookies or []:
+        domain = domain.lstrip(".")
+        if not any(domain == d or domain.endswith("." + d) for d in domains):
+            continue
+        if expires and expires < now:
+            continue
+        if entry:
+            if name in entry[2]:
+                return True
+        elif SESSION_COOKIE.search(name):
+            return True
+    return False
+
+
+def sign_in_lines(cookies):
+    """One line per known site, then a count of other sites holding cookies."""
+    if cookies is None:
+        return ["No sign-ins are stored."]
+    lines = ["%s: %s" % (entry[0], "signed in" if signed_in(entry[1][0], cookies) else "not signed in")
+             for entry in SITES]
+    known = [d for entry in SITES for d in entry[1]]
+    others = sorted({base_domain(domain.lstrip(".")) for domain, name, _ in cookies
+                     if SESSION_COOKIE.search(name)} - set(known))
+    others = [d for d in others if not any(d.endswith("." + k) for k in known)]
+    if others:
+        shown = ", ".join(others[:6]) + (" and %d more" % (len(others) - 6) if len(others) > 6 else "")
+        lines.append("Other sites that may be signed in: " + shown)
+    return lines
+
+
 def callback(payload, data):
     """Hand the result to the shortcut by re-running it through its URL scheme."""
     ui.stop_spinner()
@@ -410,7 +524,8 @@ def callback(payload, data):
         urllib.parse.quote(CALLBACK_PREFIX + blob, safe=""),
     )
     remove(LAST_FILE)
-    log("callback: " + raw[:2000])
+    if data.get("t") != "status":  # the status report would only repeat itself in the log
+        log("callback: " + raw[:2000])
     if IOS:
         subprocess.run("open " + url)
     else:
@@ -1118,8 +1233,16 @@ def finalize(ctx, files):
         os.replace(original, staged)
         ready = make_photos_ready(staged, ctx["convert"])
         if ready:
-            photos.append(ready)
-            continue
+            try:
+                too_big = os.path.getsize(ready) > MAX_PHOTOS_BYTES
+            except OSError:
+                too_big = False
+            if not too_big:
+                photos.append(ready)
+                continue
+            # Too large for a-Shell to hand to Shortcuts: keep it in Files.
+            ctx["oversize"] = ctx.get("oversize", 0) + 1
+            staged = ready
         os.makedirs(SAVED_DIR, exist_ok=True)
         fallback = os.path.splitext(os.path.basename(original))[0]
         name = "%s.%s" % (safe_title(title, fallback), ext_of(staged) or "bin")
@@ -1227,6 +1350,9 @@ def cmd_run(payload, blob):
         # The first tool's message is the relevant one; the fallback's is noise.
         message = errors[0] if errors else "Nothing to download at that link."
         kind = classify_error(" ".join(errors))
+        state = read_json(STATE_FILE, {})
+        state["last_run"] = {"at": time.time(), "result": "failed (%s)" % kind}
+        write_json(STATE_FILE, state)
         return callback(payload, {"t": "error", "kind": kind, "msg": message,
                                   "url": url, "updated": "1" if updated else ""})
 
@@ -1235,8 +1361,12 @@ def cmd_run(payload, blob):
     result = {
         "t": "done", "m": manifest, "np": str(len(photos)), "nk": str(len(kept)),
         "nf": str(ctx["failed"]) if ctx["failed"] else "",
+        "nb": str(ctx["oversize"]) if ctx.get("oversize") else "",
         "title": safe_title(ctx.get("title"), "")[:60],
     }
+    state = read_json(STATE_FILE, {})
+    state["last_run"] = {"at": time.time(), "result": "saved %d, kept %d" % (len(photos), len(kept))}
+    write_json(STATE_FILE, state)
     if photos:
         with open(PENDING_FILE, "w", encoding="utf-8") as handle:
             handle.write(manifest)
@@ -1278,17 +1408,125 @@ def cmd_update(payload):
     return callback(payload, {"t": "info", "title": title, "msg": describe_versions(versions)})
 
 
-def cmd_doctor(payload):
-    ui.header("diagnostics")
-    ui.start("Collecting versions")
+def folder_size(path):
+    total = 0
+    for root, _, names in os.walk(path):
+        for name in names:
+            try:
+                total += os.path.getsize(os.path.join(root, name))
+            except OSError:
+                pass
+    return total
+
+
+def human_size(size):
+    for unit in ("bytes", "KB", "MB", "GB"):
+        if size < 1000 or unit == "GB":
+            return ("%d %s" if unit == "bytes" else "%.1f %s") % (size, unit)
+        size /= 1000.0
+
+
+def status_text(payload):
+    """Everything worth knowing when something is not working, as plain text."""
     versions = tool_versions()
+    state = read_json(STATE_FILE, {})
+    lines = ["UMDL %s, helper %s" % (payload.get("v") or "?", HELPER_VERSION)]
+    app = os.environ.get("APPNAME")
+    if app:
+        lines.append("%s %s (%s)" % (app, os.environ.get("APPVERSION", "?"),
+                                     os.environ.get("APPBUILDNUMBER", "?")))
+    lines.append("Python %s" % versions["python"])
+    lines.append("yt-dlp %s" % versions["yt-dlp"])
+    lines.append("gallery-dl %s" % versions["gallery-dl"])
+    lines.append("ffmpeg %s" % versions["ffmpeg"])
+    checked = float(state.get("tools_checked", 0) or 0)
+    lines.append("Tools last updated: %s" % (time.strftime("%d %b %H:%M", time.localtime(checked))
+                                             if checked > DAY else "never"))
+
+    lines += ["", "Sign-ins"] + sign_in_lines(read_cookie_store())
+
+    lines += ["", "Storage"]
+    lines.append("Working files: %s" % human_size(folder_size(JOBS_DIR)))
+    try:
+        saved = len(os.listdir(SAVED_DIR))
+    except OSError:
+        saved = 0
+    lines.append("Kept in Files: %d %s" % (saved, "item" if saved == 1 else "items"))
+    lines.append("Unsaved download: %s" % ("yes" if os.path.exists(PENDING_FILE) else "none"))
+    try:
+        lines.append("Free space: %s" % human_size(shutil.disk_usage(WORKSPACE).free))
+    except Exception:
+        pass
+
+    lines += ["", "Checks"]
+    lines.append("Download tools: %s" % ("ready" if not missing_tools() else "missing"))
+    lines.append("GitHub: %s" % ("reachable" if fetch_text(RAW_BASE + "/version.json") else "not reachable"))
+    last = state.get("last_run") or {}
+    if last.get("at"):
+        lines.append("Last download: %s, %s" % (
+            time.strftime("%d %b %H:%M", time.localtime(float(last["at"]))), last.get("result", "")))
+    else:
+        lines.append("Last download: none yet")
+    return "\n".join(lines)
+
+
+def cmd_status(payload, kind="status"):
+    ui.header("status")
+    ui.start("Checking tools, sign-ins and storage")
+    text = status_text(payload)
     ui.done()
-    return callback(payload, {"t": "info", "title": "UMDL diagnostics",
-                              "msg": describe_versions(versions)})
+    if kind == "info":  # the "doctor" command of shortcut 1.1.0
+        return callback(payload, {"t": "info", "title": "UMDL diagnostics", "msg": text})
+    return callback(payload, {"t": "status", "msg": text})
+
+
+def cmd_signin(payload):
+    """Open a site's sign-in page in a-Shell's browser, wait until the sign-in
+    is stored, and tell the shortcut. The browser keeps its cookies where both
+    download tools read them, so nothing else has to be copied."""
+    url = clean_url(str(payload.get("url") or ""))
+    host = hostname(url)
+    if not host:
+        return callback(payload, {"t": "info", "title": "Sign in",
+                                  "msg": "That was not a web address."})
+    entry = site_for(host)
+    label = entry[0] if entry else base_domain(host)
+    page = entry[3] if entry else url
+    ui.header("sign in to " + label)
+    if signed_in(host, read_cookie_store()):
+        return callback(payload, {
+            "t": "info", "title": "Already signed in to " + label,
+            "msg": "UMDL already uses this sign-in for %s links.\n\nTo use another account, choose "
+                   "Forget saved sign-ins in Settings, then sign in again." % label})
+    ui.write("  The sign-in page opens now. Sign in as usual.\n"
+             "  UMDL returns to Shortcuts by itself once the sign-in is saved.\n"
+             "  If you are back here and nothing happens, check Status in the UMDL menu.\n\n")
+    run_cmd(["internalbrowser", page])
+    ui.start("Waiting for the sign-in to %s" % label)
+    deadline = time.time() + SIGNIN_WAIT
+    found = False
+    while time.time() < deadline:
+        if signed_in(host, read_cookie_store()):
+            found = True
+            break
+        time.sleep(min(2.0, max(0.05, SIGNIN_WAIT / 20.0)))
+    if found:
+        ui.done()
+        log("signed in to " + label)
+        return callback(payload, {
+            "t": "info", "title": "Signed in to " + label,
+            "msg": "The sign-in is saved on this device, inside a-Shell. UMDL uses it for %s links "
+                   "from now on." % label})
+    ui.fail("not confirmed")
+    return callback(payload, {
+        "t": "info", "title": "Sign-in not confirmed",
+        "msg": "No sign-in to %s was found after %d minutes.\n\nIf you did sign in, open Status "
+               "from the UMDL menu to check. Some sites do not allow signing in from an app's "
+               "built-in browser." % (label, max(1, SIGNIN_WAIT // 60))})
 
 
 def cmd_logout(payload):
-    """Forget site logins: the cookie file both download tools read."""
+    """Forget site sign-ins: the cookie file both download tools read."""
     ui.header("removing sign-ins")
     ui.start("Removing saved sign-ins")
     remove(SAFARI_COOKIES)
@@ -1318,7 +1556,7 @@ def main(argv):
         except Exception:
             pass
     use_site_dirs(read_json(STATE_FILE, {}).get("site_dirs"))
-    commands = ("run", "setup", "update", "doctor", "logout")
+    commands = ("run", "setup", "update", "status", "doctor", "signin", "logout")
     if command not in commands or to_int(payload.get("p"), PROTOCOL) != PROTOCOL:
         # A shortcut from another version is talking to this helper.
         callback(payload, {"t": "error", "kind": "outdated", "url": "",
@@ -1332,8 +1570,12 @@ def main(argv):
             cmd_setup(payload)
         elif command == "update":
             cmd_update(payload)
+        elif command == "status":
+            cmd_status(payload)
         elif command == "doctor":
-            cmd_doctor(payload)
+            cmd_status(payload, "info")
+        elif command == "signin":
+            cmd_signin(payload)
         elif command == "logout":
             cmd_logout(payload)
     except KeyboardInterrupt:

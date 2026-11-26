@@ -24,6 +24,9 @@ import urllib.parse
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FAKES = os.path.join(ROOT, "tests", "fakes")
+sys.path.insert(0, FAKES)
+
+import cookiejar  # noqa: E402
 PREFIX = "is.workflow.actions."
 ASHELL = "AsheKube.app.a-Shell."
 
@@ -132,6 +135,7 @@ class World:
         self.record_path = os.path.join(self.home, "ytdlp-opts.jsonl")
         self.set_scenario({})
         self.clipboard = ""
+        self.extra_env = {}
         self.ui = []          # scripted answers: ("menu"|"list"|"ask", text)
         self.events = []      # everything the user would see or that left the shortcut
         self.photos = []      # (file name, album, byte size)
@@ -182,6 +186,25 @@ class World:
         else:
             with open(flag, "w") as handle:
                 handle.write(message)
+
+    @property
+    def cookie_store(self):
+        return os.path.join(self.home, "Library", "Cookies", "Cookies.binarycookies")
+
+    def set_cookies(self, cookies):
+        """What a-Shell's browser has stored: (domain, cookie name) pairs."""
+        cookiejar.write(self.cookie_store, cookies)
+
+    def set_sign_in(self, cookies):
+        """What the next visit to a sign-in page stores, or None for a visit
+        that ends without signing in."""
+        plan = os.path.join(self.home, ".fake-signin")
+        if cookies is None:
+            if os.path.exists(plan):
+                os.remove(plan)
+        else:
+            with open(plan, "w") as handle:
+                json.dump(cookies, handle)
 
     def set_pip_target(self, folder):
         """Make pip install into a folder Python is not searching."""
@@ -254,17 +277,23 @@ class World:
         })
         for name in ("UMDL_HOME", "UMDL_SKIP_UPDATES"):
             env.pop(name, None)
+        env.update(self.extra_env)
         return env
 
-    def background(self, command):
-        """An "in extension" command: runs without opening a-Shell, returns stdout."""
+    def background(self, command, keep_going=False):
+        """An "in extension" command: runs without opening a-Shell and returns what
+        it printed. As in a-Shell, error output is part of that text, and a command
+        that exits with an error fails the action unless "keepGoing" is set. A
+        failed action stops the whole shortcut with a message that names nothing."""
         proc = subprocess.run(["dash", "-c", command], env=self.env(UMDL_SIM_WINDOW="close"),
                               cwd=self.home, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                               universal_newlines=True)
         if proc.returncode == 2 and "fake curl" in proc.stderr:
             raise SimError(proc.stderr.strip())
-        # Like a-Shell, hand back whatever was printed, even when the command failed.
-        return proc.stdout
+        if proc.returncode != 0 and not keep_going:
+            raise SimError("Shortcuts would stop with \"There was a problem running the shortcut\": "
+                           "%r exited with %d and keepGoing is off" % (command[:80], proc.returncode))
+        return proc.stdout + proc.stderr
 
     def foreground(self, command):
         """Commands typed into the a-Shell window: one per line, each run whatever
@@ -327,7 +356,7 @@ class World:
             return
         self.helper_runs.append((command, json.loads(base64.b64decode(blob))))
         # The helper starts "python -m gallery_dl" by name, so "python" must resolve.
-        env = self.env(UMDL_SIM_WINDOW="open")
+        env = self.env(UMDL_SIM_WINDOW="open", UMDL_SIGNIN_WAIT="1")
         shim = os.path.join(self.home, "shim")
         os.makedirs(shim, exist_ok=True)
         if not os.path.exists(os.path.join(shim, "python")):
@@ -337,6 +366,11 @@ class World:
                               cwd=os.path.dirname(script), stdout=subprocess.PIPE,
                               stderr=subprocess.STDOUT, universal_newlines=True)
         self.helper_output = proc.stdout
+        opened = os.path.join(self.home, "browser.log")
+        if os.path.exists(opened):
+            with open(opened) as handle:
+                self.events.extend(("browser", page) for page in handle.read().split())
+            os.remove(opened)
         for line in proc.stdout.splitlines():
             if line.startswith("CALLBACK "):
                 self.take_callback(line[len("CALLBACK "):])
@@ -673,7 +707,7 @@ class Run:
                 raise SimError("a-Shell action would show itself")
             world.commands.append((window, command))
             if window == "close":
-                return world.background(command)
+                return world.background(command, keep_going=p.get("keepGoing") is True)
             if window != "open" or p.get("keepGoing") is not False:
                 raise SimError("unexpected a-Shell window mode %r" % window)
             if world.events[-1][0] != "openapp":
@@ -684,6 +718,11 @@ class Run:
             path = as_text(get("fileName"))
             if not os.path.isabs(path) or " " in path:
                 raise SimError("Get File needs a clean absolute path, got %r" % path)
+            if p.get("copyFile") is not True:
+                # https://github.com/holzschu/a-shell/issues/1138
+                raise SimError("Shortcuts would stop with \"There was a problem running the "
+                               "shortcut\": on iOS 27.2 a-Shell's Get File fails unless it is "
+                               "asked for a copy")
             if not os.path.exists(path):
                 raise SimError("a-Shell has no file %r" % path)
             with open(path, "rb") as handle:

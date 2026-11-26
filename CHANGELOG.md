@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.2.0
+
+Fixes the fault found when 1.1.0 was run on a device, and adds what that test asked for.
+
+Fixed:
+
+- "There was a problem running the shortcut" after every download. On iOS 27.2 a-Shell's Get File action fails unless it is asked for a copy ([a-Shell issue 1138](https://github.com/holzschu/a-shell/issues/1138)). UMDL now always asks for one. A download that failed this way is offered again on the next run.
+- The same wordless failure could follow any background command that ended in an error, such as an update check with no connection. Background commands now continue after an error and UMDL reads their output instead.
+- An unsaved download whose files are gone is explained, not attempted.
+
+Added:
+
+- Sign-in confirms itself. The helper opens the site's sign-in page, waits for the sign-in to be stored, and returns to Shortcuts with "Signed in to" and the site's name. "Sign in to this site" after a failed download now opens that site's sign-in page, not its front page.
+- Status, in the main menu: tool versions, which sites are signed in, storage, whether GitHub can be reached, and the result of the last download. One tap copies it with the log.
+- Copy error details now includes the end of the helper's log.
+
+Changed:
+
+- Files over 1 GB are kept in Files. Copy mode loads a file into memory, and a-Shell times out on very large ones.
+- "Run diagnostics" under About is replaced by Status.
+
 ## 1.1.0
 
 Fixes for the faults found when 1.0.0 was first run on a device, and the changes that test asked for.

@@ -27,6 +27,7 @@ PINK = (255, 55, 95)
 GRAY = (142, 142, 147)
 RED = (255, 69, 58)
 PURPLE = (175, 82, 222)
+CYAN = (50, 173, 230)
 
 
 def u(value):
@@ -150,6 +151,10 @@ def trash(draw, color):
         draw.line([(u(x), u(47)), (u(x), u(64))], fill=color + (255,), width=u(4))
 
 
+def pulse(draw, color):
+    line(draw, [(25, 50), (37, 50), (44, 34), (53, 65), (59, 50), (71, 50)], width=6)
+
+
 ICONS = {
     "download": (download, BLUE),
     "pencil": (pencil, INDIGO),
@@ -158,6 +163,7 @@ ICONS = {
     "key": (key, PURPLE),
     "update": (cycle, GREEN),
     "info": (info, TEAL),
+    "status": (pulse, CYAN),
     "album": (album, PINK),
     "stack": (stack, ORANGE),
     "convert": (swap, INDIGO),

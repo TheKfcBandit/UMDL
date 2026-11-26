@@ -81,7 +81,7 @@ python umdl.py run <base64 JSON>
 | `force_update` | `1` to upgrade the tools before downloading |
 | `cfg` | The settings: `album`, `threshold`, `convert`, `after` |
 
-Other commands take the same payload: `setup`, `update`, `doctor`, `logout`. A command the helper does not know, or a payload with another protocol number, is answered with an `outdated` error.
+Other commands take the same payload: `setup`, `update`, `status`, `signin` (the page to open travels in `url`), `logout`. `doctor` is kept as an older name for `status`. A command the helper does not know, or a payload with another protocol number, is answered with an `outdated` error.
 
 ## The callback (helper to shortcut)
 
@@ -93,17 +93,30 @@ Every callback includes `cfg`, echoed from the payload, so the shortcut does not
 
 | `t` | Other fields | The shortcut then |
 |---|---|---|
-| `done` | `m` manifest path, `np` Photos count, `nk` kept-in-Files count, `nf` failed count, `title`, and `upv` and `upurl` when a newer release exists | Saves and notifies |
+| `done` | `m` manifest path, `np` Photos count, `nk` kept-in-Files count, `nf` failed count, `nb` count kept in Files for being over 1 GB, `title`, and `upv` and `upurl` when a newer release exists | Saves and notifies |
 | `confirm` | `url`, `n` item count or empty when only "more than" is known, `thr`, `title` | Asks how much to download |
 | `error` | `kind`, `msg`, `url` | Explains and offers fixes |
 | `setup` | `ver` | Says that UMDL is ready |
 | `info` | `title`, `msg` | Shows the message |
+| `status` | `msg` | Shows the report and offers to copy it with the log |
 
 Error kinds: `auth`, `network`, `gone`, `unsupported`, `drm`, `install`, `outdated`, `nolink`, `unknown`.
 
 One result does not come from the helper. When the helper script cannot be downloaded in a-Shell, the shell itself reopens the shortcut with the plain text `UMDL-HELPER-MISSING`.
 
-The file list is not in the callback. It is in the manifest (`jobs/<id>/manifest.json`), which the shortcut reads with a-Shell's "Get File", so a 500-item download does not need a 500-item URL.
+The file list is not in the callback. It is in the manifest (`jobs/<id>/manifest.json`), which the shortcut reads with a background `cat`, so a 500-item download does not need a 500-item URL. Each file is then fetched with a-Shell's "Get File".
+
+## Getting files out of a-Shell
+
+"Get File" has two modes. By default a-Shell hands Shortcuts a reference to the file. On iOS 27.2 that mode stops the shortcut with "There was a problem running the shortcut" ([a-Shell issue 1138](https://github.com/holzschu/a-shell/issues/1138)). With `copyFile` set, a-Shell reads the file into memory and hands over the data, which works on 27.2 but times out somewhere between 500 MB and 2 GB. UMDL always sets `copyFile`, and the helper keeps any file over 1 GB in Files instead of listing it for Photos.
+
+Background commands have a similar trap. a-Shell reports the action as failed when the last command exits with an error, unless `keepGoing` is set, and Shortcuts then stops in the same wordless way. Every background command UMDL sends sets `keepGoing`, and reads the output to decide what happened.
+
+## Sign-ins
+
+a-Shell's `internalbrowser` is a web view inside the app. Its cookies are stored in `~/Library/Cookies/Cookies.binarycookies`, which is where yt-dlp and gallery-dl look when told to use Safari's cookies, so a sign-in made there is available to both tools with nothing copied.
+
+The helper reads the same file to answer one question: is this site signed in? It parses the names and domains only, never the values. For the listed sites it looks for the site's own session cookie (`sessionid` for Instagram, `reddit_session` for Reddit, and so on); for any other site, for a cookie whose name looks like a session. `signin` opens the page, polls the file until that cookie appears or ten minutes pass, and calls back either way. `status` uses the same check.
 
 ## Files in a-Shell
 

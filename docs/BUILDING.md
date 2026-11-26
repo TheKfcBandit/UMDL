@@ -123,7 +123,8 @@ On an iPhone or iPad with a-Shell installed and UMDL not yet set up:
 - [ ] Settings › Reset UMDL, then run UMDL from the Shortcuts app and choose **Custom setup**.
 - [ ] Turn on Airplane Mode, reset, and run setup. **Setup incomplete** appears; with the connection back, the next run finishes setup without asking again.
 - [ ] Start a long download, leave a-Shell, share the same link again. It resumes.
-- [ ] Sign in to a site, then download a post that needs the login.
+- [ ] Sign in to a site. UMDL returns to Shortcuts and says "Signed in to" with the site's name. Then download a post that needs the sign-in.
+- [ ] Open Status. The site shows as signed in; **Copy status and log** fills the clipboard.
 
 ## Layout
 
