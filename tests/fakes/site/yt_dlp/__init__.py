@@ -3,7 +3,8 @@
 Behaviour comes from the JSON file named in UMDL_FAKE_SCENARIO:
     {"ytdlp": {"suitable": true, "raw": {...}, "error": "message",
                "files": [["name.mp4", "/source/file", "Title"]],
-               "download_error": "message"}}
+               "download_error": "message",
+               "urls": {"part of a link": {...the same keys, for links containing it...}}}}
 """
 
 import json
@@ -30,10 +31,13 @@ version = types.ModuleType("yt_dlp.version")
 version.__version__ = "2099.01.01-fake"
 
 
+_chosen = [None]
+
+
 class YoutubeDL:
     def __init__(self, opts):
         self.opts = opts
-        self.scenario = _scenario()
+        self.scenario = _chosen[0] or _scenario()
         record = os.environ.get("UMDL_FAKE_RECORD")
         if record:
             with open(record, "a") as handle:
@@ -47,6 +51,11 @@ class YoutubeDL:
         return False
 
     def extract_info(self, url, download=False, process=False, ie_key=None):
+        for part, special in (self.scenario.get("urls") or {}).items():
+            if part in url:
+                # Remembered for the download, which is given the result, not the link.
+                _chosen[0] = special
+                self.scenario = special
         if self.scenario.get("error"):
             self.opts["logger"].error("ERROR: " + self.scenario["error"])
             raise DownloadError(self.scenario["error"])

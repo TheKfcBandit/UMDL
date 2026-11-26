@@ -35,7 +35,7 @@ import time
 import traceback
 import urllib.parse
 
-HELPER_VERSION = "1.2.1"
+HELPER_VERSION = "1.2.2"
 # Bumped only when the payload/callback format changes incompatibly.
 PROTOCOL = 2
 
@@ -1033,10 +1033,12 @@ def gallery_engine(ctx):
     raise first_error
 
 
-def gallery_attempt(ctx, extra):
+def gallery_attempt(ctx, extra, links=None):
+    """One gallery-dl run. With `links`, those direct file links are fetched as
+    they are: the caller has already counted and trimmed them."""
     listing = os.path.join(ctx["dir"], "urls.txt")
     with open(listing, "w", encoding="utf-8") as handle:
-        handle.write(ctx["url"] + "\n")
+        handle.write("\n".join(links or [ctx["url"]]) + "\n")
 
     common = ["--input-file", listing, "--retries", "4", "--http-timeout", "30"] + list(extra)
     if have_cookies():
@@ -1047,7 +1049,7 @@ def gallery_attempt(ctx, extra):
         return tidy_error(errors[-1] if errors else (err or fallback))
 
     threshold = ctx["threshold"]
-    if ctx["mode"] == "auto":
+    if ctx["mode"] == "auto" and not links:
         ui.start("Reading link")
         code, lines, err = gallery_run(
             ["--get-urls", "--range", "1-%d" % (threshold + 1)] + common)
@@ -1065,7 +1067,7 @@ def gallery_attempt(ctx, extra):
             raise NeedConfirm(None, "")
 
     args = ["--directory", ctx["dir"]] + common
-    if ctx["limit"]:
+    if ctx["limit"] and not links:
         args += ["--range", "1-%d" % ctx["limit"]]
     seen = {"n": 0}
 
@@ -1086,7 +1088,222 @@ def gallery_attempt(ctx, extra):
     return files
 
 
-ENGINES = {"ytdlp": ytdlp_engine, "gallery": gallery_engine}
+# ------------------------------------------------ Reddit through the browser
+#
+# Reddit turns the download tools away on some networks even when they carry a
+# signed-in session ("You've been blocked by network security"). The one client
+# it does accept there is a real browser, and a-Shell has one: the web view that
+# "Sign in to a site" uses. a-Shell's jsc command runs JavaScript in that web
+# view, so the helper asks the browser itself for the post's details, then
+# hands the media links it finds to the download tools. Cookies never leave
+# the browser.
+
+def is_reddit(url):
+    host = hostname(url)
+    return host in ("reddit.com", "redd.it") or host.endswith(".reddit.com")
+
+
+# Runs inside a page on www.reddit.com. Leaves its answer in window.__umdl:
+#   "OK <json>"            the fields of the post that say where its media is
+#   "HTTP <status> <text>" Reddit answered, but not with a post
+#   "ERR <message>"        the request could not be made
+REDDIT_JS = r"""
+window.__umdl = "";
+(async function () {
+  try {
+    var target = new URL(__URL__);
+    var link = target.hostname === "redd.it" ? "/comments" + target.pathname
+                                             : target.pathname + target.search;
+    if (!/\/comments\//.test(link)) {
+      // A share link: follow it to the post it stands for.
+      var hop;
+      try {
+        hop = await fetch(link, {method: "HEAD", credentials: "include", redirect: "follow"});
+      } catch (e) {
+        hop = await fetch(link, {credentials: "include", redirect: "follow"});
+      }
+      link = hop.url || link;
+    }
+    var match = link.match(/\/comments\/([A-Za-z0-9]+)/);
+    if (!match) { window.__umdl = "ERR no post found at " + link; return; }
+    var reply = await fetch("/comments/" + match[1] + "/.json?raw_json=1&limit=1",
+                            {credentials: "include", headers: {"Accept": "application/json"}});
+    var text = await reply.text();
+    var data = null;
+    try { data = JSON.parse(text); } catch (e) { data = null; }
+    if (!Array.isArray(data)) {
+      var said = data && data.message ? String(data.message)
+                                      : text.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+      window.__umdl = "HTTP " + reply.status + " " + said.slice(0, 160);
+      return;
+    }
+    var keep = ["id", "title", "url", "url_overridden_by_dest", "is_video", "is_gallery",
+                "is_self", "media", "secure_media", "gallery_data", "media_metadata"];
+    var pick = function (post) {
+      var out = {};
+      keep.forEach(function (key) { if (post[key] !== undefined) { out[key] = post[key]; } });
+      return out;
+    };
+    var post = data[0].data.children[0].data;
+    var found = pick(post);
+    if (post.crosspost_parent_list && post.crosspost_parent_list[0]) {
+      found.crosspost_parent_list = [pick(post.crosspost_parent_list[0])];
+    }
+    // Plain ASCII, so nothing between here and Python can garble it.
+    window.__umdl = "OK " + JSON.stringify(found).replace(/[\u007f-\uffff]/g, function (c) {
+      return "\\u" + ("0000" + c.charCodeAt(0).toString(16)).slice(-4);
+    });
+  } catch (e) {
+    window.__umdl = "ERR " + e;
+  }
+})();
+"started"
+"""
+
+BROWSER_WAIT = float(os.environ.get("UMDL_BROWSER_WAIT") or 40)
+
+
+def browser_js(name, source):
+    """Run JavaScript in a-Shell's web view and return what it evaluates to."""
+    path = os.path.join(WORKSPACE, "web-%s.js" % name)
+    try:
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(source)
+        code, out, err = run_cmd(["jsc", path])
+    finally:
+        remove(path)
+    if err.strip():
+        log("browser %s: %s" % (name, err.strip()[:200]))
+    return (out or "").strip()
+
+
+def reddit_post_from_browser(url):
+    """Ask a-Shell's browser for a Reddit post. Returns the post's fields."""
+    here = browser_js("where", "location.href")
+    if not here:
+        raise EngineError("a-Shell's browser did not answer")
+    log("browser was at " + here[:80])
+    # The request has to come from a page of the site. This one is small and runs
+    # no scripts of its own, so nothing else can see what jsc puts in the page.
+    quiet_page = "https://www.reddit.com/robots.txt"
+    moved = here != quiet_page
+    step = max(0.05, min(0.5, BROWSER_WAIT / 40.0))
+    answer = ""
+    try:
+        if moved:
+            browser_js("go", 'location.href = "%s"; "going"' % quiet_page)
+            deadline = time.time() + BROWSER_WAIT / 2
+            while time.time() < deadline:
+                time.sleep(step)
+                state = browser_js("ready", 'location.hostname + " " + document.readyState')
+                if state.startswith("www.reddit.com ") and not state.endswith("loading"):
+                    break
+            else:
+                raise EngineError("a-Shell's browser could not open reddit.com")
+        if browser_js("start", REDDIT_JS.replace("__URL__", json.dumps(url))) != "started":
+            raise EngineError("a-Shell's browser did not run the request")
+        deadline = time.time() + BROWSER_WAIT
+        while time.time() < deadline and not answer:
+            time.sleep(step)
+            answer = browser_js("result", 'window.__umdl || ""')
+    finally:
+        if moved:
+            browser_js("back", 'history.back(); "back"')
+    log("browser answered: " + (answer[:200] or "nothing"))
+    if answer.startswith("OK "):
+        try:
+            post = json.loads(answer[3:])
+            if isinstance(post, dict):
+                return post
+        except ValueError:
+            pass
+        raise EngineError("a-Shell's browser returned something unreadable")
+    if answer.startswith("HTTP "):
+        raise EngineError("Reddit refused the browser as well: " + answer[5:])
+    raise EngineError(answer[4:] if answer.startswith("ERR ") else "Reddit did not answer the browser")
+
+
+def reddit_targets(post):
+    """Where a Reddit post keeps its media.
+
+    Returns ("video", manifest link), ("files", [direct links]) or
+    ("link", another site's link).
+    """
+    parents = post.get("crosspost_parent_list") or []
+    if parents and isinstance(parents[0], dict):
+        post = parents[0]  # a crosspost: the media belongs to the original
+    for holder in (post.get("secure_media"), post.get("media")):
+        video = (holder or {}).get("reddit_video") if isinstance(holder, dict) else None
+        if isinstance(video, dict):
+            link = video.get("dash_url") or video.get("hls_url") or video.get("fallback_url")
+            if link:
+                return "video", link
+    items = (post.get("gallery_data") or {}).get("items") or []
+    described = post.get("media_metadata") or {}
+    links = []
+    for item in items:
+        source = (described.get(item.get("media_id")) or {}).get("s") or {}
+        link = source.get("u") or source.get("gif") or source.get("mp4")
+        if link:
+            # The preview host serves a resized copy; the same name on i.redd.it is the original.
+            links.append(link.partition("?")[0].replace("/preview.", "/i.", 1))
+    if links:
+        return "files", links
+    link = clean_url(str(post.get("url_overridden_by_dest") or post.get("url") or ""))
+    host = hostname(link)
+    if host == "i.redd.it":
+        return "files", [link]
+    if host == "v.redd.it":
+        return "video", link.rstrip("/") + "/DASHPlaylist.mpd"
+    if link and not is_reddit(link) and not post.get("is_self"):
+        return "link", link
+    raise EngineError("This Reddit post has no photo or video.")
+
+
+def reddit_web_engine(ctx):
+    """Last resort for Reddit: get the post from a-Shell's browser, then let the
+    download tools fetch the media it points to."""
+    ui.start("Asking a-Shell's browser for the post")
+    try:
+        post = reddit_post_from_browser(ctx["url"])
+        kind, target = reddit_targets(post)
+    except EngineError:
+        ui.fail()
+        raise
+    ui.done()
+    title = str(post.get("title") or "")
+    log("reddit post %s: %s" % (post.get("id"), kind))
+    if kind == "files":
+        if ctx["mode"] == "auto" and len(target) > ctx["threshold"]:
+            raise NeedConfirm(len(target), title)
+        if ctx["limit"]:
+            target = target[:ctx["limit"]]
+        files = gallery_attempt(ctx, [], links=target)
+    else:
+        there = dict(ctx, url=target, titles={}, title="")
+        files = []
+        last = None
+        for engine in (["ytdlp"] if kind == "video" else plan_engines(target)):
+            try:
+                files = ENGINES[engine](there)
+                if files:
+                    break
+            except EngineError as exc:
+                last = exc
+        ctx["failed"] = there["failed"]
+        if not files:
+            raise last or EngineError("nothing to download")
+        if kind == "link":
+            ctx["titles"].update(there["titles"])
+    if title and kind != "link":
+        # Name the files after the post, not after the manifest they came from.
+        for path in files:
+            ctx["titles"][os.path.basename(path)] = title
+    ctx["title"] = title or ctx.get("title") or ""
+    return files
+
+
+ENGINES = {"ytdlp": ytdlp_engine, "gallery": gallery_engine, "redditweb": reddit_web_engine}
 
 
 def plan_engines(url):
@@ -1361,7 +1578,11 @@ def cmd_run(payload, blob):
         "titles": {}, "title": "", "failed": 0,
     }
     files, errors = [], []
-    for engine in plan_engines(url):
+    blocked = False
+    # Reddit only: if the site blocks both tools, its own browser is asked instead.
+    for engine in plan_engines(url) + (["redditweb"] if is_reddit(url) else []):
+        if engine == "redditweb" and not blocked:
+            continue
         try:
             files = ENGINES[engine](ctx)
             if files:
@@ -1374,6 +1595,7 @@ def cmd_run(payload, blob):
             })
         except EngineError as exc:
             errors.append(str(exc))
+            blocked = blocked or bool(BLOCKED.search(str(exc)))
             log("%s could not do it: %s" % (engine, exc))
         except KeyboardInterrupt:
             raise

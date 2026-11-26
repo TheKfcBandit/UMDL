@@ -7,6 +7,7 @@ Labels are written exactly as they appear. Tests are in `tests/test_shortcut_flo
 - [How a run starts](#how-a-run-starts)
 - [First run](#first-run)
 - [Sharing a link](#sharing-a-link)
+- [Reddit](#reddit)
 - [Large downloads](#large-downloads)
 - [When a download fails](#when-a-download-fails)
 - [Unsaved and interrupted downloads](#unsaved-and-interrupted-downloads)
@@ -154,7 +155,31 @@ Two things happen without being shown:
 
 - A download tool that has gone missing is installed again before the download (`OneTap.test_tools_removed_behind_umdls_back_are_reinstalled_on_the_way`), including when pip installs to a folder Python was not searching (`OneTap.test_tools_installed_where_python_is_not_looking_are_found`).
 - A result UMDL cannot read is ignored, and the run continues as if nothing had been shared (`OneTap.test_unreadable_callback_falls_back_to_the_main_menu`).
-- A Reddit link that Reddit's website refuses ("You've been blocked by network security") is fetched again through Reddit's API, which Reddit offers for exactly this case (`OneTap.test_reddit_link_blocked_on_the_website_is_fetched_through_the_api`).
+- A Reddit link that Reddit refuses is tried by other routes before any error is shown. See [Reddit](#reddit).
+
+## Reddit
+
+On some networks Reddit refuses the download tools with "You've been blocked by network security", whether or not UMDL is signed in. Nothing about this is shown unless every route fails. The routes, in order:
+
+| Route | What it does | Test |
+|---|---|---|
+| 1. gallery-dl, as for any site | Reads the post from Reddit's website, with the saved sign-in | `OneTap.test_gallery_post_saves_every_image` |
+| 2. gallery-dl through Reddit's API | Used only when route 1 was blocked | `OneTap.test_reddit_link_blocked_on_the_website_is_fetched_through_the_api` |
+| 3. yt-dlp | The usual second tool | |
+| 4. a-Shell's own browser | Used only when a route above was blocked. The helper has the browser, where the sign-in lives, ask Reddit for the post, and gives the photo or video links it finds to the download tools | `RedditThroughTheBrowser.test_photo_post_is_saved_with_no_question` |
+
+Route 4 happens inside a-Shell without the page being shown, and the browser is returned to whatever it was showing before (`RedditThroughTheBrowser.test_browser_is_returned_to_the_page_it_was_showing`). What it handles:
+
+| Post | Result | Test |
+|---|---|---|
+| Photo or gallery | The original images are saved, in the post's order | `RedditThroughTheBrowser.test_photo_post_is_saved_with_no_question` |
+| Video hosted by Reddit | Downloaded with sound by yt-dlp; the notification carries the post's title | `RedditThroughTheBrowser.test_video_post_goes_to_yt_dlp_with_its_manifest` |
+| Link to another site | Downloaded from that site in the usual way | `RedditThroughTheBrowser.test_post_that_links_elsewhere_is_downloaded_from_there` |
+| Gallery over the ask-first limit | The [large download](#large-downloads) question, with the exact count | `RedditThroughTheBrowser.test_large_gallery_still_asks_first` |
+| Text post, or the browser does not answer | The [failed download](#when-a-download-fails) menu | `RedditThroughTheBrowser.test_post_without_media_and_a_browser_that_never_answers` |
+| Reddit refuses the browser as well | The failed download menu, saying that Reddit refused this device or network | `RedditThroughTheBrowser.test_refusal_in_the_browser_too_is_reported_as_reddits` |
+
+Links to other sites never involve the browser (`RedditThroughTheBrowser.test_other_sites_never_involve_the_browser`).
 
 ## Large downloads
 
@@ -364,6 +389,7 @@ a-Shell runs commands for a shortcut in two ways. Background commands return the
 | After the helper was fetched | In the app | `pip install --upgrade yt-dlp gallery-dl`, before the helper starts |
 | Download, setup, update tools, status, sign in, forget sign-ins | In the app | `python umdl.py <command> <request>` |
 | Sign in | By the helper | `internalbrowser <address>`, then it watches the cookie store |
+| Reddit, when the tools are refused | By the helper | `jsc <script>`, which runs a short script in a-Shell's web view |
 
 Every background command is run with a-Shell's "continue after an error" option, and every Get File asks for a copy. Without either, a-Shell reports a failed action and Shortcuts stops with "There was a problem running the shortcut", naming neither the action nor the reason (`Hygiene.test_background_commands_survive_a_failing_command`, `Hygiene.test_get_file_always_asks_for_a_copy`).
 
@@ -398,10 +424,11 @@ Confirmed on a device so far:
 - Setup, the download tools installing, and a download running in a-Shell.
 - The main menu and the menus under it.
 - The helper's result reaching the shortcut, the failed-download menu, and **Copy error details**.
-- The sign-in page opening in a-Shell.
+- The sign-in page opening in a-Shell, and sign-ins being recognised.
+- Status, and copying the status and the log.
 
 Not yet confirmed on a device, and so the first things to check ([device checklist](BUILDING.md#device-checklist)):
 
 - Saving to the album and the notification. This is the step the Get File fault blocked.
 - The sign-in confirmation. It depends on a-Shell writing its cookie store while the page is still open; if it writes later, the result is **Sign-in not confirmed** and Status shows the sign-in afterwards.
-- Status, and copying the log.
+- Reddit through a-Shell's browser. Each step of it is written to the log, so a failure there can be read from **Copy status and log**.

@@ -16,8 +16,20 @@ fail = os.environ.get("FAKE_GALLERY_FAIL") or scenario.get("fail", "")
 if fail:
     sys.stderr.write("[fakegallery][error] " + fail + "\n")
     sys.exit(4)
+# Direct links to files need no site at all: one file per link, never blocked.
+links = []
+if "--input-file" in args:
+    with open(args[args.index("--input-file") + 1]) as handle:
+        links = handle.read().split()
+direct = bool(links) and all(
+    link.rsplit(".", 1)[-1].lower() in ("jpg", "jpeg", "png", "gif", "webp", "mp4") for link in links)
+if direct:
+    count = len(links)
+    record = os.path.join(os.environ.get("HOME", ""), "direct-links.log")
+    with open(record, "a") as handle:
+        handle.write(" ".join(links) + "\n")
 # A site that turns away everything except its API ("api=oauth").
-blocked = scenario.get("blocked_unless_api", "")
+blocked = scenario.get("blocked_unless_api", "") if not direct else ""
 if blocked and "api=oauth" not in args:
     sys.stderr.write("[fakegallery][error] " + blocked + "\n")
     sys.exit(4)

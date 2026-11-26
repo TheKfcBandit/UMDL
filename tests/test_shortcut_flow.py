@@ -450,6 +450,122 @@ class OneTap(Flow):
         self.assertEqual(w.seen("openurl")[0][1], VERSION["url"])
 
 
+class RedditThroughTheBrowser(Flow):
+    """docs/BEHAVIOR.md, "Reddit". Reddit turns both download tools away; the
+    post is read through a-Shell's own browser instead."""
+
+    SHARE = "https://www.reddit.com/r/me_irl/s/cUdJnFfPwD"
+    BLOCK = "\"You've been blocked by network security.\""
+
+    def blocked(self, browser, **ytdlp):
+        scenario = {"ytdlp": dict({"suitable": True, "error": "HTTP Error 403: Blocked"}, **ytdlp),
+                    "gallery": {"found": True, "sample": self.jpg, "blocked_unless_api": self.BLOCK,
+                                "api_fail": self.BLOCK}}
+        if browser is not None:
+            scenario["browser"] = browser
+        return scenario
+
+    def gallery_post(self, count):
+        ids = ["img%02d" % i for i in range(count)]
+        return {"id": "1abcde", "title": "Holiday photos", "is_gallery": True,
+                "url": "https://www.reddit.com/gallery/1abcde",
+                "gallery_data": {"items": [{"media_id": i} for i in ids]},
+                "media_metadata": {i: {"status": "valid", "m": "image/jpg", "s": {
+                    "u": "https://preview.redd.it/%s.jpg?width=1080&s=abc" % i}} for i in ids}}
+
+    def test_photo_post_is_saved_with_no_question(self):
+        w = self.world
+        w.install(CONFIG)
+        w.set_cookies([(".reddit.com", "reddit_session")])
+        w.set_scenario(self.blocked({"post": self.gallery_post(3)}))
+        w.share(self.SHARE)
+        self.assertEqual(len(w.photos), 3)
+        self.assertEqual(w.seen("menu") + w.seen("alert"), [])
+        self.assertEqual(self.notifications(w), [("Holiday photos", "Saved 3 items to the Clips album.")])
+        # The browser went to Reddit, asked for the shared link, and was put back.
+        self.assertEqual(w.browser_visits(), ["https://www.reddit.com/robots.txt", "fetch " + self.SHARE])
+        self.assertEqual(w.browser_page(), "https://localhost:8443/wasm.html")
+        # The originals were fetched, not the resized previews.
+        self.assertEqual(w.direct_links(), [["https://i.redd.it/img00.jpg", "https://i.redd.it/img01.jpg",
+                                             "https://i.redd.it/img02.jpg"]])
+
+    def test_video_post_goes_to_yt_dlp_with_its_manifest(self):
+        w = self.world
+        w.install(CONFIG)
+        manifest = "https://v.redd.it/abc123/DASHPlaylist.mpd?a=1&v=1&f=sd"
+        post = {"id": "1abcde", "title": "Cat falls off shelf", "is_video": True,
+                "url": "https://v.redd.it/abc123",
+                "secure_media": {"reddit_video": {"dash_url": manifest, "hls_url": "h", "fallback_url": "f"}}}
+        w.set_scenario(self.blocked({"post": post}, urls={"DASHPlaylist": {
+            "raw": {"_type": "video", "id": "DASHPlaylist", "title": "DASHPlaylist"},
+            "files": [["DASHPlaylist.mp4", self.clip, "DASHPlaylist"]]}}))
+        w.share(self.SHARE)
+        self.assertEqual(len(w.photos), 1)
+        self.assertEqual(self.notifications(w), [("Cat falls off shelf", "Saved to the Clips album.")])
+
+    def test_post_that_links_elsewhere_is_downloaded_from_there(self):
+        w = self.world
+        w.install(CONFIG)
+        post = {"id": "1abcde", "title": "Great clip", "url": "https://clips.test/watch/9",
+                "url_overridden_by_dest": "https://clips.test/watch/9"}
+        w.set_scenario(self.blocked({"post": post}, urls={"clips.test": {
+            "raw": {"_type": "video", "id": "9", "title": "Nine"},
+            "files": [["9.mp4", self.clip, "Nine"]]}}))
+        w.share(self.SHARE)
+        self.assertEqual(len(w.photos), 1)
+
+    def test_large_gallery_still_asks_first(self):
+        w = self.world
+        w.install(CONFIG)
+        w.set_scenario(self.blocked({"post": self.gallery_post(12)}))
+        w.script(("menu", "Download the first 10"))
+        w.share(self.SHARE)
+        self.assertEqual(w.seen("menu")[0][1], "Holiday photos\n\nThis link contains 12 items.")
+        self.assertEqual(len(w.photos), 10)
+
+    def test_browser_is_returned_to_the_page_it_was_showing(self):
+        w = self.world
+        w.install(CONFIG)
+        here = "https://www.instagram.com/accounts/login/"       # left open after a sign-in
+        w.set_scenario(self.blocked({"post": self.gallery_post(1), "start": here}))
+        w.share(self.SHARE)
+        self.assertEqual(len(w.photos), 1)
+        self.assertEqual(w.browser_page(), here)
+
+    def test_refusal_in_the_browser_too_is_reported_as_reddits(self):
+        w = self.world
+        w.install(CONFIG)
+        w.set_cookies([(".reddit.com", "reddit_session")])
+        w.set_scenario(self.blocked({"http": "403 " + self.BLOCK}))
+        w.script(("menu", "Cancel"))
+        w.share(self.SHARE)
+        prompt = w.seen("menu")[0][1]
+        self.assertIn("Reddit refused this device or network: " + self.BLOCK, prompt)
+        self.assertEqual(w.photos, [])
+        self.assertEqual(w.browser_page(), "https://localhost:8443/wasm.html")   # put back all the same
+
+    def test_post_without_media_and_a_browser_that_never_answers(self):
+        for browser in ({"post": {"id": "1abcde", "title": "A question", "is_self": True,
+                                  "url": "https://www.reddit.com/r/me_irl/comments/1abcde/a_question/"}},
+                        {"silent": True}, None):
+            w = self.new_world()
+            w.install(CONFIG)
+            w.set_scenario(self.blocked(browser))
+            w.script(("menu", "Cancel"))
+            w.share(self.SHARE)
+            self.assertIn("Download failed", w.seen("menu")[0][1])
+            self.assertEqual(w.photos, [])
+
+    def test_other_sites_never_involve_the_browser(self):
+        w = self.world
+        w.install(CONFIG)
+        w.set_scenario({"ytdlp": {"error": "HTTP Error 403: Blocked"}, "gallery": {"found": False},
+                        "browser": {"post": self.gallery_post(1)}})
+        w.script(("menu", "Cancel"))
+        w.share(VIDEO)
+        self.assertEqual(w.browser_visits(), [])
+
+
 class LargeDownloads(Flow):
     """docs/BEHAVIOR.md, "Large downloads"."""
 

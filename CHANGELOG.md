@@ -1,5 +1,11 @@
 # Changelog
 
+## Helper 1.2.2
+
+A helper-only update, picked up by **Update tools** or within a day.
+
+- Reddit: on the test device Reddit refused the API route of 1.2.1 as well. When Reddit blocks the download tools, the helper now has a-Shell's own browser, where the sign-in lives, ask Reddit for the post, and gives the photo or video links to the tools. This covers photos, galleries, Reddit-hosted video and links to other sites. Every step is written to the log.
+
 ## Helper 1.2.1
 
 A helper-only update: installed copies of UMDL 1.2.0 pick it up within a day, or at once with **Update tools**. The shortcut is unchanged.

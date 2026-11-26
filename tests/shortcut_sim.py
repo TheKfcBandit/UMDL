@@ -206,6 +206,30 @@ class World:
             with open(plan, "w") as handle:
                 json.dump(cookies, handle)
 
+    def browser_visits(self):
+        """Pages and requests a-Shell's web view was sent to, in order."""
+        path = os.path.join(self.home, "browser-visits.log")
+        if not os.path.exists(path):
+            return []
+        with open(path) as handle:
+            return handle.read().splitlines()
+
+    def browser_page(self):
+        """The page the web view is left on, or None if it was never used."""
+        path = os.path.join(self.home, ".fake-browser.json")
+        if not os.path.exists(path):
+            return None
+        with open(path) as handle:
+            return json.load(handle)["href"]
+
+    def direct_links(self):
+        """Direct file links handed to gallery-dl, one entry per run."""
+        path = os.path.join(self.home, "direct-links.log")
+        if not os.path.exists(path):
+            return []
+        with open(path) as handle:
+            return [line.split() for line in handle.read().splitlines()]
+
     def set_pip_target(self, folder):
         """Make pip install into a folder Python is not searching."""
         with open(os.path.join(self.home, ".fake-pip-target"), "w") as handle:
@@ -356,7 +380,7 @@ class World:
             return
         self.helper_runs.append((command, json.loads(base64.b64decode(blob))))
         # The helper starts "python -m gallery_dl" by name, so "python" must resolve.
-        env = self.env(UMDL_SIM_WINDOW="open", UMDL_SIGNIN_WAIT="1")
+        env = self.env(UMDL_SIM_WINDOW="open", UMDL_SIGNIN_WAIT="1", UMDL_BROWSER_WAIT="2")
         shim = os.path.join(self.home, "shim")
         os.makedirs(shim, exist_ok=True)
         if not os.path.exists(os.path.join(shim, "python")):

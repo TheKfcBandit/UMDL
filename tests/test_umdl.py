@@ -602,6 +602,54 @@ class EndToEnd(Base):
         self.assertIn("ZeroDivisionError", data["msg"])
 
 
+class RedditPosts(unittest.TestCase):
+    """Where a Reddit post keeps its media, from the fields Reddit's JSON has."""
+
+    def test_hosted_video(self):
+        video = {"dash_url": "https://v.redd.it/x/DASHPlaylist.mpd?a=1", "hls_url": "h", "fallback_url": "f"}
+        self.assertEqual(umdl.reddit_targets({"is_video": True, "secure_media": {"reddit_video": video}}),
+                         ("video", video["dash_url"]))
+        self.assertEqual(umdl.reddit_targets({"media": {"reddit_video": {"fallback_url": "f"}}}),
+                         ("video", "f"))
+        self.assertEqual(umdl.reddit_targets({"url": "https://v.redd.it/x9/"}),
+                         ("video", "https://v.redd.it/x9/DASHPlaylist.mpd"))
+
+    def test_gallery_keeps_its_order_and_asks_for_originals(self):
+        post = {"is_gallery": True, "url": "https://www.reddit.com/gallery/1abcde",
+                "gallery_data": {"items": [{"media_id": "b"}, {"media_id": "a"}, {"media_id": "gone"},
+                                           {"media_id": "anim"}]},
+                "media_metadata": {
+                    "a": {"s": {"u": "https://preview.redd.it/a.png?width=640&s=1"}},
+                    "b": {"s": {"u": "https://preview.redd.it/b.jpg?width=640&s=2"}},
+                    "gone": {"status": "failed"},
+                    "anim": {"s": {"gif": "https://i.redd.it/anim.gif", "mp4": "https://preview.redd.it/anim.mp4"}}}}
+        self.assertEqual(umdl.reddit_targets(post),
+                         ("files", ["https://i.redd.it/b.jpg", "https://i.redd.it/a.png",
+                                    "https://i.redd.it/anim.gif"]))
+
+    def test_single_image_crosspost_and_outside_link(self):
+        self.assertEqual(umdl.reddit_targets({"url": "https://i.redd.it/one.jpg"}),
+                         ("files", ["https://i.redd.it/one.jpg"]))
+        crosspost = {"url": "https://www.reddit.com/r/a/comments/1/x/", "is_self": False,
+                     "crosspost_parent_list": [{"url": "https://i.redd.it/orig.png"}]}
+        self.assertEqual(umdl.reddit_targets(crosspost), ("files", ["https://i.redd.it/orig.png"]))
+        self.assertEqual(umdl.reddit_targets({"url_overridden_by_dest": "https://imgur.com/a/xyz",
+                                              "url": "https://imgur.com/a/xyz"}),
+                         ("link", "https://imgur.com/a/xyz"))
+
+    def test_text_post_has_nothing_to_download(self):
+        for post in ({"is_self": True, "url": "https://www.reddit.com/r/a/comments/1/x/"},
+                     {"is_self": True, "url": "https://example.com/mentioned-in-text"}, {}):
+            with self.assertRaises(umdl.EngineError):
+                umdl.reddit_targets(post)
+
+    def test_which_links_are_reddit(self):
+        for link in ("https://www.reddit.com/r/a/s/b", "https://old.reddit.com/x", "https://redd.it/abc"):
+            self.assertTrue(umdl.is_reddit(link), link)
+        for link in ("https://notreddit.com/x", "https://i.redd.it/a.jpg", "https://reddit.com.evil.test/"):
+            self.assertFalse(umdl.is_reddit(link), link)
+
+
 class SelfUpdate(Base):
     def setUp(self):
         super().setUp()

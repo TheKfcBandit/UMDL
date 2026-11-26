@@ -1,0 +1,66 @@
+#!/usr/bin/env python3
+"""Stand-in for a-Shell's jsc, which runs JavaScript in the app's web view.
+
+It does not run JavaScript. It recognises the few scripts the helper sends and
+answers as a browser would, from the "browser" part of UMDL_FAKE_SCENARIO:
+    {"browser": {"post": {...}}}             the signed-in browser gets the post
+    {"browser": {"http": "403 Blocked"}}     Reddit refuses the browser too
+    {"browser": {"silent": true}}            the request never finishes
+With no "browser" entry there is no web view, and jsc prints nothing.
+The pages it was sent to are kept in $HOME/browser-visits.log.
+"""
+import json
+import os
+import re
+import sys
+from urllib.parse import urlsplit
+
+scenario = None
+if os.environ.get("UMDL_FAKE_SCENARIO"):
+    with open(os.environ["UMDL_FAKE_SCENARIO"]) as handle:
+        scenario = json.load(handle).get("browser")
+if scenario is None:
+    sys.exit(0)
+
+home = os.environ.get("HOME", "")
+store = os.path.join(home, ".fake-browser.json")
+state = {"href": scenario.get("start", "https://localhost:8443/wasm.html"), "history": [], "result": ""}
+if os.path.exists(store):
+    with open(store) as handle:
+        state = json.load(handle)
+with open(sys.argv[1]) as handle:
+    script = handle.read()
+
+if "history.back()" in script:
+    state["href"] = state["history"].pop()
+    print("back")
+elif 'location.href = "' in script:
+    state["history"].append(state["href"])
+    state["href"] = re.search(r'location\.href = "([^"]+)"', script).group(1)
+    with open(os.path.join(home, "browser-visits.log"), "a") as handle:
+        handle.write(state["href"] + "\n")
+    print("going")
+elif 'window.__umdl = "";' in script:
+    asked = json.loads(re.search(r"new URL\((\"[^\n]*\")\);", script).group(1))
+    with open(os.path.join(home, "browser-visits.log"), "a") as handle:
+        handle.write("fetch " + asked + "\n")
+    if urlsplit(state["href"]).hostname != "www.reddit.com":
+        state["result"] = "ERR TypeError: Load failed"      # another site's page may not ask
+    elif scenario.get("silent"):
+        state["result"] = ""
+    elif "http" in scenario:
+        state["result"] = "HTTP " + scenario["http"]
+    else:
+        state["result"] = "OK " + json.dumps(scenario.get("post") or {})
+    print("started")
+elif "window.__umdl ||" in script:
+    print(state["result"])
+elif "document.readyState" in script:
+    print((urlsplit(state["href"]).hostname or "") + " complete")
+elif script.strip() == "location.href":
+    print(state["href"])
+else:
+    sys.stderr.write("fake jsc: unexpected script\n")
+    sys.exit(2)
+with open(store, "w") as handle:
+    json.dump(state, handle)

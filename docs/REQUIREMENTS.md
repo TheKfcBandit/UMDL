@@ -57,7 +57,7 @@ Changed after the first device test (1.1.0):
 - Live streams are skipped while they are live.
 - Sign-in uses a-Shell's own browser. Sites that block embedded browsers (Google sign-in often does) will not work there.
 - A file over 1 GB is kept in Files, not Photos, until a-Shell's Get File works without copying again.
-- Reddit and Instagram often refuse downloads that are not signed in, and sometimes those that are. For Reddit, UMDL then goes through Reddit's API; whether Reddit accepts that from a given network has not been confirmed on a device. Otherwise UMDL reports what the site said.
+- Reddit and Instagram often refuse downloads that are not signed in, and sometimes those that are. For Reddit, UMDL then goes through Reddit's API, and after that through a-Shell's own browser. On the test device the API route was refused too; the browser route has not been run on a device yet. Otherwise UMDL reports what the site said.
 - a-Shell mini is untested.
 
 ## Verification
