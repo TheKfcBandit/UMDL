@@ -371,6 +371,17 @@ class OneTap(Flow):
                          "1 too large to pass to Photos (over 1 GB).")
         self.assertEqual(os.listdir(os.path.join(w.workspace, "Saved")), ["My clip.mp4"])
 
+    def test_reddit_link_blocked_on_the_website_is_fetched_through_the_api(self):
+        w = self.world
+        w.install(CONFIG)
+        w.set_cookies([(".reddit.com", "reddit_session")])
+        w.set_scenario({"ytdlp": {"suitable": True, "error": "HTTP Error 403: Blocked"},
+                        "gallery": {"found": True, "count": 2, "sample": self.jpg,
+                                    "blocked_unless_api": "\"You've been blocked by network security.\""}})
+        w.share("https://www.reddit.com/r/pics/s/AbCdEfGhIj")
+        self.assertEqual(len(w.photos), 2)
+        self.assertEqual(w.seen("menu") + w.seen("alert"), [])
+
     def test_tools_removed_behind_umdls_back_are_reinstalled_on_the_way(self):
         w = self.world
         w.install(CONFIG, tools=False)
@@ -530,6 +541,30 @@ class Errors(Flow):
             w.script(("menu", "Cancel"))
             w.share(VIDEO)
             self.assertTrue(w.seen("menu")[0][1].endswith(advice), message)
+
+    def test_a_block_while_signed_in_is_not_blamed_on_the_account(self):
+        w = self.world
+        w.install(CONFIG)
+        w.set_cookies([(".reddit.com", "reddit_session")])
+        blocked = "\"You've been blocked by network security.\""
+        w.set_scenario({"ytdlp": {"suitable": True, "error": "HTTP Error 403: Blocked"},
+                        "gallery": {"found": True, "blocked_unless_api": blocked,
+                                    "api_fail": "\"403: Blocked\""}})
+        w.script(("menu", "Cancel"))
+        w.share("https://www.reddit.com/r/pics/s/AbCdEfGhIj")
+        prompt = w.seen("menu")[0][1]
+        self.assertIn("Reddit refused this device or network: " + blocked, prompt)
+        self.assertIn("UMDL is signed in, so the account is not the cause.", prompt)
+        self.assertNotIn("Sign in to the site", prompt)
+        # Not signed in: the usual advice stands.
+        w = self.new_world()
+        w.install(CONFIG)
+        w.set_scenario({"ytdlp": {"suitable": True, "error": "HTTP Error 403: Blocked"},
+                        "gallery": {"found": True, "blocked_unless_api": blocked,
+                                    "api_fail": "\"403: Blocked\""}})
+        w.script(("menu", "Cancel"))
+        w.share("https://www.reddit.com/r/pics/s/AbCdEfGhIj")
+        self.assertTrue(w.seen("menu")[0][1].endswith("Sign in to the site, then try again."))
 
     def test_try_again_succeeds_once_the_site_recovers(self):
         w = self.world

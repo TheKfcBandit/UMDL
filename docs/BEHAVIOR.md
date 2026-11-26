@@ -154,6 +154,7 @@ Two things happen without being shown:
 
 - A download tool that has gone missing is installed again before the download (`OneTap.test_tools_removed_behind_umdls_back_are_reinstalled_on_the_way`), including when pip installs to a folder Python was not searching (`OneTap.test_tools_installed_where_python_is_not_looking_are_found`).
 - A result UMDL cannot read is ignored, and the run continues as if nothing had been shared (`OneTap.test_unreadable_callback_falls_back_to_the_main_menu`).
+- A Reddit link that Reddit's website refuses ("You've been blocked by network security") is fetched again through Reddit's API, which Reddit offers for exactly this case (`OneTap.test_reddit_link_blocked_on_the_website_is_fetched_through_the_api`).
 
 ## Large downloads
 
@@ -200,6 +201,8 @@ The last line depends on the kind of failure (`Errors.test_each_kind_of_failure_
 | 🔑 Sign in to this site | Opens that site's sign-in page and confirms the sign-in. See [Sign in to a site](#sign-in-to-a-site) | `Errors.test_sign_in_from_a_failed_download_opens_that_sites_sign_in_page` |
 | 📋 Copy error details | Copies the UMDL version, the link, the error and the end of the helper's log to the clipboard, for a bug report. A notification confirms: "Error details copied to the clipboard." | `Errors.test_error_details_can_be_copied_with_the_log` |
 | Cancel | Stops | `Errors.test_error_menu_explains_and_cancels` |
+
+One failure changes the text. When a site blocks the request and UMDL is signed in to that site, the reason reads "*Site* refused this device or network: *what the site said* UMDL is signed in, so the account is not the cause. A VPN is a common one: turn it off, then try again.", and the advice to sign in is not shown (`Errors.test_a_block_while_signed_in_is_not_blamed_on_the_account`).
 
 Two failures have their own screen in place of this menu: **Setup incomplete** (see [How setup ends](#how-setup-ends)) and **No link found**, "UMDL needs a web link. Share a post or video to UMDL, or copy its link first."
 

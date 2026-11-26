@@ -35,7 +35,7 @@ import time
 import traceback
 import urllib.parse
 
-HELPER_VERSION = "1.2.0"
+HELPER_VERSION = "1.2.1"
 # Bumped only when the payload/callback format changes incompatibly.
 PROTOCOL = 2
 
@@ -78,6 +78,13 @@ SITES = (
 # For any other site: cookie names that usually mean a signed-in session.
 SESSION_COOKIE = re.compile(r"sess|auth|token|login|logged|(^|[_-])sid($|[_-])|user", re.I)
 SIGNIN_WAIT = int(os.environ.get("UMDL_SIGNIN_WAIT") or 600)
+
+# A site turning the request away because of where it comes from, not who is asking.
+BLOCKED = re.compile(r"blocked by network security|unable to access the reddit api|403:? blocked", re.I)
+# Reddit refuses its website's JSON to many networks, signed in or not, and
+# points to its API instead. gallery-dl can use that API with a public token.
+# The empty refresh-token keeps gallery-dl 1.32 off a code path that crashes.
+REDDIT_API = ["-o", "api=oauth", "-o", "refresh-token="]
 
 IMAGE_EXTS = {"jpg", "jpeg", "png", "gif", "heic", "heif", "webp", "tif", "tiff", "bmp", "avif"}
 VIDEO_EXTS = {"mp4", "m4v", "mov", "mkv", "webm", "flv", "ts", "avi", "3gp", "wmv", "mpg", "mpeg", "ogv"}
@@ -708,7 +715,9 @@ def self_update():
     """Replace this script with the published one, if it at least compiles."""
     target = os.path.abspath(__file__)
     source = fetch_text(RAW_BASE + "/src/umdl.py")
-    if "HELPER_VERSION" not in source or "def main" not in source:
+    # The last line must be there too: a download cut short can still compile.
+    if ("HELPER_VERSION" not in source or "def main" not in source
+            or not source.rstrip().endswith("sys.exit(main(sys.argv))")):
         return False
     try:
         compile(source, "umdl.py", "exec")
@@ -999,12 +1008,37 @@ def gallery_run(args, on_line=None):
     return code, lines, strip_ansi(err)
 
 
+def gallery_variants(url):
+    """Extra gallery-dl options to try in turn. Each later entry is used only
+    when the one before it was blocked by the site."""
+    host = hostname(url)
+    if host == "reddit.com" or host.endswith(".reddit.com") or host == "redd.it":
+        return [[], REDDIT_API]
+    return [[]]
+
+
 def gallery_engine(ctx):
+    variants = gallery_variants(ctx["url"])
+    first_error = None
+    for index, extra in enumerate(variants):
+        try:
+            return gallery_attempt(ctx, extra)
+        except EngineError as exc:
+            first_error = first_error or exc
+            if index + 1 == len(variants) or not BLOCKED.search(str(exc)):
+                break
+            log("gallery-dl was blocked (%s); trying again with %s"
+                % (exc, " ".join(variants[index + 1])))
+    # The site's own refusal is the message worth showing.
+    raise first_error
+
+
+def gallery_attempt(ctx, extra):
     listing = os.path.join(ctx["dir"], "urls.txt")
     with open(listing, "w", encoding="utf-8") as handle:
         handle.write(ctx["url"] + "\n")
 
-    common = ["--input-file", listing, "--retries", "4", "--http-timeout", "30"]
+    common = ["--input-file", listing, "--retries", "4", "--http-timeout", "30"] + list(extra)
     if have_cookies():
         common += ["--cookies-from-browser", "safari"]
 
@@ -1022,6 +1056,7 @@ def gallery_engine(ctx):
         if not found:
             ui.fail()
             remove(listing)
+            log("gallery-dl could not read the link (exit %s)\n%s" % (code, err[-3000:]))
             raise EngineError(last_error(err, "nothing to download"))
         ui.done("%d item%s" % (len(found), "" if len(found) == 1 else "s")
                 if len(found) <= threshold else "more than %d items" % threshold)
@@ -1350,6 +1385,14 @@ def cmd_run(payload, blob):
         # The first tool's message is the relevant one; the fallback's is noise.
         message = errors[0] if errors else "Nothing to download at that link."
         kind = classify_error(" ".join(errors))
+        host = hostname(url)
+        if BLOCKED.search(" ".join(errors)) and signed_in(host, read_cookie_store()):
+            # Signing in is not what is missing, so do not send the user to do it again.
+            entry = site_for(host)
+            kind = "unknown"
+            message = ("%s refused this device or network: %s UMDL is signed in, so the account "
+                       "is not the cause. A VPN is a common one: turn it off, then try again."
+                       % (entry[0] if entry else base_domain(host), message.strip()))
         state = read_json(STATE_FILE, {})
         state["last_run"] = {"at": time.time(), "result": "failed (%s)" % kind}
         write_json(STATE_FILE, state)

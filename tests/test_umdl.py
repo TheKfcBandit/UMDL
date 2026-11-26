@@ -602,6 +602,35 @@ class EndToEnd(Base):
         self.assertIn("ZeroDivisionError", data["msg"])
 
 
+class SelfUpdate(Base):
+    def setUp(self):
+        super().setUp()
+        with open(os.path.join(ROOT, "src", "umdl.py"), encoding="utf-8") as handle:
+            self.published = handle.read()
+        self.installed = os.path.join(WORK, "installed-umdl.py")
+        with open(self.installed, "w", encoding="utf-8") as handle:
+            handle.write("# the copy in a-Shell\n")
+        self.addCleanup(setattr, umdl, "__file__", umdl.__file__)
+        self.addCleanup(setattr, umdl, "fetch_text", umdl.fetch_text)
+        umdl.__file__ = self.installed
+
+    def installed_text(self):
+        with open(self.installed, encoding="utf-8") as handle:
+            return handle.read()
+
+    def test_published_helper_replaces_the_installed_one(self):
+        umdl.fetch_text = lambda url: self.published
+        self.assertTrue(umdl.self_update())
+        self.assertEqual(self.installed_text(), self.published)
+
+    def test_a_download_cut_short_or_an_error_page_is_not_installed(self):
+        cut = self.published[:self.published.index("def main(argv):") + 400]
+        for source in ("", "<html>Not found</html>", cut, self.published + "\nthis is not python ("):
+            umdl.fetch_text = lambda url, source=source: source
+            self.assertFalse(umdl.self_update())
+            self.assertEqual(self.installed_text(), "# the copy in a-Shell\n")
+
+
 class SignIns(Base):
     def setUp(self):
         super().setUp()

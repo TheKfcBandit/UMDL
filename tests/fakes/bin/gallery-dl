@@ -16,6 +16,18 @@ fail = os.environ.get("FAKE_GALLERY_FAIL") or scenario.get("fail", "")
 if fail:
     sys.stderr.write("[fakegallery][error] " + fail + "\n")
     sys.exit(4)
+# A site that turns away everything except its API ("api=oauth").
+blocked = scenario.get("blocked_unless_api", "")
+if blocked and "api=oauth" not in args:
+    sys.stderr.write("[fakegallery][error] " + blocked + "\n")
+    sys.exit(4)
+# gallery-dl 1.32 crashes in its API mode unless a refresh token is given.
+if "api=oauth" in args and "refresh-token=" not in args:
+    sys.stderr.write("[fakegallery][error] An unexpected error occurred: AttributeError\n")
+    sys.exit(1)
+if scenario.get("api_fail") and "api=oauth" in args:
+    sys.stderr.write("[fakegallery][error] AuthenticationError: " + scenario["api_fail"] + "\n")
+    sys.exit(4)
 limit = count
 if "--range" in args:
     limit = min(count, int(args[args.index("--range") + 1].split("-")[-1]))

@@ -1,5 +1,13 @@
 # Changelog
 
+## Helper 1.2.1
+
+A helper-only update: installed copies of UMDL 1.2.0 pick it up within a day, or at once with **Update tools**. The shortcut is unchanged.
+
+- Reddit: when Reddit's website refuses the request with "You've been blocked by network security", which it does to many networks whether signed in or not, the link is fetched again through Reddit's API.
+- A site that blocks the request while UMDL is signed in is no longer answered with "sign in to the site". The message says the account is not the cause.
+- The log now records why gallery-dl could not read a link.
+
 ## 1.2.0
 
 Fixes the fault found when 1.1.0 was run on a device, and adds what that test asked for.
