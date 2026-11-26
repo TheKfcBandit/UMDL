@@ -65,7 +65,8 @@ Changed after the first device test (1.1.0):
 - YouTube above 1080p is VP9 or AV1 only, so those downloads are converted, which takes time and battery. Set Resolution to 1080p to avoid it. With Convert off, such a video is kept in Files, not Photos.
 - HDR versions are not sought out; the plain version of the same size is taken.
 - Advanced mode opens a-Shell twice for a video with more than one version: once to list them, once to download.
-- A YouTube link has not yet downloaded on the test device. In its one attempt, with 1.3.0 in advanced mode, the helper listed the versions and handed back to Shortcuts, and the device ended up in the YouTube app showing "video unavailable". The cause is not known.
+- A YouTube link has not yet downloaded on the test device. With 1.3.0 and 1.4.0 the device was taken to the YouTube app during "Reading link". The cause is yt-dlp's challenge solver navigating a-Shell's web view to a YouTube address ([ARCHITECTURE.md](ARCHITECTURE.md#youtube-in-a-web-view)); helper 1.4.1 defuses it, and that has not been run on a device yet.
+- The Reddit browser route navigates a-Shell's own web view to `www.reddit.com/robots.txt` from JavaScript. If iOS treats that address as a link for the Reddit app, the same thing would happen there. Not yet seen.
 - The shortcut must keep the name "UMDL".
 - Shortcuts has no custom animation. Progress is shown as a live bar in a-Shell and a notification at the end.
 - Live streams are skipped while they are live.

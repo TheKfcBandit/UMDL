@@ -1,5 +1,13 @@
 # Changelog
 
+## Helper 1.4.1
+
+A helper-only update. Open UMDL and choose **Update tools** once; the shortcut stays as it is.
+
+- **YouTube links opened the YouTube app on "This video is unavailable" and nothing was downloaded.** yt-dlp solves YouTube's JavaScript challenges with a script that, to look like a page of the site, assigns `https://www.youtube.com/watch?v=yt-dlp-wins` to the page's location. In a-Shell that script runs in a real web view, where the assignment is a navigation, and iOS answers a navigation to a YouTube address by opening the YouTube app, on a video that does not exist. a-Shell was then no longer in front and could not hand the result to Shortcuts. The helper now turns that assignment into an ordinary variable when the runtime is a web view. Found from a screen recording of 1.4.0; this is what the 1.3.0 report was too.
+- The log names the JavaScript runtime yt-dlp used and says how many navigations were removed.
+
+
 ## 1.4.0
 
 Which version to download and what to do with a file Photos cannot play are now two separate things. Install the new shortcut; it brings its helper with it.

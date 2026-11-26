@@ -38,7 +38,7 @@ import time
 import traceback
 import urllib.parse
 
-HELPER_VERSION = "1.4.0"
+HELPER_VERSION = "1.4.1"
 # Bumped only when the payload/callback format changes incompatibly.
 PROTOCOL = 4
 
@@ -1034,7 +1034,9 @@ class YtLogger:
         self.errors = []
 
     def debug(self, msg):
-        pass
+        # Which JavaScript runtime solved YouTube's challenges is worth a line.
+        if "[jsc" in str(msg):
+            log("yt-dlp: " + strip_ansi(str(msg))[:200])
 
     def info(self, msg):
         pass
@@ -1046,6 +1048,49 @@ class YtLogger:
         text = strip_ansi(str(msg))
         self.errors.append(text)
         log("yt-dlp error: " + text)
+
+
+# yt-dlp solves YouTube's JavaScript challenges with a script that, to look
+# like a page of the site, assigns "https://www.youtube.com/watch?v=yt-dlp-wins"
+# to the page's location. In the stand-alone runtimes it was written for that
+# only sets a variable. In a-Shell the script runs in a real web view, where
+# the same line is a navigation, and iOS answers a navigation to a YouTube
+# address by opening the YouTube app, on a video that does not exist. a-Shell
+# is then no longer in front and cannot hand the result to Shortcuts.
+SOLVER_NAVIGATION = re.compile(r"(globalThis(?:\.window)?)\.location(\s*=(?!=))")
+_SOLVER = {"hooked": False, "noted": False}
+
+
+def tame_solver():
+    """Make that assignment set an ordinary variable when the runtime is a web
+    view. The script works without it there: the page already has a location,
+    and the challenges were being solved before the navigation took effect."""
+    if _SOLVER["hooked"]:
+        return True
+    try:
+        from yt_dlp.extractor.youtube.jsc._builtin.ejs import EJSBaseJCP
+        original = EJSBaseJCP._construct_stdin
+    except Exception as exc:
+        if not _SOLVER["noted"]:
+            _SOLVER["noted"] = True
+            log("solver: nothing to adjust in this yt-dlp (%s)" % type(exc).__name__)
+        return False
+
+    def construct(self, *args, **kwargs):
+        script = original(self, *args, **kwargs)
+        name = "%s %s" % (type(self).__name__, getattr(self, "JS_RUNTIME_NAME", ""))
+        if "webkit" not in name.lower() or not isinstance(script, str):
+            return script
+        script, changed = SOLVER_NAVIGATION.subn(r"\1.umdlLocation\2", script)
+        if not _SOLVER["noted"]:
+            _SOLVER["noted"] = True
+            log("solver: runs in a web view; %d page navigation%s removed"
+                % (changed, "" if changed == 1 else "s"))
+        return script
+
+    EJSBaseJCP._construct_stdin = construct
+    _SOLVER["hooked"] = True
+    return True
 
 
 def ytdlp_extractor_name(url):
@@ -1106,6 +1151,7 @@ def ytdlp_engine(ctx):
         import yt_dlp
     except Exception as exc:
         raise EngineError("yt-dlp is not installed (%s)" % exc)
+    tame_solver()
 
     logger = YtLogger()
     titles = ctx["titles"]

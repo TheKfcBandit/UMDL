@@ -1,6 +1,6 @@
 {
   "shortcut": "1.4.0",
-  "helper": "1.4.0",
+  "helper": "1.4.1",
   "protocol": 4,
   "url": "https://github.com/TheKfcBandit/UMDL/releases/latest",
   "notes": "Always downloads the best version; conversion is its own setting with two quality levels. Advanced mode lists versions with icons."

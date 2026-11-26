@@ -216,6 +216,22 @@ Reddit gets one more attempt. Both tools read a post from `www.reddit.com/…/.j
 
 On the test device that was refused as well, so there is a last route that does not depend on Reddit accepting a download tool at all. a-Shell has a real browser: the web view behind `internalbrowser`, which is also where the sign-in lives. a-Shell's `jsc` command runs JavaScript in that web view. The helper sends the web view to `www.reddit.com/robots.txt` (a page of the site that runs no scripts), runs a short script there that follows the share link and fetches the post's JSON as the signed-in browser, polls for the answer, and sends the web view back with `history.back()`. From the answer it takes only where the media is: a DASH manifest on `v.redd.it` for a video, which goes to yt-dlp; original files on `i.redd.it` for photos and galleries, which go to gallery-dl as direct links; or a link to another site, which goes through the normal tool order. Those hosts are plain file servers and take no part in the block. `jsc` does not wait for a script's promises, so the script stores its answer in the page and a second script reads it. On iOS 27.2 `jsc` also refuses to hand back a script's own value ("JavaScript execution returned a result of an unsupported type"), so every script sends its result through the message handler a-Shell gives page scripts for printing, `window.webkit.messageHandlers.aShell.postMessage("print:…")`, and ends in `void 0`. The script itself is tested in Node against canned answers (`tests/test_reddit_js.py`).
 
+## YouTube in a web view
+
+YouTube's stream addresses carry challenges that only the site's own player code can answer, so yt-dlp runs that code in a JavaScript runtime. a-Shell has none of the stand-alone ones (Deno, Node, Bun, QuickJS). The `yt-dlp-apple-webkit-jsi` plugin fills the gap by running the code in a `WKWebView` inside a-Shell's process.
+
+yt-dlp's solver script (`yt-dlp-ejs`) prepares the ground for the player code with a few assignments, one of which is
+
+```js
+globalThis.location = new URL("https://www.youtube.com/watch?v=yt-dlp-wins");
+```
+
+In a stand-alone runtime this creates a variable. In a web view `globalThis` is the window, and assigning to a window's location navigates it. The plugin's web view has no say over navigations, so WebKit applies its default: a main-frame navigation to another site's universal link is offered to the app that owns it. iOS opens the YouTube app on the video `yt-dlp-wins`, which does not exist, and a-Shell is left in the background, where it finishes its work but may not open the `shortcuts://` link that hands the result back.
+
+`tame_solver()` wraps the method of yt-dlp that assembles the script (`EJSBaseJCP._construct_stdin`) and, for a runtime whose name says it is a web view, renames the target of such assignments to `umdlLocation`. Reads of `location` are untouched. The player code then sees the web view's real location, `about:blank`, which is also what it saw before: the navigation was asynchronous and the challenges were solved before it took effect. If a later yt-dlp moves that method, the wrap finds nothing, says so in the log, and changes nothing.
+
+The same hazard applies to any script UMDL itself runs in a-Shell's web view. The Reddit route's `location.href = "https://www.reddit.com/robots.txt"` is the one case; whether iOS treats that path as a link for the Reddit app is not known.
+
 ## Staying current
 
 - **Tools**: yt-dlp and gallery-dl are installed with a-Shell's own pip, with no virtual environment. The shortcut runs pip in the a-Shell window whenever it has just downloaded the helper. The helper then checks for itself on every run: a missing tool is installed, one package at a time so that one failure does not hold back the rest, and if pip reports a location Python is not searching, that folder is added and remembered. Tools are upgraded once a day, and on demand.

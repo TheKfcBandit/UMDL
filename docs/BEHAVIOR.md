@@ -551,7 +551,7 @@ A first run from the share sheet can therefore need several taps on **Allow** be
 
 The flow tests run the compiled shortcut, action by action, in `tests/shortcut_sim.py`, against the real helper script. yt-dlp, gallery-dl, pip and curl are replaced by stand-ins in `tests/fakes`, so a test can stage an offline device, a failed install, a playlist of any size, a site with many versions of a video, or a site that returns an error. ffmpeg and ffprobe are the real ones, so repacking and conversion are actually carried out.
 
-That shows the logic is right. It cannot show how iOS behaves. Device tests have found four things the simulator had wrong, and each is now part of the simulator, so the old build fails in it the way it failed on the phone:
+That shows the logic is right. It cannot show how iOS behaves. Device tests have found five things the tests had wrong or could not see, and each is now part of the simulator, so the old build fails in it the way it failed on the phone:
 
 | Found on a device | What it caused | Now |
 |---|---|---|
@@ -559,6 +559,8 @@ That shows the logic is right. It cannot show how iOS behaves. Device tests have
 | On iOS 27.2, a-Shell's **Get File** stops the shortcut unless it is asked for a copy ([a-Shell issue 1138](https://github.com/holzschu/a-shell/issues/1138)) (1.1.0) | "There was a problem running the shortcut" after every successful download | Get File always asks for a copy; `Hygiene.test_get_file_always_asks_for_a_copy` |
 | A background a-Shell command that exits with an error stops the shortcut the same way (1.1.0) | The same message, with no cause named | Every background command continues after an error; `Hygiene.test_background_commands_survive_a_failing_command` |
 | On iOS 27.2, a-Shell's `jsc` cannot hand a script's value back, not even a text (helper 1.2.2) | The Reddit browser route stopped at its first step | Scripts report through a-Shell's print channel and leave no value; the stand-in `jsc` refuses any other kind, and `tests/test_reddit_js.py` runs the script in Node |
+
+| In a-Shell, yt-dlp's challenge solver for YouTube runs in a web view, and one line of it sends that web view to a YouTube address. iOS opens the YouTube app for it (1.3.0, 1.4.0) | Every YouTube link ended in the YouTube app on "This video is unavailable"; a-Shell, no longer in front, could not hand back | The helper defuses that line before the script runs (helper 1.4.1); `tests/test_umdl.py`, `SolverInAWebView`. No simulator can show the app switch itself |
 
 Other checks on the shortcut as built: `Hygiene.test_every_action_in_the_shortcut_is_modelled`, `Hygiene.test_shortcut_metadata`, `Hygiene.test_unscripted_question_fails_loudly`.
 
@@ -577,5 +579,5 @@ Not yet confirmed on a device, and so the first things to check ([device checkli
 
 - Any YouTube download, in either mode.
 - A conversion with the hardware encoder: that it runs, which of its two steps is used, and how long 4K takes.
-- The version list of Advanced mode. In the 1.3.0 device test the helper listed the versions and handed back, and the list was never answered; the device ended up in the YouTube app. Nothing in UMDL opens a link, so the cause is not known. 1.4.0 shows the list with the action the main menu uses, which is confirmed on a device, and writes each step to the log.
+- The version list of Advanced mode. It has never been reached on a device: both attempts were YouTube links, and both were taken to the YouTube app before the helper could hand back (see the table above). Helper 1.4.1 removes that cause.
 - Reddit through a-Shell's browser, now that scripts report through the print channel. Each step is written to the log, so a failure there can be read from Status, **📋 Copy**.

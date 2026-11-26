@@ -445,6 +445,81 @@ class ConversionOrder(unittest.TestCase):
         self.assertGreater(rate, 1_000_000)
 
 
+class SolverInAWebView(unittest.TestCase):
+    """yt-dlp's challenge solver must not send a-Shell's web view to YouTube:
+    iOS answers that by opening the YouTube app (device test of 1.4.0)."""
+
+    SETUP = """
+if (typeof URL === "undefined") {
+    globalThis.location = {
+        host: "www.youtube.com",
+    };
+} else {
+    globalThis.location = new URL("https://www.youtube.com/watch?v=yt-dlp-wins");
+}
+if (typeof globalThis.window === "undefined") {
+    globalThis.window = globalThis;
+}
+globalThis.window.location = globalThis.location;
+if (globalThis.location == other || globalThis.location === other) { use(globalThis.location.href); }
+"""
+
+    def setUp(self):
+        test = self
+        names = ["yt_dlp", "yt_dlp.extractor", "yt_dlp.extractor.youtube", "yt_dlp.extractor.youtube.jsc",
+                 "yt_dlp.extractor.youtube.jsc._builtin", "yt_dlp.extractor.youtube.jsc._builtin.ejs"]
+        saved = {name: sys.modules.get(name) for name in names}
+        self.addCleanup(lambda: [sys.modules.pop(n, None) if m is None else sys.modules.__setitem__(n, m)
+                                 for n, m in saved.items()])
+        for name in names:
+            sys.modules[name] = types.ModuleType(name)
+
+        class EJSBaseJCP:
+            JS_RUNTIME_NAME = "deno"
+
+            def _construct_stdin(self, player, preprocessed, requests):
+                return test.SETUP + json.dumps({"player": player})
+
+        class AppleWebKitJCP(EJSBaseJCP):
+            JS_RUNTIME_NAME = "apple-webkit-jsi"
+
+        sys.modules[names[-1]].EJSBaseJCP = EJSBaseJCP
+        self.base, self.webkit = EJSBaseJCP, AppleWebKitJCP
+        umdl._SOLVER.update(hooked=False, noted=False)
+        self.addCleanup(lambda: umdl._SOLVER.update(hooked=False, noted=False))
+
+    def test_the_assignments_are_defused_and_nothing_else_changes(self):
+        self.assertTrue(umdl.tame_solver())
+        script = self.webkit()._construct_stdin("code", False, [])
+        self.assertNotRegex(script, r"globalThis(\.window)?\.location\s*=[^=]")
+        self.assertEqual(script.count("umdlLocation"), 3)
+        self.assertIn("globalThis.location == other || globalThis.location === other", script)   # reads stay
+        self.assertIn("use(globalThis.location.href)", script)
+        self.assertEqual(script.replace("umdlLocation", "location"), self.SETUP + json.dumps({"player": "code"}))
+
+    def test_a_cached_player_inside_json_is_treated_too(self):
+        umdl.tame_solver()
+        player = 'globalThis.location = new URL("https://www.youtube.com/watch?v=yt-dlp-wins");'
+        script = self.webkit()._construct_stdin(player, True, [])
+        self.assertNotIn("globalThis.location = new URL", script)
+        self.assertIn('globalThis.umdlLocation = new URL(\\"https://www.youtube.com', script)
+
+    def test_stand_alone_runtimes_get_the_script_as_it_was(self):
+        umdl.tame_solver()
+        self.assertEqual(self.base()._construct_stdin("code", False, []),
+                         self.SETUP + json.dumps({"player": "code"}))
+
+    def test_hooking_twice_changes_nothing_more(self):
+        umdl.tame_solver()
+        first = self.base._construct_stdin
+        self.assertTrue(umdl.tame_solver())
+        self.assertIs(self.base._construct_stdin, first)
+
+    def test_a_yt_dlp_without_that_code_is_left_alone(self):
+        del sys.modules["yt_dlp.extractor.youtube.jsc._builtin.ejs"].EJSBaseJCP
+        self.assertFalse(umdl.tame_solver())
+
+
 class Planning(Base):
     def plan(self, url, ytdlp, gallery):
         install_fake_ytdlp({"suitable": ytdlp})

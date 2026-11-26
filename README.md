@@ -8,7 +8,7 @@
 
 UMDL is a free and open-source Shortcut. Downloads run on your own device with [yt-dlp](https://github.com/yt-dlp/yt-dlp) and [gallery-dl](https://github.com/mikf/gallery-dl) inside the free [a-Shell](https://apps.apple.com/app/a-shell/id1473805438) app. Nothing you share is sent to a UMDL server, because there isn't one.
 
-> **Status: 1.4.0.** On a device, setup, saving to Photos, sign-in and private posts from Instagram and X are confirmed. Not yet confirmed: any YouTube download, conversion, and advanced mode. Reddit is refused on the test network. [docs/BEHAVIOR.md](docs/BEHAVIOR.md) keeps the list. Please [report](https://github.com/TheKfcBandit/UMDL/issues) what you find.
+> **Status: 1.4.0, helper 1.4.1.** On a device, setup, saving to Photos, sign-in and private posts from Instagram and X are confirmed. YouTube links used to open the YouTube app instead of downloading; helper 1.4.1 fixes the cause, and that fix, conversion and advanced mode have not run on a device yet. Reddit is refused on the test network. [docs/BEHAVIOR.md](docs/BEHAVIOR.md) keeps the list. Please [report](https://github.com/TheKfcBandit/UMDL/issues) what you find.
 
 ## Install
 
