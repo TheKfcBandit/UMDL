@@ -77,12 +77,6 @@ def download(draw, color):
     line(draw, [(31, 70), (65, 70)])
 
 
-def pencil(draw, color):
-    line(draw, [(34, 62), (60, 36)], width=11)
-    draw.polygon([(u(27), u(69)), (u(29), u(58)), (u(38), u(67))], fill=WHITE)
-    line(draw, [(52, 70), (68, 70)], width=5)
-
-
 def cycle(draw, color):
     # Three-quarter ring, clockwise, with the arrowhead leading off its end.
     arc(draw, 48, 48, 20, 20, 285)
@@ -127,20 +121,8 @@ def stack(draw, color):
         line(draw, [(41, y), (67, y)], width=6)
 
 
-def swap(draw, color):
-    line(draw, [(30, 39), (62, 39)], width=6)
-    arrow_head(draw, (70, 39), 0, size=13)
-    line(draw, [(34, 57), (66, 57)], width=6)
-    arrow_head(draw, (26, 57), 180, size=13)
-
-
 def check(draw, color):
     line(draw, [(31, 49), (43, 61), (66, 36)], width=8)
-
-
-def cross(draw, color):
-    line(draw, [(34, 34), (62, 62)], width=8)
-    line(draw, [(62, 34), (34, 62)], width=8)
 
 
 def trash(draw, color):
@@ -149,16 +131,6 @@ def trash(draw, color):
     draw.rounded_rectangle((u(35), u(41), u(61), u(70)), radius=u(5), fill=WHITE)
     for x in (43, 53):
         draw.line([(u(x), u(47)), (u(x), u(64))], fill=color + (255,), width=u(4))
-
-
-def sliders(draw, color):
-    # Two tracks with a knob on each: a setting that is chosen, not typed.
-    line(draw, [(27, 38), (69, 38)], width=5)
-    line(draw, [(27, 58), (69, 58)], width=5)
-    dot(draw, 40, 38, 8)
-    dot(draw, 57, 58, 8)
-    dot(draw, 40, 38, 3.5, color + (255,))
-    dot(draw, 57, 58, 3.5, color + (255,))
 
 
 def corners(draw, color):
@@ -184,22 +156,18 @@ def pulse(draw, color):
 
 ICONS = {
     "download": (download, BLUE),
-    "pencil": (pencil, INDIGO),
     "resume": (cycle, ORANGE),
     "settings": (gear, GRAY),
     "key": (key, PURPLE),
     "update": (cycle, GREEN),
     "info": (info, TEAL),
     "status": (pulse, CYAN),
-    "mode": (sliders, PURPLE),
     "resolution": (corners, CYAN),
     "fps": (frames, ORANGE),
     "done": (tick, GREEN),
     "album": (album, PINK),
     "stack": (stack, ORANGE),
-    "convert": (swap, INDIGO),
     "finish": (check, GREEN),
-    "forget": (cross, GRAY),
     "reset": (trash, RED),
 }
 

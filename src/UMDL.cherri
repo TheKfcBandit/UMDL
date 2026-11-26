@@ -2,8 +2,9 @@
  * UMDL - Universal Media Downloader
  * One tap from the share sheet: the best available quality, saved straight to Photos.
  *
- * This shortcut is the front end. The download itself is done by src/umdl.py,
- * which runs yt-dlp and gallery-dl inside the free a-Shell app.
+ * This shortcut is the front end: it collects the link, shows the menus and
+ * reports the result. Downloading, converting and saving to Photos are done by
+ * src/umdl.py, which runs yt-dlp and gallery-dl inside the free a-Shell app.
  *
  * Build from the repository root:   cherri src/UMDL.cherri
  * Project: https://github.com/TheKfcBandit/UMDL   Licence: MIT
@@ -16,11 +17,11 @@
  *   1. Never test a text for "has any value". Shortcuts treats an empty text
  *      as a value. Emptiness is tested by wrapping the text in brackets and
  *      comparing with "[]".
- *   2. a-Shell's "Get File" always asks for a copy ("copyFile"). Without it
- *      the action stops the whole shortcut on iOS 27.2 with no message
- *      (https://github.com/holzschu/a-shell/issues/1138).
+ *   2. No file is passed from a-Shell to this shortcut. a-Shell's "Get File"
+ *      stops the shortcut on large files, and on iOS 27.2 on any file unless
+ *      asked for a copy. The helper saves to Photos itself.
  *   3. Background a-Shell commands set "keepGoing". Without it a command
- *      that exits with an error stops the shortcut in the same way.
+ *      that exits with an error stops the shortcut with no message.
  *   4. Cherri functions are not used. They re-run the shortcut and read its
  *      input, which is the same channel the helper's callback uses.
  *   5. Wording: say it once, in few words. Symbols mark actions, not values.
@@ -35,14 +36,13 @@
 #include 'actions/crypto'
 #include 'actions/text'
 #include 'actions/web'
-#include 'actions/photos'
 #include 'actions/device'
 #include 'actions/sharing'
 
 // Keep in step with version.json. The protocol number only changes when the
 // payload or callback format does.
-@umdlVersion = "1.5.0"
-@protocol = "5"
+@umdlVersion = "1.6.0"
+@protocol = "6"
 
 @shared = "{ShortcutInput}"
 @link = ""
@@ -52,8 +52,6 @@
 @forceUpdate = ""
 @toolCmd = "none"
 @signInTo = ""
-@saveManifest = ""
-@pendingManifest = ""
 @resumeBlob = ""
 @choice = ""
 @firstRun = "0"
@@ -69,12 +67,7 @@
 @haveCfg = "0"
 @needsHelper = "0"
 @saveCfg = "0"
-@albumMade = "0"
 
-@failedCount = ""
-@oversizeCount = ""
-@convertedCount = ""
-@convertedHow = ""
 @jobTitle = ""
 @updateVersion = ""
 @updateLink = ""
@@ -84,7 +77,7 @@
  * 1. What started this run: a callback from the helper, or something shared
  * ---------------------------------------------------------------------- */
 
-// Sent by the in-app helper download (section 8) when it fails.
+// Sent by the in-app helper download (section 7) when it fails.
 if @shared == "UMDL-HELPER-MISSING" {
     alert("The helper could not be downloaded. Check the connection, then run UMDL again.", "Setup incomplete")
     stop()
@@ -112,15 +105,9 @@ if @shared beginsWith "UMDLCB:" {
             @haveCfg = "1"
         }
 
+        // The helper has put the files where they belong. "msg" says where.
         if @cbType == "done" {
-            // Either the helper saved the files itself and says so in "msg", or it
-            // names the list of files that are left for this shortcut to save.
-            @saveManifest = "{cb['m']}"
             @doneText = "{cb['msg']}"
-            @failedCount = "{cb['nf']}"
-            @oversizeCount = "{cb['nb']}"
-            @convertedCount = "{cb['nc']}"
-            @convertedHow = "{cb['conv']}"
             @jobTitle = "{cb['title']}"
             @updateVersion = "{cb['upv']}"
             @updateLink = "{cb['upurl']}"
@@ -259,7 +246,7 @@ if @probe != "[]" {
 
 if @haveCfg == "0" {
     const preflight = rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
-        "command": "dash -c 'W=\"$HOME/Documents/UMDL\"; if [ -f $W/config.b64 ]; then echo \"CFG:$(cat $W/config.b64)\"; fi; if [ -f $W/umdl.py ] && [ -f $W/helper.for ]; then echo \"FOR:$(cat $W/helper.for):END\"; fi; if [ -f $W/pending ]; then echo \"PENDING:$(cat $W/pending)\"; fi; if [ -f $W/last.b64 ]; then echo \"LAST:$(cat $W/last.b64)\"; fi; echo DONE'",
+        "command": "dash -c 'W=\"$HOME/Documents/UMDL\"; if [ -f $W/config.b64 ]; then echo \"CFG:$(cat $W/config.b64)\"; fi; if [ -f $W/umdl.py ] && [ -f $W/helper.for ]; then echo \"FOR:$(cat $W/helper.for):END\"; fi; if [ -f $W/last.b64 ]; then echo \"LAST:$(cat $W/last.b64)\"; fi; echo DONE'",
         "openWindow": "close",
         "keepGoing": true,
         "ShowWhenRun": false
@@ -290,10 +277,6 @@ if @haveCfg == "0" {
             @haveCfg = "1"
         }
     }
-
-    const pendingMatch = matchText("PENDING:(\\S+)", @state)
-    const pendingGroup = getMatchGroup(pendingMatch, 1)
-    @pendingManifest = "{pendingGroup}"
 
     const lastMatch = matchText("LAST:(\\S+)", @state)
     const lastGroup = getMatchGroup(lastMatch, 1)
@@ -328,8 +311,6 @@ if @probe == "[]" {
 if @haveCfg == "0" {
     menu "Welcome to UMDL\n\nSaves shared posts and videos to Photos at the best quality.\n\nSetup takes about two minutes." {
         item "✅ Quick setup":
-            createAlbum("UMDL")
-            @albumMade = "1"
             @saveCfg = "1"
             @firstRun = "1"
         item "⚙️ Custom setup":
@@ -342,128 +323,8 @@ if @haveCfg == "0" {
 }
 
 /* ------------------------------------------------------------------------
- * 4. A finished download that never reached Photos
+ * 4. A download has finished: say so
  * ---------------------------------------------------------------------- */
-
-// Not asked during setup, nor when this run is already delivering a download.
-@probe = "[{@pendingManifest}]"
-if @firstRun == "1" {
-    @probe = "[]"
-}
-@saveProbe = "[{@saveManifest}]"
-if @saveProbe != "[]" {
-    @probe = "[]"
-}
-if @probe != "[]" {
-    menu "An earlier download was not saved." {
-        item "💾 Save now":
-            @saveManifest = @pendingManifest
-        item "🗑️ Discard":
-            const discardDir = replaceText("/manifest.json", "", @pendingManifest)
-            @discardPath = "{discardDir}"
-            if @discardPath contains "/Documents/UMDL/jobs/" {
-                rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
-                    "command": "rm -rf {@discardPath} $HOME/Documents/UMDL/pending",
-                    "openWindow": "close",
-                    "keepGoing": true,
-                    "ShowWhenRun": false
-                })
-            }
-    }
-}
-
-/* ------------------------------------------------------------------------
- * 5. Save to Photos
- * ---------------------------------------------------------------------- */
-
-@probe = "[{@saveManifest}]"
-if @probe != "[]" {
-    // The list of files is read with a background command, not with Get File.
-    @manifestText = ""
-    if @saveManifest contains "/Documents/UMDL/jobs/" {
-        const manifestRaw = rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
-            "command": "cat {@saveManifest}",
-            "openWindow": "close",
-            "keepGoing": true,
-            "ShowWhenRun": false
-        })
-        @manifestText = "{manifestRaw}"
-    }
-    if @manifestText !contains "\"photos\"" {
-        rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
-            "command": "rm -f $HOME/Documents/UMDL/pending",
-            "openWindow": "close",
-            "keepGoing": true,
-            "ShowWhenRun": false
-        })
-        alert("Those files are no longer in a-Shell. Download the link again.", "Nothing to save")
-        stop()
-    }
-    const manifest = getDictionary(@manifestText)
-    const photoPaths = getValue(manifest, "photos")
-    const keptNames = getValue(manifest, "kept")
-    const keptTotal = count(keptNames)
-    @keptCount = "{keptTotal}"
-
-    @savedCount = 0
-    for photoPath in photoPaths {
-        const mediaFile = rawAction("AsheKube.app.a-Shell.GetFileIntent", {
-            "fileName": "{photoPath}",
-            "errorIfNotFound": true,
-            "copyFile": true,
-            "ShowWhenRun": false
-        })
-        // a-Shell names the copy after its whole path. Give it its own name back.
-        const ownName = matchText("[^/]+$", "{photoPath}")
-        const namedFile = setName(mediaFile, "{ownName}", true)
-        if @cfgAlbum == "Recents" {
-            savePhoto(namedFile)
-        } else {
-            savePhoto(namedFile, @cfgAlbum)
-        }
-        @savedCount += 1
-    }
-
-    // Everything is in Photos now, so the working copies can go.
-    const jobDir = replaceText("/manifest.json", "", @saveManifest)
-    @jobPath = "{jobDir}"
-    if @jobPath contains "/Documents/UMDL/jobs/" {
-        rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
-            "command": "rm -rf {@jobPath} $HOME/Documents/UMDL/pending",
-            "openWindow": "close",
-            "keepGoing": true,
-            "ShowWhenRun": false
-        })
-    }
-
-    @albumLabel = "the {@cfgAlbum} album"
-    if @cfgAlbum == "Recents" {
-        @albumLabel = "Photos"
-    }
-    @summary = "Saved {@savedCount} items to {@albumLabel}."
-    if @savedCount == 1 {
-        @summary = "Saved to {@albumLabel}."
-    }
-    if @savedCount == 0 {
-        @summary = "Nothing was added to Photos."
-    }
-    @probe = "[{@convertedCount}]"
-    if @probe != "[]" {
-        @summary = "{@summary}\n{@convertedCount} converted ({@convertedHow})."
-    }
-    if @keptCount != "0" {
-        @summary = "{@summary}\n{@keptCount} kept in Files (a-Shell, UMDL, Saved)."
-    }
-    @probe = "[{@oversizeCount}]"
-    if @probe != "[]" {
-        @summary = "{@summary}\n{@oversizeCount} over 1 GB, kept in Files."
-    }
-    @probe = "[{@failedCount}]"
-    if @probe != "[]" {
-        @summary = "{@summary}\n{@failedCount} failed."
-    }
-    @doneText = @summary
-}
 
 @probe = "[{@doneText}]"
 if @probe != "[]" {
@@ -493,7 +354,7 @@ if @probe != "[]" {
 }
 
 /* ------------------------------------------------------------------------
- * 6. Opened without a link: the main menu
+ * 5. Opened without a link: the main menu
  * ---------------------------------------------------------------------- */
 
 @needsMenu = "1"
@@ -623,7 +484,7 @@ if @needsMenu == "1" {
 }
 
 /* ------------------------------------------------------------------------
- * 7. Settings: one list that stays open. Custom setup uses it too.
+ * 6. Settings: one list that stays open. Custom setup uses it too.
  *
  * Each row shows its value. A row with two values switches when tapped; a
  * row with more opens one menu. Every change is saved at once.
@@ -683,26 +544,20 @@ if @openSettings == "1" {
             @settingTouched = "0"
 
             if @setting == "Album" {
+                // The helper finds the album by this name, or makes it.
                 menu "Save to" {
-                    item "🆕 New album":
-                        const newAlbum = prompt("Album name", nil, "UMDL")
-                        @newAlbumName = "{newAlbum}"
-                        @probe = "[{@newAlbumName}]"
-                        if @probe == "[]" {
-                            @newAlbumName = "UMDL"
+                    item "🖼️ An album":
+                        @albumOffer = @cfgAlbum
+                        if @cfgAlbum == "Recents" {
+                            @albumOffer = "UMDL"
                         }
-                        createAlbum("{@newAlbumName}")
-                        @albumMade = "1"
-                        @cfgAlbum = @newAlbumName
-                    item "🖼️ Existing album":
-                        const oldAlbum = prompt("Album name, as Photos shows it", nil, "{@cfgAlbum}")
-                        @oldAlbumName = "{oldAlbum}"
-                        @probe = "[{@oldAlbumName}]"
+                        const albumTyped = prompt("Album name", nil, "{@albumOffer}")
+                        @albumName = "{albumTyped}"
+                        @probe = "[{@albumName}]"
                         if @probe == "[]" {
-                            @oldAlbumName = "Recents"
+                            @albumName = "UMDL"
                         }
-                        @albumMade = "1"
-                        @cfgAlbum = @oldAlbumName
+                        @cfgAlbum = @albumName
                     item "📚 Library only":
                         @cfgAlbum = "Recents"
                 }
@@ -805,15 +660,6 @@ if @openSettings == "1" {
     }
 }
 
-// Setup: the album named in the settings has to exist before anything is saved to it.
-if @firstRun == "1" {
-    if @albumMade == "0" {
-        if @cfgAlbum == "UMDL" {
-            createAlbum("UMDL")
-        }
-    }
-}
-
 if @saveCfg == "1" {
     const cfgOut = {"album": "{@cfgAlbum}", "threshold": "{@cfgThreshold}", "after": "{@cfgAfter}", "res": "{@cfgRes}", "fps": "{@cfgFps}"}
     const cfgOutText = text("{cfgOut}")
@@ -827,7 +673,7 @@ if @saveCfg == "1" {
 }
 
 /* ------------------------------------------------------------------------
- * 8. Fetch the helper if needed, then hand over to a-Shell
+ * 7. Fetch the helper if needed, then hand over to a-Shell
  * ---------------------------------------------------------------------- */
 
 // Signing in is done by the helper, which waits for the sign-in to be stored

@@ -1,7 +1,7 @@
 {
-  "shortcut": "1.5.0",
-  "helper": "1.5.0",
-  "protocol": 5,
+  "shortcut": "1.6.0",
+  "helper": "1.6.0",
+  "protocol": 6,
   "url": "https://github.com/TheKfcBandit/UMDL/releases/latest",
-  "notes": "One tap only: saves from a-Shell straight into Photos with the title as its name, any size. Advanced mode and Enter a link are gone."
+  "notes": "One route only: a-Shell saves to Photos, or the file stays in Files. Interrupted downloads carry on. Faster conversion, AV1 where the device reads it."
 }

@@ -2,8 +2,8 @@
 
 UMDL has two halves:
 
-- **The shortcut** (`src/UMDL.cherri`) is everything you see in Shortcuts: reading the shared link, menus, settings, saving to Photos, notifications.
-- **The helper** (`src/umdl.py`) runs inside a-Shell. It downloads with yt-dlp or gallery-dl, makes the result importable by Photos, and reports back.
+- **The shortcut** (`src/UMDL.cherri`) is everything you see in Shortcuts: reading the shared link, menus, settings, notifications.
+- **The helper** (`src/umdl.py`) runs inside a-Shell. It downloads with yt-dlp or gallery-dl, saves the result to Photos, and reports back.
 
 They talk in one direction at a time. The shortcut starts the helper with a command line. The helper answers by opening a `shortcuts://` URL that runs the shortcut again with the result as its input.
 
@@ -19,33 +19,33 @@ flowchart TD
     E --> F{"Settings exist?"}
     F -- no --> G["Welcome: quick setup, or the settings list"] --> H["Save settings"]
     H --> I{"Helper present, and fetched by this version?"}
-    F -- yes --> J{"Unsaved download waiting?"}
-    J -- yes --> K["Offer to save or discard it"]
-    J -- no --> L{"Have a link?"}
-    K --> L
-    L -- no --> M["Menu: clipboard, enter link, settings, sign in, status, update, about"]
+    F -- yes --> L{"Have a link?"}
+    L -- no --> M["Menu: clipboard, resume, settings, sign in, status, update, about"]
     M --> I
     L -- yes --> I
     I -- no --> N["Download the helper, in the background or in a-Shell"]
     N --> O
     I -- yes --> O["a-Shell: helper 'run' with the payload"]
 
-    O --> P["Install missing tools; update them if a day has passed"]
-    P --> Q["Pick tool order for this site"]
-    Q --> R["Count the items at the link"]
-    R --> S{"More than the ask-first limit?"}
+    O --> JB{"Unfinished job for this link,<br/>with its files?"}
+    JB -- yes --> SAVE
+    JB -- no --> P["Install missing tools; update them if a day has passed"]
+    subgraph FETCH["state: fetch"]
+        P --> Q["Pick tool order for this site"]
+        Q --> R["Count the items at the link"]
+        R --> S{"More than the ask-first limit?"}
+        S -- no --> U["Download the best version within the limits"]
+    end
     S -- yes --> T["Callback: confirm"]
-    S -- no --> U["Download the best version within the limits"]
-    U --> SV{"Can a-Shell save to Photos?"}
-    SV -- yes --> PH["Offer each file to Photos; convert only on a refusal"]
-    PH --> W["Callback: done, with what was saved"]
-    SV -- no --> HO["Prepare each file by the format list, write manifest"]
-    HO --> W2["Callback: done, with the manifest"]
     U -- nothing downloaded --> X["Callback: error"]
+    U --> SAVE
+    subgraph SAVE["state: save"]
+        PH["Offer each waiting file to Photos;<br/>convert only on a refusal;<br/>what Photos cannot hold goes to Files"]
+    end
+    SAVE --> W["state: done. Callback: done, with the sentence to show"]
 
     T --> D
     W --> D
-    W2 --> D
     X --> D
 
     D --> Y{"Callback type"}
@@ -54,12 +54,30 @@ flowchart TD
     Y -- error --> AA["Menu: try again, update and retry, sign in, copy details"]
     AA --> O
     Y -- "info, status" --> AB["Show the message"]
-    Y -- "done, saved" --> AD["Notify, offer shortcut update"]
-    Y -- "done, manifest" --> AC["Read manifest, rename and save each file to the album, delete working files"]
-    AC --> AD
+    Y -- done --> AD["Notify, offer shortcut update"]
 ```
 
-Version 1.5 removed the mode branch of 1.3 and 1.4 and moved saving into a-Shell. The saving part is drawn on its own in [BEHAVIOR.md](BEHAVIOR.md#saving).
+There is one route. Version 1.5 removed the mode branch of 1.3 and 1.4 and moved saving into a-Shell; 1.6 removed the older way of saving through Shortcuts, so the shortcut no longer touches a file. The saving part is drawn on its own in [BEHAVIOR.md](BEHAVIOR.md#saving).
+
+## A download is a job
+
+`cmd_run` is a small state machine. A job is a dictionary, saved as `Working/<id>/job.json` after every step:
+
+```
+{"url": ..., "state": "fetch" | "save" | "done", "title": ..., "failed": 0,
+ "items": [{"path": ..., "stem": "the name in Photos", "state": "waiting" | "saved" | "kept"}],
+ "converted": ["VP9 → HEVC"]}
+```
+
+`MACHINE` maps a state's name to the function that carries it out. Each function does one thing, writes what it learned into the job, and returns the name of the next state. A state that cannot go on raises `Stop` with the callback to send (`confirm`, or `error`).
+
+| State | Function | Does | Next |
+|---|---|---|---|
+| `fetch` | `state_fetch` | Runs the tools in order until one delivers; stages the files under plain names in `out/` | `save` |
+| `save` | `state_save` | Opens Photos once; for each waiting item, `place()`; moves what is kept to `Saved/` | `done` |
+| `done` | | The folder is removed and the callback sent | |
+
+`<id>` is derived from the link, so the same link finds the same folder. `load_job` returns the saved job when it is in `save` and its waiting files are still there, and a new one otherwise; that is the whole of resuming. An item's path is saved again whenever a repack or a conversion replaces the file, so a second run offers Photos the newest file it has. An interrupted `fetch` is not a saved state: the tools are simply run again in the same folder, where yt-dlp continues a partly downloaded file by itself.
 
 The first-run part of this chart is drawn in full in [BEHAVIOR.md](BEHAVIOR.md#first-run), which also describes every screen.
 
@@ -67,7 +85,7 @@ The first-run part of this chart is drawn in full in [BEHAVIOR.md](BEHAVIOR.md#f
 
 a-Shell's Shortcuts actions run commands in two ways. "In extension" runs in the background and returns the output, but with tight memory and no Python. "In app" opens a-Shell and has the full environment.
 
-UMDL uses the background mode for small things: reading settings, writing settings, deleting working files, checking the version file, downloading the helper script. Downloads need Python, so they open the app. iOS suspends an app that leaves the foreground, which is why a-Shell has to stay in front until the helper hands back.
+UMDL uses the background mode for small things: reading settings, writing settings, checking the version file, downloading the helper script. Downloads need Python, so they open the app. iOS suspends an app that leaves the foreground, which is why a-Shell has to stay in front until the helper hands back.
 
 ## The payload (shortcut to helper)
 
@@ -100,7 +118,7 @@ Every callback includes `cfg`, echoed from the payload, so the shortcut does not
 
 | `t` | Other fields | The shortcut then |
 |---|---|---|
-| `done` | Either `msg`, the sentence to show when the helper saved everything itself; or `m`, the path of a manifest of files left for the shortcut to save, with `nk`, `nf`, `nb`, `nc`, `conv` for its summary. Always `title`, and `upv` and `upurl` when a newer release exists | Notifies, after saving what the manifest lists |
+| `done` | `title`; `msg`, the sentence to show; `upv` and `upurl` when a newer release exists | Notifies |
 | `confirm` | `url`, `n` item count or empty when only "more than" is known, `thr`, `title` | Asks how much to download |
 | `error` | `kind`, `msg`, `url` | Explains and offers fixes |
 | `setup` | `ver` | Says that UMDL is ready |
@@ -111,7 +129,7 @@ Error kinds: `auth`, `network`, `gone`, `unsupported`, `drm`, `install`, `outdat
 
 One result does not come from the helper. When the helper script cannot be downloaded in a-Shell, the shell itself reopens the shortcut with the plain text `UMDL-HELPER-MISSING`.
 
-The file list is not in the callback. It is in the manifest (`jobs/<id>/manifest.json`), which the shortcut reads with a background `cat`, so a 500-item download does not need a 500-item URL. Each file is then fetched with a-Shell's "Get File".
+No file and no list of files is in a callback. By the time `done` is sent, every file is in Photos or in Files.
 
 ## Saving
 
@@ -121,13 +139,13 @@ Album access needs more than add-only permission. If the app also declares `NSPh
 
 None of this can run off a device, so it is fenced:
 
-- `open_library()` returns nothing unless the declarations are present and access is granted.
-- Before each step, the step's name is written to `photos.step`, and removed after. If a-Shell stops in between, the next run finds the name, records it with the helper's version, and saves through Shortcuts until a different helper is installed.
-- Any error from the calls ends direct saving for that run, and the files go through Shortcuts.
+- `open_library()` returns the library, or nothing and the reason in a sentence: the declarations are missing, access is refused, or Photos could not be reached. The reason ends the notification.
+- Before each step, the step's name is written to `photos.step`, and removed after. If a-Shell stops in between, the next run finds the name, records it with the helper's version, and keeps files in Files, saying so, until a different helper is installed or **Update tools** is run.
+- Any error from the calls ends saving to Photos for that run. The files are kept in Files.
 
-**Through Shortcuts** is what every version before 1.5 did. a-Shell's "Get File" has two modes. By default it hands Shortcuts a reference to the file; on iOS 27.2 that stops the shortcut ([a-Shell issue 1138](https://github.com/holzschu/a-shell/issues/1138)). With `copyFile` set, a-Shell reads the file into memory first, which works on 27.2 but stops on large files; a-Shell's source says of that line, "causes a crash for large files". So this path keeps anything over 1 GB in Files, and that limit is a guess. The copy is named after its whole path, so each file sits in a folder of its own under its final name, and the shortcut renames the copy to the last part of the path before saving.
+Files is the only other place a file can end. Versions before 1.6 could also hand files to Shortcuts through a-Shell's "Get File" action. That route is gone: on iOS 27.2 it needs a-Shell to read the whole file into memory ([a-Shell issue 1138](https://github.com/holzschu/a-shell/issues/1138)), which stops a-Shell on large files, and the copy arrives named after its path.
 
-Background commands have a similar trap. a-Shell reports the action as failed when the last command exits with an error, unless `keepGoing` is set, and Shortcuts then stops in the same wordless way. Every background command UMDL sends sets `keepGoing`, and reads the output to decide what happened.
+a-Shell reports a background action as failed when the last command exits with an error, unless `keepGoing` is set, and Shortcuts then stops without naming a reason. Every background command UMDL sends sets `keepGoing`, and reads the output to decide what happened.
 
 ## Sign-ins
 
@@ -144,12 +162,11 @@ Everything is under `~/Documents/UMDL`, visible in the Files app as *a-Shell ›
 | `umdl.py` | The helper |
 | `helper.for` | The shortcut version that downloaded the helper. A different version downloads it again |
 | `config.b64` | Settings, as base64 JSON |
-| `state.json` | When the tools and the version file were last checked, and any extra folder pip installs to |
-| `jobs/<id>/` | Working folder for one link. `<id>` is derived from the link, so sharing the same link again resumes |
-| `jobs/<id>/out/` | Finished files with plain names (`001.mp4`) |
-| `jobs/<id>/manifest.json` | What to save to Photos and what was kept |
+| `state.json` | When the tools and the version file were last checked, any extra folder pip installs to, and what was learned about Photos on this device (`photos_off`, `av1_refused`) |
+| `Working/<id>/` | Working folder for one link, removed when the download is done. `<id>` is derived from the link, so the same link carries on |
+| `Working/<id>/job.json` | The job: its state and its files. See [A download is a job](#a-download-is-a-job) |
+| `Working/<id>/out/` | Downloaded files under plain names (`001-My-clip.mp4`) |
 | `photos.step` | The step of saving to Photos that is under way. Left behind only if a-Shell stopped during it |
-| `pending` | Path of a manifest that has not been saved to Photos yet |
 | `last.b64` | The payload of a download in progress; left behind only if it was interrupted |
 | `last.log` | Log of the last run |
 | `Saved/` | Files Photos cannot hold |
@@ -164,6 +181,10 @@ The format string is always `bv*+ba/b/ba`, the best there is. What "best" means 
 
 A frame rate limit cannot be a sort field: placed after `res` it would never apply where a site's larger versions are all 60 frames a second. It is a filter with a fallback instead: `bv*[fps<=?30]+ba/b[fps<=?30]/bv*+ba/b/ba`.
 
+yt-dlp's choice is then adjusted once, by `choose_formats`, for what the file costs after the download. Among the versions equal to yt-dlp's best in size and frame rate, H.264 and HEVC rank first, AV1 next where `av1_verdict()` allows it, VP9 after. The verdict needs three things: `VTIsHardwareDecodeSupported('av01')` says the chip reads AV1, so Photos may take the file as it is; this ffmpeg has a software AV1 decoder (`libdav1d` or `libaom-av1`), so a refusal can still be converted; and `state.json` records no earlier refusal. The chosen ids go in front of the format string, `401+140/bv*+ba/b/ba`, so anything unexpected falls through to yt-dlp's own choice.
+
+VP9 is the costly one because iOS gives apps no hardware reader for it: `VTIsHardwareDecodeSupported` is reported to answer no for VP9 on iPhones, and the call that registers the extra decoder exists on macOS only. ffmpeg therefore reads VP9 in software, and at 4K that is slow. ffmpeg's hardware reader for AV1 arrived after 7.0, the version a-Shell 2.4 ships, so there AV1 is also read in software when it has to be converted.
+
 A conversion, when Photos refuses a file, never changes the picture's size or frame rate. `conversion_attempts` returns the ffmpeg arguments to try, in order, limited to the encoders `ffmpeg -encoders` reports:
 
 1. `hevc_videotoolbox -q:v 75 -tag:v hvc1`, with `main10` and `p010le` for a 10-bit source.
@@ -171,7 +192,9 @@ A conversion, when Photos refuses a file, never changes the picture's size or fr
 3. `h264_videotoolbox -profile:v high -b:v <1.6 × rate>`.
 4. `libx264 -crf 17 -preset veryfast`.
 
-Progress is read from a file ffmpeg writes (`-progress <file>`), not from its output.
+Each attempt is made with `-hwaccel videotoolbox` in front of the input when `ffmpeg -hwaccels` lists it, and once more without if every encoder fails that way. Progress is read from a file ffmpeg writes (`-progress <file>`), not from its output. The log line for a conversion gives the arguments used and the seconds it took.
+
+The size in "Converting 2160p60 VP9 + Opus" comes from `tier()`, which names a picture after the 16:9 frame it fills: 3840×1920 is 2160p.
 
 ## Which tool goes first
 

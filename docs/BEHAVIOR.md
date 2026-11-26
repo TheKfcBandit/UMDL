@@ -9,11 +9,11 @@ Labels are written exactly as they appear. Tests are in `tests/test_shortcut_flo
 - [Sharing a link](#sharing-a-link)
 - [Which version is downloaded](#which-version-is-downloaded)
 - [Saving](#saving)
-- [When a-Shell cannot save](#when-a-shell-cannot-save)
+- [When a file stays in Files](#when-a-file-stays-in-files)
 - [Reddit](#reddit)
 - [Large downloads](#large-downloads)
 - [When a download fails](#when-a-download-fails)
-- [Unsaved and interrupted downloads](#unsaved-and-interrupted-downloads)
+- [Interrupted downloads](#interrupted-downloads)
 - [Opening UMDL from the Shortcuts app](#opening-umdl-from-the-shortcuts-app)
 - [Status](#status)
 - [Settings](#settings)
@@ -91,8 +91,8 @@ Custom setup is the Settings list itself, with two differences: there is no **Re
 |---|---|---|
 | Rows are changed, then **Done** | Those values are saved and used by the download that follows | `Onboarding.test_custom_setup_is_the_settings_list_then_the_same_install` |
 | **Done** with nothing changed | The same as quick setup, including the album **UMDL** | `Onboarding.test_custom_setup_left_as_it_is_equals_quick_setup` |
-| **Album** set to an existing album, or to the library | Nothing is created in Photos | `Onboarding.test_custom_setup_with_an_existing_album_or_none` |
-| A new album with an empty name | The name becomes `UMDL` | `Onboarding.test_an_empty_album_name_falls_back` |
+| **Album** set to a name, or to the library | That is where downloads go. An album that does not exist yet is made by the first download saved to it | `Onboarding.test_custom_setup_with_an_existing_album_or_none` |
+| An album with an empty name | The name becomes `UMDL` | `Onboarding.test_an_empty_album_name_falls_back` |
 
 ### How setup ends
 
@@ -105,8 +105,6 @@ Custom setup is the Settings list itself, with two differences: there is no **Re
 | yt-dlp or gallery-dl cannot be installed | Alert **Setup incomplete**: "The download tools could not be installed.", then the reason pip gave | `Onboarding.test_tools_that_fail_to_install_are_reported_and_retried_next_time` |
 
 After **Setup incomplete**, running UMDL again does not repeat the questions. The settings were saved before anything was downloaded, so the next run goes straight to whatever was missing.
-
-Setup never shows the unsaved download prompt (`Onboarding.test_setup_never_reports_an_unsaved_download`).
 
 ### Updating from an earlier version
 
@@ -131,9 +129,9 @@ The title is the post's title, or `UMDL` when the site gives none.
 | One item, no album | Saved to Photos. | `OneTap.test_no_album_saves_to_the_library` |
 | Several items | Saved *N* items to the *name* album. | `OneTap.test_gallery_post_saves_every_image` |
 | Nothing could go to Photos | Nothing was added to Photos. | `OneTap.test_audio_is_kept_in_files` |
-| A video was converted | A further line naming the change: 1 converted (VP9 → HEVC). | `SavedFromAShell.test_a_file_photos_refuses_is_converted_and_saved` |
+| A video was converted | A further line naming the change: 1 converted (VP9 → HEVC). | `Saving.test_a_file_photos_refuses_is_converted_and_saved` |
 | Some files were kept in Files | A further line: *N* kept in Files (a-Shell, UMDL, Saved). | `OneTap.test_audio_is_kept_in_files` |
-| A file is over 1 GB and a-Shell could not save it itself | It is kept in Files, with a further line: *N* over 1 GB, kept in Files. | `OneTap.test_file_too_large_to_hand_over_is_kept_in_files` |
+| Photos could not be used at all | A last line giving the reason, for example: a-Shell is not allowed to add to Photos. Allow it in Settings, a-Shell, Photos. | `Saving.test_when_photos_cannot_be_used_files_are_kept_and_the_reason_given` |
 | Some items failed | A further line: *N* failed. | `OneTap.test_partial_download_saves_what_arrived_and_says_what_did_not` |
 
 ### After the notification
@@ -155,9 +153,11 @@ The best one the site has. Two settings limit that, and nothing else has a say (
 
 1. The largest picture, up to the **Resolution** limit. A site with nothing at or under the limit gives its smallest version above it. The limit is the short side, so a tall phone video counts by its width.
 2. The highest frame rate, up to the **Frame rate** limit. Versions above this limit are passed over even when they are larger; if the site has nothing at or under it, the lowest rate is taken.
-3. Between versions equal in both, one Photos plays as it is (H.264 or HEVC, with AAC sound).
+3. Between versions equal in both, the one that costs least to get into Photos: H.264 or HEVC, which go in as they are; then AV1, on a device whose chip reads it (`Quality.test_av1_is_taken_in_place_of_vp9_where_the_chip_reads_it`); then VP9, which the device can only read in software. Sound is AAC where the site has it.
 
-Each limit works on its own (`Quality.test_each_limit_works_on_its_own`). There is no other mode and no question.
+Step 3 never gives up size or smoothness: a 4K VP9 version is taken over a 1080p H.264 one. It applies to every site in the same way. Each limit works on its own (`Quality.test_each_limit_works_on_its_own`). There is no other mode and no question.
+
+YouTube is where step 3 matters. Above 1080p it offers only VP9 and AV1, so a 4K download there is either AV1 or VP9 followed by a slow conversion. Whether Photos takes an AV1 file as it is has not been seen on a device yet, so AV1 is taken only when a refusal would cost nothing: the chip reads it, and a-Shell's ffmpeg can read it too, to convert it if Photos says no. After one refusal UMDL takes VP9 on that device, until **Update tools** is run. **Status** says which applies, on its "AV1" line.
 
 ## Saving
 
@@ -173,31 +173,40 @@ flowchart TD
     T2 -- "refuses" --> F(["Kept in Files"])
 ```
 
-a-Shell is allowed to add to Photos, so the helper saves each file itself, from inside a-Shell. Nothing passes through Shortcuts.
+This is the only route. a-Shell is allowed to add to Photos, so the helper saves each file itself, from inside a-Shell. Nothing passes through Shortcuts (`Saving.test_nothing_ever_travels_through_shortcuts`), and a file that cannot go into Photos has one other place to end: Files.
 
 | | | Test |
 |---|---|---|
-| Name | The post's title, or the name the file was uploaded under when the site gives no title. Characters a file name cannot hold are dropped. Several files with one title are numbered | `SavedFromAShell.test_the_helper_saves_it_itself_under_its_title_dated_today`, `SavedFromAShell.test_several_items_get_names_that_do_not_collide` |
-| Date | The day it was downloaded, not the day it was uploaded | `SavedFromAShell.test_the_helper_saves_it_itself_under_its_title_dated_today` |
-| Album | The album from Settings; with none, the library | `SavedFromAShell.test_no_album_saves_to_the_library` |
-| Size | Any | `SavedFromAShell.test_a_file_of_any_size_is_saved` |
-| Formats | Photos decides. A file is offered as it is, and converted only if Photos refuses it | `SavedFromAShell.test_photos_is_asked_first_and_a_file_it_takes_is_not_converted`, `SavedFromAShell.test_a_file_photos_refuses_is_converted_and_saved` |
-| Sound only, or not media | Kept in Files | `SavedFromAShell.test_audio_is_still_kept_in_files` |
+| Name | The post's title, or the name the file was uploaded under when the site gives no title. Characters a file name cannot hold are dropped. Several files with one title are numbered | `Saving.test_the_helper_saves_it_itself_under_its_title_dated_today`, `Saving.test_several_items_get_names_that_do_not_collide` |
+| Date | The day it was downloaded, not the day it was uploaded | `Saving.test_the_helper_saves_it_itself_under_its_title_dated_today` |
+| Album | The album from Settings; with none, the library | `Saving.test_no_album_saves_to_the_library` |
+| Size | Any | |
+| Formats | Photos decides. A file is offered as it is, and converted only if Photos refuses it | `Saving.test_photos_is_asked_first_and_a_file_it_takes_is_not_converted`, `Saving.test_a_file_photos_refuses_is_converted_and_saved` |
+| Sound only, or not media | Kept in Files | `Saving.test_audio_is_still_kept_in_files` |
 
-A conversion is always at the best quality: HEVC from the device's hardware encoder, the picture's size and frame rate unchanged, 10-bit kept, sound copied where Photos plays it. a-Shell shows its progress in per cent, the notification names it, and the log records the ffmpeg arguments. If every encoder fails, the original is kept in Files.
+A conversion is always at the best quality: HEVC from the device's hardware encoder, the picture's size and frame rate unchanged, 10-bit kept, sound copied where Photos plays it. There is no setting for it. If every encoder fails, the original is kept in Files.
+
+While it runs, a-Shell shows what is being converted and how far it is, for example "Converting 2160p60 VP9 + Opus for Photos  41%". The size is named after the 16:9 frame the picture fills, so a 3840×1920 video is 2160p, not "1920p". The notification names the change, and the log records the ffmpeg arguments and how long it took.
+
+Writing HEVC is done by the device's hardware. Reading the source is too, where the hardware can: ffmpeg is asked to use it whenever it is built to. As far as is known, iOS gives other apps no hardware reader for VP9, so a 4K VP9 video is read in software, and that is what makes its conversion slow. Choosing AV1 where the chip reads it (above) is how UMDL avoids that conversion.
+
+iOS pauses a-Shell when it is not on screen, so a conversion only moves while a-Shell is in front. Nothing is lost by leaving: see [Interrupted downloads](#interrupted-downloads).
 
 The first save asks, once, to let a-Shell add to Photos. Saving to a named album needs fuller access than adding to the library; if only adding is allowed, files go to the library and the notification says "Saved to Photos."
 
-## When a-Shell cannot save
+## When a file stays in Files
 
-Saving from a-Shell cannot be tried anywhere but on a device, so it is fenced in. If access to Photos is refused, or a-Shell stopped in the middle of a save last time, the helper hands the files to Shortcuts instead, as versions before 1.5 always did, and the log says why.
+Files is the one exception to Photos. A file kept there is in the Files app under *On My iPhone › a-Shell › UMDL › Saved*, under its title, and the notification counts it.
 
-| | | Test |
+| Why | The notification adds | Test |
 |---|---|---|
-| Name | The same title, carried in the file's path and put back by the shortcut | `HandedToShortcuts.test_files_keep_their_titles_on_the_way_through_shortcuts` |
-| Date | Whatever the file carries, usually the upload date | |
-| Formats | By the list of what Photos is known to play (H.264, HEVC); anything else is converted first | `HandedToShortcuts.test_without_photos_to_ask_the_list_of_formats_decides` |
-| Size | Up to 1 GB. a-Shell can only hand Shortcuts a file by loading it into memory, and stops on large ones. Larger files are kept in Files | `HandedToShortcuts.test_a_file_too_large_to_hand_over_is_kept_in_files` |
+| It is sound only, or not a photo or video | Nothing more | `Saving.test_audio_is_still_kept_in_files` |
+| Photos refused it, and the converted file too, or it could not be converted | Nothing more. The log has Photos' reason | |
+| a-Shell is not allowed to add to Photos | a-Shell is not allowed to add to Photos. Allow it in Settings, a-Shell, Photos. | `Saving.test_when_photos_cannot_be_used_files_are_kept_and_the_reason_given` |
+| a-Shell stopped in the middle of a save last time | Saving to Photos stopped a-Shell last time (at "*step*"). Run Update tools to try again. | |
+| This a-Shell cannot add to Photos, or Photos could not be reached | This version of a-Shell cannot add to Photos. Or: Photos could not be reached (*error*). | |
+
+Saving from a-Shell cannot be tried anywhere but on a device, so each step's name is noted before it is taken. If a-Shell stops in the middle, the next download finds the note and keeps its files in Files, with the fourth line above, in place of stopping a-Shell again. **Update tools** clears the note.
 
 ## Reddit
 
@@ -274,22 +283,20 @@ One failure changes the text. When a site blocks the request and UMDL is signed 
 
 Two failures have their own screen in place of this menu: **Setup incomplete** (see [How setup ends](#how-setup-ends)) and **No link**, "Share a post or video to UMDL, or copy its link first."
 
-## Unsaved and interrupted downloads
+## Interrupted downloads
 
-**A download that finished but never reached Photos**, for example because Shortcuts was closed during the hand-back. The next run, however it starts, begins with:
+Each download works in its own folder, which is in the Files app under *On My iPhone › a-Shell › UMDL › Working*. The folder holds the files and a note of how far the download got: fetching, or saving. It is removed when the download is finished, and after three days otherwise.
 
-> An earlier download was not saved.
+If a run is cut short, because a-Shell was closed, iOS stopped it, or you pressed Control-C, nothing downloaded is lost:
 
-| Choice | Result | Test |
+| Stopped while | The next run of the same link | Test |
 |---|---|---|
-| 💾 Save now | Saves it and notifies. If this run also has a link, that download follows | `Recovery.test_unsaved_download_is_offered_again`, `Recovery.test_saving_an_earlier_download_then_continues_with_the_new_link` |
-| 🗑️ Discard | Deletes the files, then carries on with the run | `Recovery.test_unsaved_download_can_be_discarded` |
+| Downloading | The tool carries on with the partly downloaded file where the site allows it | |
+| Converting or saving | Does not download again. Files already in Photos are not added twice; the rest are saved. A conversion that was cut short starts again from the downloaded file | `Recovery.test_a_download_stopped_while_saving_is_finished_without_downloading_again` |
 
-This prompt appears only when such a download exists. It is never shown during setup, or on a run that is itself delivering a download.
+"The next run of the same link" is either sharing the link again, or **Resume last download**, which the main menu gains after an interrupted run and which repeats the request exactly as it was made (`Recovery.test_interrupted_download_can_be_resumed_from_the_menu`). **Status** counts unfinished downloads.
 
-If the files of that download have since been removed from a-Shell, **Save now** shows the alert **Nothing to save**, "Those files are no longer in a-Shell. Download the link again.", and the prompt does not return (`Recovery.test_unsaved_download_whose_files_are_gone_is_explained`).
-
-**A download that was interrupted**, for example because a-Shell was closed. The main menu gains **Resume last download**, which repeats the request exactly as it was made (`Recovery.test_interrupted_download_can_be_resumed_from_the_menu`). Sharing the same link again has the same effect.
+Returning to a-Shell is usually enough: iOS pauses a-Shell when it leaves the screen and lets it carry on when it comes back. The folder matters when iOS has closed a-Shell in the meantime.
 
 **A damaged settings file** is treated as no settings: the welcome screen appears (`Recovery.test_damaged_settings_file_restarts_setup_instead_of_failing`).
 
@@ -346,13 +353,14 @@ For the five listed sites "signed in" means the site's own session cookie is pre
 **Status** in the main menu opens a-Shell for a few seconds, then shows the alert **Status**. It answers "is everything in place?" and "am I signed in?" (`MainMenu.test_status_shows_sign_ins_versions_and_storage`).
 
 ```
-UMDL 1.5.0, helper 1.5.0
+UMDL 1.6.0, helper 1.6.0
 a-Shell 2.4.0 (613)
 Python 3.13.1
 yt-dlp 2026.11.23
 gallery-dl 1.32.21
 ffmpeg n7.0
 Converts with: hevc_videotoolbox, h264_videotoolbox
+AV1: taken where a site has it
 Tools last updated: 25 Nov 17:20
 
 Sign-ins
@@ -366,7 +374,7 @@ Other sites that may be signed in: example.org
 Storage
 Working files: 0 bytes
 Kept in Files: 2 items
-Unsaved download: none
+Unfinished downloads: none
 Free space: 41.3 GB
 
 Checks
@@ -375,7 +383,7 @@ GitHub: reachable
 Last download: 25 Nov 17:36, failed (auth)
 ```
 
-The values above are examples. "Converts with" lists the video encoders a-Shell's ffmpeg has, in the order UMDL tries them. When nothing has ever been stored, the sign-in section reads "No sign-ins are stored."
+The values above are examples. "Converts with" lists the video encoders a-Shell's ffmpeg has, in the order UMDL tries them. "AV1" is the choice between AV1 and VP9 described under [Which version is downloaded](#which-version-is-downloaded), with the reason when AV1 is not taken. "Working files" and "Unfinished downloads" describe the *Working* folder. When nothing has ever been stored, the sign-in section reads "No sign-ins are stored."
 
 After the alert:
 
@@ -396,7 +404,7 @@ A row with two values switches when tapped, with no menu in between. A row with 
 
 | Row | Value shown | Tapping it | Test |
 |---|---|---|---|
-| Album | The album's name, or "Library only" | Menu **Save to**: **🆕 New album** asks "Album name" and creates it; **🖼️ Existing album** asks "Album name, as Photos shows it"; **📚 Library only** uses no album | `Settings.test_change_album` |
+| Album | The album's name, or "Library only" | Menu **Save to**: **🖼️ An album** asks "Album name"; the album is used if Photos has it and made if not. **📚 Library only** uses no album | `Settings.test_change_album` |
 | Resolution | "Best available" or "Up to 1080p" | Menu **Highest resolution**: Best available, 2160p (4K), 1440p, 1080p, 720p, 480p | `Settings.test_resolution_and_frame_rate_choices` |
 | Frame rate | "Best available" or "Up to 30 fps" | Menu **Highest frame rate**: Best available, 60 fps, 30 fps | `Settings.test_resolution_and_frame_rate_choices` |
 | Large downloads | Ask above *N* items | Asks "Ask before downloading more than", filled in with the current number. Accepts 1 to 9999. Anything else: alert **Not saved**, "Enter a whole number from 1 to 9999.", and the list returns | `Settings.test_change_threshold`, `Settings.test_a_bad_threshold_is_refused_and_the_list_returns` |
@@ -426,11 +434,8 @@ a-Shell runs commands for a shortcut in two ways. Background commands return the
 
 | When | Where | Command |
 |---|---|---|
-| Start of every run that is not a result | Background | Print the settings file, the helper's version marker, and any unsaved or interrupted download |
+| Start of every run that is not a result | Background | Print the settings file, the helper's version marker, and any interrupted download |
 | A setting is changed | Background | Write `config.b64` |
-| Before saving to Photos | Background | `cat` the list of files of that download |
-| Each file to save, only when a-Shell could not save it itself | a-Shell's Get File action, as a copy | Hand one file to Shortcuts, which renames it and saves it |
-| Files saved to Photos, or discarded | Background | Delete that download's working folder |
 | Copy details, copy status and log | Background | `tail` the last 40 lines of the helper's log |
 | Check for updates | Background | `curl` this repository's `version.json` |
 | Helper missing, or from another version | Background | `curl` `src/umdl.py` from this repository, and record which shortcut version fetched it |
@@ -443,7 +448,7 @@ a-Shell runs commands for a shortcut in two ways. Background commands return the
 | Sign in | By the helper | `internalbrowser <address>`, then it watches the cookie store |
 | Reddit, when the tools are refused | By the helper | `jsc <script>`, which runs a short script in a-Shell's web view |
 
-Every background command is run with a-Shell's "continue after an error" option, and every Get File asks for a copy. Without either, a-Shell reports a failed action and Shortcuts stops with "There was a problem running the shortcut", naming neither the action nor the reason (`Hygiene.test_background_commands_survive_a_failing_command`, `Hygiene.test_get_file_always_asks_for_a_copy`).
+Every background command is run with a-Shell's "continue after an error" option. Without it, a-Shell reports a failed action and Shortcuts stops with "There was a problem running the shortcut", naming neither the action nor the reason (`Hygiene.test_background_commands_survive_a_failing_command`). The shortcut never asks a-Shell for a file.
 
 The helper also keeps the tools current by itself: it installs any that are missing, upgrades them once a day, and replaces itself when this repository publishes a newer helper for the same protocol.
 
@@ -452,7 +457,7 @@ The helper also keeps the tools current by itself: it installs any that are miss
 These are shown by iOS, not by UMDL, the first time each permission is needed. Choosing **Always Allow** stops them. The simulator cannot show them.
 
 - Allow UMDL to run actions from a-Shell
-- Allow UMDL to save to Photos, and to create an album
+- Allow a-Shell to add to Photos. This one is asked by a-Shell, the first time a download is saved
 - Allow UMDL to send notifications
 - Allow UMDL to open another app or a link
 - Allow UMDL to read the clipboard, for **Download from clipboard**
@@ -464,17 +469,19 @@ A first run from the share sheet can therefore need several taps on **Allow** be
 
 The flow tests run the compiled shortcut, action by action, in `tests/shortcut_sim.py`, against the real helper script. yt-dlp, gallery-dl, pip and curl are replaced by stand-ins in `tests/fakes`, so a test can stage an offline device, a failed install, a playlist of any size, a site with many versions of a video, or a site that returns an error. ffmpeg and ffprobe are the real ones, so repacking and conversion are actually carried out.
 
-That shows the logic is right. It cannot show how iOS behaves. Device tests have found seven things the tests had wrong or could not see, and each is now part of the simulator, so the old build fails in it the way it failed on the phone:
+That shows the logic is right. It cannot show how iOS behaves. Device tests have found nine things the tests had wrong or could not see, and each is now part of the simulator, so the old build fails in it the way it failed on the phone:
 
 | Found on a device | What it caused | Now |
 |---|---|---|
 | An empty text counts as having a value in an **If** action (1.0.0) | A false "unsaved download" prompt on every run, and no main menu | The shortcut compares with `[]` instead; `Hygiene.test_no_condition_relies_on_has_any_value` |
-| On iOS 27.2, a-Shell's **Get File** stops the shortcut unless it is asked for a copy ([a-Shell issue 1138](https://github.com/holzschu/a-shell/issues/1138)) (1.1.0) | "There was a problem running the shortcut" after every successful download | Get File always asks for a copy; `Hygiene.test_get_file_always_asks_for_a_copy` |
+| On iOS 27.2, a-Shell's **Get File** stops the shortcut unless it is asked for a copy ([a-Shell issue 1138](https://github.com/holzschu/a-shell/issues/1138)) (1.1.0) | "There was a problem running the shortcut" after every successful download | The shortcut no longer uses Get File at all (1.6.0); `Saving.test_nothing_ever_travels_through_shortcuts` |
 | A background a-Shell command that exits with an error stops the shortcut the same way (1.1.0) | The same message, with no cause named | Every background command continues after an error; `Hygiene.test_background_commands_survive_a_failing_command` |
 | On iOS 27.2, a-Shell's `jsc` cannot hand a script's value back, not even a text (helper 1.2.2) | The Reddit browser route stopped at its first step | Scripts report through a-Shell's print channel and leave no value; the stand-in `jsc` refuses any other kind, and `tests/test_reddit_js.py` runs the script in Node |
 
-| a-Shell stops when asked to hand Shortcuts a large file; its own source says so (1.4.0) | "There was a problem running the shortcut" after a long video had downloaded | The helper saves to Photos itself (1.5.0); `SavedFromAShell.test_a_file_of_any_size_is_saved` |
-| The copy a-Shell hands over is named after its whole path (1.4.0) | Items in Photos named `:private:var:mobile:…` | The shortcut puts the name back; `HandedToShortcuts.test_files_keep_their_titles_on_the_way_through_shortcuts` |
+| a-Shell stops when asked to hand Shortcuts a large file; its own source says so (1.4.0) | "There was a problem running the shortcut" after a long video had downloaded | The helper saves to Photos itself (1.5.0), and that is the only route (1.6.0); `Saving.test_nothing_ever_travels_through_shortcuts` |
+| The copy a-Shell hands over is named after its whole path (1.4.0) | Items in Photos named `:private:var:mobile:…` | Saved from a-Shell under its title; `Saving.test_the_helper_saves_it_itself_under_its_title_dated_today` |
+| A 3840×1920 video was announced as "1920p" (1.5.0) | It read as a mislabelled 1080p | Sizes are named after the frame they fill; `tests/test_umdl.py`, `Labels` |
+| Converting a 4K VP9 video was at 2% after minutes, and stood still with a-Shell off screen (1.5.0) | A long wait with no way to leave | AV1 is taken where the chip reads it, reading is asked of the hardware, the log times each conversion, and an interrupted run carries on (1.6.0); `tests/test_umdl.py`, `ChoiceAmongEquals`, and `Recovery.test_a_download_stopped_while_saving_is_finished_without_downloading_again` |
 | In a-Shell, yt-dlp's challenge solver for YouTube runs in a web view, and one line of it sends that web view to a YouTube address. iOS opens the YouTube app for it (1.3.0, 1.4.0) | Every YouTube link ended in the YouTube app on "This video is unavailable"; a-Shell, no longer in front, could not hand back | The helper defuses that line before the script runs (helper 1.4.1); `tests/test_umdl.py`, `SolverInAWebView`. No simulator can show the app switch itself |
 
 Other checks on the shortcut as built: `Hygiene.test_every_action_in_the_shortcut_is_modelled`, `Hygiene.test_shortcut_metadata`, `Hygiene.test_unscripted_question_fails_loudly`.
@@ -484,7 +491,8 @@ Confirmed on a device so far:
 - Setup, the download tools installing, and a download running in a-Shell.
 - The Settings list, in Custom setup, returning after each change (1.3.0).
 - a-Shell's ffmpeg has the hardware encoders: Status shows "Converts with: hevc_videotoolbox, h264_videotoolbox".
-- YouTube downloads, with helper 1.4.1's fix for the challenge solver. A short saved; a long video downloaded and then failed at the hand-over to Shortcuts, which is what 1.5 removes.
+- YouTube downloads, with helper 1.4.1's fix for the challenge solver. A short saved; a long video downloaded and then failed at the hand-over to Shortcuts, which 1.5 removed.
+- A conversion with the hardware encoder starts and reports its progress (1.5.0, a 4K VP9 video).
 - The main menu and the menus under it.
 - The helper's result reaching the shortcut, the failed-download menu, and copying details.
 - Signing in, and private posts downloading with the sign-in (Instagram and X).
@@ -493,7 +501,9 @@ Confirmed on a device so far:
 
 Not yet confirmed on a device, and so the first things to check ([device checklist](BUILDING.md#device-checklist)):
 
-- A conversion with the hardware encoder: that it runs, which of its two steps is used, and how long 4K takes.
-- Saving from a-Shell straight into Photos: the permission prompt, the album, the name and the date. This is new in 1.5 and has never run; if it fails the log says at which step, and files go through Shortcuts as before.
+- Saving from a-Shell straight into Photos: the permission prompt, the album, the name and the date. No log from a device shows it yet. If it fails, the notification and the log say at which step, and the file is in Files.
+- Whether Photos takes a 4K AV1 file as it is on a device whose chip reads AV1. If it does, 4K from YouTube needs no conversion there.
+- How long a conversion takes, and whether asking the hardware to read the source helps. The log now records both.
+- Carrying on after iOS has closed a-Shell in the middle of a download.
 - Reddit by reading the post's page. The page's markup was written from memory, not from a captured page.
 - Reddit through a-Shell's browser, now that scripts report through the print channel. Each step is written to the log, so a failure there can be read from Status, **📋 Copy**.

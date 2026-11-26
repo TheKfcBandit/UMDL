@@ -37,9 +37,9 @@ import time
 import traceback
 import urllib.parse
 
-HELPER_VERSION = "1.5.0"
+HELPER_VERSION = "1.6.0"
 # Bumped only when the payload/callback format changes incompatibly.
-PROTOCOL = 5
+PROTOCOL = 6
 
 REPO = "TheKfcBandit/UMDL"
 RAW_BASE = "https://raw.githubusercontent.com/%s/main" % REPO
@@ -48,10 +48,9 @@ CALLBACK_PREFIX = "UMDLCB:"
 
 HOME = os.path.expanduser("~")
 WORKSPACE = os.environ.get("UMDL_HOME") or os.path.join(HOME, "Documents", "UMDL")
-JOBS_DIR = os.path.join(WORKSPACE, "jobs")
+JOBS_DIR = os.path.join(WORKSPACE, "Working")
 SAVED_DIR = os.path.join(WORKSPACE, "Saved")
 STATE_FILE = os.path.join(WORKSPACE, "state.json")
-PENDING_FILE = os.path.join(WORKSPACE, "pending")
 LAST_FILE = os.path.join(WORKSPACE, "last.b64")
 LOG_FILE = os.path.join(WORKSPACE, "last.log")
 SAFARI_COOKIES = os.path.join(HOME, "Library", "Cookies", "Cookies.binarycookies")
@@ -66,7 +65,6 @@ DAY = 86400
 # a-Shell hands files to Shortcuts by loading them into memory (its "as a copy"
 # mode, the only one that works on iOS 27.2). Around 2 GB that times out, so
 # anything above this size is kept in Files instead of being sent to Photos.
-MAX_PHOTOS_BYTES = int(float(os.environ.get("UMDL_MAX_PHOTOS_MB") or 1000) * 1000 * 1000)
 
 # Sites UMDL can open a sign-in page for: name, domains, the cookies that mean
 # "signed in", and the page to sign in on.
@@ -132,6 +130,79 @@ def ytdlp_format(quality):
     if quality["fps"] == "best":
         return best
     return "bv*[fps<=?%(fps)s]+ba/b[fps<=?%(fps)s]/" % quality + best
+
+
+def hardware_decodes(fourcc):
+    """Whether this device reads a codec ("av01") with its own chip."""
+    forced = os.environ.get("UMDL_TEST_HARDWARE")
+    if forced is not None:
+        return fourcc in forced.split(",")
+    if not IOS:
+        return False
+    try:
+        import ctypes
+        toolbox = ctypes.CDLL("/System/Library/Frameworks/VideoToolbox.framework/VideoToolbox")
+        check = toolbox.VTIsHardwareDecodeSupported
+        check.restype = ctypes.c_bool
+        check.argtypes = [ctypes.c_uint32]
+        return bool(check(int.from_bytes(fourcc.encode("ascii"), "big")))
+    except Exception:
+        return False
+
+
+def av1_verdict():
+    """(whether AV1 is the version to take, why) on this device.
+
+    It is, when the chip reads AV1, so Photos may take the file as it is; when
+    this ffmpeg can read it too, so a refusal still ends in Photos; and when
+    Photos has not already turned an AV1 file down here."""
+    if not hardware_decodes("av01"):
+        return False, "not taken, the chip does not read it"
+    if not {"libdav1d", "libaom-av1"} & ffmpeg_has("-decoders"):
+        return False, "not taken, this ffmpeg could not convert it"
+    if read_json(STATE_FILE, {}).get("av1_refused"):
+        return False, "not taken, Photos turned it down"
+    return True, "taken where a site has it"
+
+
+def av1_goes_in():
+    return av1_verdict()[0]
+
+
+def choose_formats(formats, quality, av1_in_hardware):
+    """Among the versions yt-dlp ranks best in size and frame rate, pick the
+    codec that costs least afterwards. `formats` is yt-dlp's list, worst first.
+
+    H.264 and HEVC go into Photos as they are. AV1 does too on a device whose
+    chip reads it, and converts quickly there if not. VP9 is always read in
+    software, which is slow at 4K. Returns "video+audio" format ids, or "".
+    """
+    def rank(fmt):
+        code = str(fmt.get("vcodec") or "").lower()
+        if re.match(r"avc|h264|hev|hvc|h265", code):
+            return 3
+        if re.match(r"av0?1", code):
+            return 2 if av1_in_hardware else 0
+        return 1 if re.match(r"vp0?9", code) else 0
+
+    def size(fmt):
+        return min(fmt.get("width") or 0, fmt.get("height") or 0) or fmt.get("height") or 0
+
+    formats = [f for f in formats or [] if isinstance(f, dict) and f.get("format_id") and not f.get("has_drm")]
+    videos = [f for f in formats if str(f.get("vcodec") or "none") != "none"]
+    if not videos:
+        return ""
+    if quality["fps"] != "best":
+        videos = [f for f in videos if (f.get("fps") or 0) <= int(quality["fps"])] or videos
+    best = videos[-1]
+    equals = [(rank(f), index, f) for index, f in enumerate(videos)
+              if size(f) == size(best) and round(f.get("fps") or 0) == round(best.get("fps") or 0)]
+    video = max(equals, key=lambda entry: entry[:2])[2]
+    if str(video.get("acodec") or "none") != "none":
+        return video["format_id"]
+    sounds = [f for f in formats if str(f.get("vcodec") or "none") == "none"
+              and str(f.get("acodec") or "none") != "none"]
+    return video["format_id"] + ("+" + sounds[-1]["format_id"] if sounds else "")
 
 
 def ytdlp_sort(quality):
@@ -580,7 +651,8 @@ def callback(payload, data):
         urllib.parse.quote(name, safe=""),
         urllib.parse.quote(CALLBACK_PREFIX + blob, safe=""),
     )
-    remove(LAST_FILE)
+    if data.get("t") in ("done", "error", "confirm"):
+        remove(LAST_FILE)  # that download has had its answer; nothing is left to resume
     if data.get("t") != "status":  # the status report would only repeat itself in the log
         log("callback: " + raw[:2000])
         log("handing back to Shortcuts at " + time.strftime("%H:%M:%S"))
@@ -1027,6 +1099,17 @@ def ytdlp_engine(ctx):
 
     if is_playlist and ctx["mode"] == "auto" and count > ctx["threshold"]:
         raise NeedConfirm(count if exact else None, title)
+
+    if not is_playlist:
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                listed = ydl.process_ie_result(copy.deepcopy(raw), download=False)
+            chosen = choose_formats((listed or {}).get("formats"), quality, av1_goes_in())
+            if chosen:
+                log("version: %s" % chosen)
+                opts["format"] = chosen + "/" + opts["format"]
+        except Exception as exc:
+            log("could not list the versions (%s); leaving the choice to yt-dlp" % exc)
 
     ui.start("Starting download")
     try:
@@ -1495,7 +1578,7 @@ def media_files(folder, ytdlp=False):
         path = os.path.join(folder, name)
         if not os.path.isfile(path) or name.startswith("."):
             continue
-        if name in ("manifest.json", "urls.txt", "plan.json", "job.json"):
+        if name in ("urls.txt", "job.json"):
             continue
         if ext_of(name) in JUNK_EXTS or ".part" in name:
             continue
@@ -1573,26 +1656,50 @@ def probe_media(path):
     return info
 
 
+def tier(width, height):
+    """The resolution's usual name: 3840x1920 is "2160p", as is 3840x2160.
+    A picture is named after the 16:9 frame it fills, not its shorter side."""
+    short, long = sorted((width or 0, height or 0))
+    if not short:
+        return ""
+    lines = max(short, int(round(long * 9 / 16.0)))
+    for standard in (4320, 2160, 1440, 1080, 720, 480, 360, 240, 144):
+        if abs(lines - standard) <= standard * 0.04:
+            return "%dp" % standard
+    return "%dp" % lines
+
+
 def describe_media(info):
-    """"1080p60 VP9 + Opus" for a file that has been probed."""
-    side = min(info["width"], info["height"]) or info["height"] or info["width"]
-    size = "%dp" % side if side else ""
+    """"2160p60 VP9 + Opus" for a file that has been probed."""
+    size = tier(info["width"], info["height"])
     if size and info["fps"] > 40:
         size += "%d" % round(info["fps"])
     text = " ".join(x for x in (size, codec_name(info["v"])) if x)
     return text + (" + " + codec_name(info["a"]) if info["a"] else "")
 
 
-_ENCODERS = None
+_FFMPEG_HAS = {}
+
+
+def ffmpeg_has(listing):
+    """What this ffmpeg was built with: the names under "-encoders",
+    "-decoders" or "-hwaccels". Asked once."""
+    if listing not in _FFMPEG_HAS:
+        code, out, err = run_cmd(["ffmpeg", "-hide_banner", listing])
+        _FFMPEG_HAS[listing] = (set(out.split()) if listing == "-hwaccels"
+                                else set(re.findall(r"(?m)^\s*[VAS][A-Z.]{5}\s+(\S+)", out)))
+    return _FFMPEG_HAS[listing]
 
 
 def encoders():
-    """The video and audio encoders this ffmpeg was built with."""
-    global _ENCODERS
-    if _ENCODERS is None:
-        code, out, err = run_cmd(["ffmpeg", "-hide_banner", "-encoders"])
-        _ENCODERS = set(re.findall(r"(?m)^\s*[VAS][A-Z.]{5}\s+(\S+)", out))
-    return _ENCODERS
+    return ffmpeg_has("-encoders")
+
+
+def decode_args():
+    """Options that ask the device's hardware to read the picture, when this
+    ffmpeg can ask at all. For a codec the hardware does not read (VP9 on an
+    iPhone), ffmpeg carries on with its own decoder."""
+    return ["-hwaccel", "videotoolbox"] if "videotoolbox" in ffmpeg_has("-hwaccels") else []
 
 
 # Bits per second that keep a picture of this height clean at 30 frames a second
@@ -1676,31 +1783,18 @@ def ffmpeg(args, target, seconds=0):
     return good
 
 
-def photos_verdict(path):
-    """What a file needs before Photos will take it.
-
-    Returns (verdict, info): "ready", "repack" (same picture and sound, new
-    wrapper), "convert" (the picture has to be re-encoded) or "files" (Photos
-    has no place for it).
-    """
+def inspect(path):
+    """What a download is: ("image", None), ("video", what ffprobe found) or
+    ("other", None) for sound, archives and anything else Photos has no place for."""
     ext = ext_of(path)
     if ext in IMAGE_EXTS:
-        return "ready", None
+        return "image", None
     if ext not in VIDEO_EXTS:
-        return "files", None  # audio, archives, documents
+        return "other", None
     info = probe_media(path)
-    if not info["ok"]:
-        # Cannot inspect it; trust the container for the usual suspects.
-        return ("ready" if ext in PHOTOS_CONTAINERS else "files"), None
-    if not info["v"]:
-        return "files", info  # audio-only, whatever the extension says
-    video_ok = info["v"] in PHOTOS_VCODECS
-    audio_ok = info["a"] is None or info["a"] in PHOTOS_ACODECS
-    # Apple players only accept HEVC tagged hvc1, not hev1.
-    tag_ok = info["v"] != "hevc" or info["tag"] in ("hvc1", "")
-    if video_ok and audio_ok and ext in PHOTOS_CONTAINERS and tag_ok:
-        return "ready", info
-    return ("repack" if video_ok else "convert"), info
+    if not info["ok"] or not info["v"]:
+        return "other", None
+    return "video", info
 
 
 def replace_with(path, made):
@@ -1739,27 +1833,18 @@ def convert(path, info, notes):
     tail += ["-map", "0:v:0", "-map", "0:a:0?", "-movflags", "+faststart"]
     source = describe_media(info)
     ui.start("Converting %s for Photos" % source)
-    for codec, video_args in conversion_attempts(info, encoders()):
-        if ffmpeg(["-i", path] + video_args + tail, target, info.get("seconds") or 0):
-            ui.done(codec)
-            log("converted %s to %s with %s" % (source, codec, " ".join(video_args)))
-            notes.append("%s → %s" % (codec_name(info["v"]), codec))
-            return replace_with(path, target)
+    started = time.time()
+    # Hardware reads the picture where it can; the plain way is the second try.
+    readers = [decode_args(), []] if decode_args() else [[]]
+    for reader in readers:
+        for codec, video_args in conversion_attempts(info, encoders()):
+            if ffmpeg(reader + ["-i", path] + video_args + tail, target, info.get("seconds") or 0):
+                ui.done(codec)
+                log("converted %s to %s in %d s with %s"
+                    % (source, codec, time.time() - started, " ".join(reader + video_args)))
+                notes.append("%s → %s" % (codec_name(info["v"]), codec))
+                return replace_with(path, target)
     ui.fail("kept the original in Files")
-    return None
-
-
-def make_photos_ready(path, notes):
-    """By the list of formats Photos is known to play: return a path it can
-    import, or None to keep the file in Files. Used when Photos itself cannot
-    be asked. Cheapest fix first: leave alone, repack, convert."""
-    verdict, info = photos_verdict(path)
-    if verdict == "ready":
-        return path
-    if verdict == "repack":
-        return repack(path, info)
-    if verdict == "convert":
-        return convert(path, info, notes)
     return None
 
 
@@ -1772,10 +1857,10 @@ def make_photos_ready(path, notes):
 # day it was downloaded. Photos is also the judge of what it can play: a file
 # is offered as it is, and converted only if Photos says no.
 #
-# None of this can be run anywhere but on a device, so it is fenced in. Before
-# each step the step's name is written to a file. If a-Shell stops in the
-# middle, the next run finds the name, says so in the log, and goes back to
-# handing files to Shortcuts until the helper changes or Update tools is run.
+# None of this can be run anywhere but on a device, so each step's name is
+# written to a file before it is taken. If a-Shell stops in the middle, the
+# next run finds the name, says so, and keeps files in Files until the helper
+# changes or Update tools is run. That is the only other place a file can end.
 
 GUARD_FILE = os.path.join(WORKSPACE, "photos.step")
 
@@ -1978,7 +2063,8 @@ class TestLibrary:
         os.makedirs(target, exist_ok=True)
         shutil.copyfile(path, os.path.join(target, name))
         with open(os.path.join(self.folder, "added.txt"), "a", encoding="utf-8") as handle:
-            handle.write("%s\t%s\t%s\n" % (self.album or "Library", name, time.strftime("%Y-%m-%d")))
+            handle.write("%s\t%s\t%s\t%d\n" % (self.album or "Library", name, time.strftime("%Y-%m-%d"),
+                                                os.path.getsize(path)))
 
 
 def guard(step):
@@ -1991,12 +2077,14 @@ def guard(step):
 
 
 def open_library(album):
-    """Photos, if the helper can save to it directly on this device; else None."""
+    """Photos, and if it cannot be used, the reason in a sentence."""
     folder = os.environ.get("UMDL_TEST_PHOTOS")
     if folder:
-        return TestLibrary(folder, album)
+        if os.environ.get("UMDL_TEST_PHOTOS_REFUSED"):
+            return None, "a-Shell is not allowed to add to Photos. Allow it in Settings, a-Shell, Photos."
+        return TestLibrary(folder, album), ""
     if not IOS:
-        return None
+        return None, "Photos can only be reached on an iPhone or iPad."
     state = read_json(STATE_FILE, {})
     if os.path.exists(GUARD_FILE):
         with open(GUARD_FILE, "r", encoding="utf-8") as handle:
@@ -2005,8 +2093,8 @@ def open_library(album):
         guard(None)
     off = state.get("photos_off") or {}
     if off.get("helper") == HELPER_VERSION:
-        log("photos: saving from a-Shell stopped at \"%s\" before; handing files to Shortcuts" % off.get("step"))
-        return None
+        return None, ("Saving to Photos stopped a-Shell last time (at \"%s\"). "
+                      "Run Update tools to try again." % off.get("step"))
     try:
         guard("load")
         library = PhotosLibrary(album)
@@ -2020,28 +2108,22 @@ def open_library(album):
                                          types=(library.c.c_void_p,)))
 
             if not declared("NSPhotoLibraryAddUsageDescription"):
-                log("photos: this a-Shell may not add to Photos; handing files to Shortcuts")
-                return None
+                return None, "This version of a-Shell cannot add to Photos."
             if library.album and declared("NSPhotoLibraryUsageDescription"):
                 library.level = library.READ_WRITE  # an album needs more than "add only"
             if not library.permitted():
-                if library.level == library.READ_WRITE:
-                    library.level = library.ADD_ONLY
-                    if not library.permitted():
-                        log("photos: access was not allowed; handing files to Shortcuts")
-                        return None
-                else:
-                    log("photos: access was not allowed; handing files to Shortcuts")
-                    return None
+                library.level = library.ADD_ONLY
+                if not library.permitted():
+                    return None, "a-Shell is not allowed to add to Photos. Allow it in Settings, a-Shell, Photos."
             guard("album")
             library.collection = library.find_album()
         finally:
             library.objc.objc_autoreleasePoolPop(pool)
-        log("photos: saving from a-Shell, %s" % ("album " + library.where() if library.where() else "library only"))
-        return library
+        log("photos: %s" % ("album " + library.where() if library.where() else "library, no album"))
+        return library, ""
     except Exception as exc:
-        log("photos: cannot save from a-Shell (%s: %s); handing files to Shortcuts" % (type(exc).__name__, exc))
-        return None
+        log("photos: %s: %s" % (type(exc).__name__, exc))
+        return None, "Photos could not be reached (%s)." % type(exc).__name__
     finally:
         guard(None)
 
@@ -2057,8 +2139,8 @@ def unique_path(folder, name):
 
 
 def stage(ctx, files):
-    """Give each download a plain working name, and the name it will carry
-    afterwards: its title, or the name it was uploaded under."""
+    """Give each download a working name that is safe for any command, and the
+    name it will carry in Photos: its title, or the name it was uploaded under."""
     out_dir = os.path.join(ctx["dir"], "out")
     remove(out_dir)
     os.makedirs(out_dir)
@@ -2071,65 +2153,56 @@ def stage(ctx, files):
             copy_number += 1
             stem = "%s %d" % (title, copy_number)
         used.add(stem.lower())
-        # Plain sequential names while working: nothing for ffmpeg to trip on.
-        staged = os.path.join(out_dir, "%03d.%s" % (index, ext_of(original) or "bin"))
+        # Recognisable in the Files app, and nothing for ffmpeg to trip on.
+        slug = re.sub(r"[^A-Za-z0-9]+", "-", stem).strip("-")[:40]
+        staged = os.path.join(out_dir, "%03d%s.%s" % (index, "-" + slug if slug else "",
+                                                     ext_of(original) or "bin"))
         os.replace(original, staged)
-        items.append({"path": staged, "stem": stem})
+        items.append({"path": staged, "stem": stem, "state": "waiting"})
     return items
 
 
 def place(ctx, item, library):
-    """Get one file to Photos. Returns (outcome, path): "saved" (it is in
-    Photos), "ready" (Shortcuts will save it) or "kept" (it stays in Files)."""
+    """Get one file into Photos: as it is if Photos takes it, converted if it
+    does not. Returns "saved", or "kept" when it has to stay in Files."""
     path = item["path"]
-    verdict, info = photos_verdict(path)
-    if verdict == "files":
-        return "kept", path
+    kind, info = inspect(path)
+    if kind == "other" or library is None:
+        return "kept"
 
     def named(file_path):
         return "%s.%s" % (item["stem"], ext_of(file_path) or "bin")
 
-    if library is None:
-        ready = make_photos_ready(path, ctx["converted"])
-        if not ready:
-            return "kept", path
-        try:
-            too_big = os.path.getsize(ready) > MAX_PHOTOS_BYTES
-        except OSError:
-            too_big = False
-        if too_big:
-            # More than a-Shell can hand to Shortcuts in one piece.
-            ctx["oversize"] = ctx.get("oversize", 0) + 1
-            return "kept", ready
-        folder = os.path.splitext(ready)[0]
-        os.makedirs(folder, exist_ok=True)
-        final = os.path.join(folder, named(ready))
-        os.replace(ready, final)
-        return "ready", final
+    def now_at(new_path):
+        item["path"] = new_path
+        ctx["checkpoint"]()  # an interrupted run carries on from this file
+        return new_path
 
-    # Photos is the judge. Offer the file as it is, in a wrapper Photos reads;
-    # convert only if it says no.
-    if info and ext_of(path) not in PHOTOS_CONTAINERS:
-        path = repack(path, info) or path
+    mislabelled = kind == "video" and info["v"] == "hevc" and info["tag"] != "hvc1"
+    if kind == "video" and (ext_of(path) not in PHOTOS_CONTAINERS or mislabelled):
+        path = now_at(repack(path, info) or path)  # the wrapper only; the picture is untouched
     try:
         library.add(path, named(path))
-        return "saved", path
+        return "saved"
     except Refused as no:
         log("Photos would not take %s as it is: %s" % (named(path), no))
-    if info and info.get("v"):
+        if kind == "video" and info["v"] == "av1":
+            # Learned once: the next download takes a version that needs no converting.
+            write_json(STATE_FILE, dict(read_json(STATE_FILE, {}), av1_refused=True))
+    if kind == "video":
         converted = convert(path, info, ctx["converted"])
         if converted:
+            path = now_at(converted)
             try:
-                library.add(converted, named(converted))
-                return "saved", converted
+                library.add(path, named(path))
+                return "saved"
             except Refused as no:
-                log("Photos would not take %s converted either: %s" % (named(converted), no))
-                return "kept", converted
-    return "kept", path
+                log("Photos would not take %s converted either: %s" % (named(path), no))
+    return "kept"
 
 
-def summary(saved, album, converted, kept, oversize, failed):
-    """What the notification says when the helper saved the files itself."""
+def summary(saved, album, converted, kept, failed, reason=""):
+    """The notification."""
     where = "the %s album" % album if album else "Photos"
     lines = ["Nothing was added to Photos." if not saved
              else "Saved to %s." % where if saved == 1
@@ -2138,33 +2211,136 @@ def summary(saved, album, converted, kept, oversize, failed):
         lines.append("%d converted (%s)." % (len(converted), converted[0]))
     if kept:
         lines.append("%d kept in Files (a-Shell, UMDL, Saved)." % kept)
-    if oversize:
-        lines.append("%d over 1 GB, kept in Files." % oversize)
     if failed:
         lines.append("%d failed." % failed)
+    if reason:
+        lines.append(reason)
     return "\n".join(lines)
 
 
 # ------------------------------------------------------------------ commands
 
+# One download is one job, and a job is in one state at a time. A state does
+# one thing, writes what it learned into the job, and names the state that
+# follows. The job is saved after every step, in its folder under
+# a-Shell > UMDL > Working, so a run that is interrupted, by iOS or by you,
+# carries on from the last step and downloads nothing twice.
+
+KEEP_JOBS_FOR = 3 * DAY
+
+
+class Stop(Exception):
+    """The job cannot go on by itself. `reply` is what the shortcut is told."""
+
+    def __init__(self, reply):
+        Exception.__init__(self, reply.get("t"))
+        self.reply = reply
+
+
 def clean_jobs(keep):
-    """Drop leftovers from other downloads; keep this job (for resuming) and
-    any finished job the shortcut has not saved yet."""
-    pending = ""
-    try:
-        with open(PENDING_FILE, "r", encoding="utf-8") as handle:
-            pending = handle.read().strip()
-    except Exception:
-        pass
+    """Drop what other downloads left behind long enough ago."""
     try:
         names = os.listdir(JOBS_DIR)
     except Exception:
         return
     for name in names:
         path = os.path.join(JOBS_DIR, name)
-        if name == keep or (pending and os.path.dirname(pending) == path):
+        try:
+            stale = time.time() - os.path.getmtime(path) > KEEP_JOBS_FOR
+        except OSError:
+            stale = True
+        if name != keep and stale:
+            remove(path)
+
+
+def load_job(folder, url):
+    """The job for this link: the one left unfinished, or a new one."""
+    job = read_json(os.path.join(folder, "job.json"), {})
+    waiting = [i for i in job.get("items") or [] if i.get("state") == "waiting"]
+    if (job.get("url") == url and job.get("state") == "save" and waiting
+            and all(os.path.exists(i.get("path") or "") for i in waiting)):
+        return job
+    return {"url": url, "state": "fetch", "title": "", "failed": 0, "items": [], "converted": []}
+
+
+def state_fetch(job, ctx):
+    """Download. Next: save."""
+    remove(os.path.join(ctx["dir"], "out"))
+    url = ctx["url"]
+    files, errors = [], []
+    blocked = False
+    # Reddit only: if the site blocks both tools, its own browser is asked instead.
+    for engine in plan_engines(url) + (["redditweb"] if is_reddit(url) else []):
+        if engine == "redditweb" and not blocked:
             continue
-        remove(path)
+        try:
+            files = ENGINES[engine](ctx)
+            if files:
+                break
+        except NeedConfirm as ask:
+            raise Stop({"t": "confirm", "url": url, "thr": str(ctx["threshold"]),
+                        "n": str(ask.count) if ask.count else "",
+                        "title": safe_title(ask.title, "")[:60]})
+        except EngineError as exc:
+            errors.append(str(exc))
+            blocked = blocked or bool(BLOCKED.search(str(exc)))
+            log("%s could not do it: %s" % (engine, exc))
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:
+            errors.append(tidy_error(str(exc)))
+            log("%s crashed:\n%s" % (engine, traceback.format_exc()))
+    if not files:
+        # The first tool's message is the relevant one; the fallback's is noise.
+        message = errors[0] if errors else "Nothing to download at that link."
+        kind = classify_error(" ".join(errors))
+        host = hostname(url)
+        if BLOCKED.search(" ".join(errors)) and signed_in(host, read_cookie_store()):
+            # Signing in is not what is missing, so do not send the user to do it again.
+            entry = site_for(host)
+            kind = "unknown"
+            message = ("%s refused this device or network: %s Being signed in did not help. "
+                       "If a VPN is on, turn it off and try again."
+                       % (entry[0] if entry else base_domain(host), message.strip()))
+        raise Stop({"t": "error", "kind": kind, "msg": message, "url": url})
+    job["items"] = stage(ctx, files)
+    job["title"] = ctx.get("title") or ""
+    job["failed"] = ctx["failed"]
+    return "save"
+
+
+def state_save(job, ctx):
+    """Put each file where it belongs: Photos, or Files. Next: done."""
+    library, reason = open_library(ctx["album"])
+    if reason:
+        log("photos: " + reason)
+    else:
+        ui.start("Saving to Photos")
+    for item in job["items"]:
+        if item["state"] != "waiting":
+            continue
+        try:
+            outcome = place(ctx, item, library)
+        except Exception as exc:
+            # Whatever went wrong in there, this file is not lost.
+            log("photos: %s: %s" % (type(exc).__name__, exc))
+            library, reason, outcome = None, "Photos could not be reached (%s)." % type(exc).__name__, "kept"
+        if outcome == "kept":
+            os.makedirs(SAVED_DIR, exist_ok=True)
+            target = unique_path(SAVED_DIR, "%s.%s" % (item["stem"], ext_of(item["path"]) or "bin"))
+            shutil.move(item["path"], target)
+        item["state"] = outcome
+        ctx["checkpoint"]()
+    saved = len([i for i in job["items"] if i["state"] == "saved"])
+    if library:
+        ui._label = "Saving to Photos"
+        ui.done("%d item%s" % (saved, "" if saved == 1 else "s"))
+    job["album"] = library.where() if library else ""
+    job["reason"] = reason if len(job["items"]) > saved else ""
+    return "done"
+
+
+MACHINE = {"fetch": state_fetch, "save": state_save}
 
 
 def cmd_run(payload, blob):
@@ -2181,20 +2357,11 @@ def cmd_run(payload, blob):
         limit = max(1, to_int(payload.get("limit"), threshold))
 
     os.makedirs(JOBS_DIR, exist_ok=True)
-    job = job_id_for(url)
-    job_dir = os.path.join(JOBS_DIR, job)
-    clean_jobs(job)
-    os.makedirs(job_dir, exist_ok=True)
-    manifest = os.path.join(job_dir, "manifest.json")
-    try:
-        with open(PENDING_FILE, "r", encoding="utf-8") as handle:
-            if handle.read().strip() == manifest:
-                # Downloading the same link again replaces its unsaved result.
-                remove(PENDING_FILE)
-    except Exception:
-        pass
-    remove(manifest)
-    remove(os.path.join(job_dir, "out"))
+    name = job_id_for(url)
+    folder = os.path.join(JOBS_DIR, name)
+    clean_jobs(name)
+    os.makedirs(folder, exist_ok=True)
+    job = load_job(folder, url)
     remove(LOG_FILE)
     log("UMDL %s  %s  mode=%s" % (HELPER_VERSION, url, mode))
     with open(LAST_FILE, "w", encoding="utf-8") as handle:
@@ -2202,127 +2369,51 @@ def cmd_run(payload, blob):
 
     ui.header(hostname(url) or "download")
     state = read_json(STATE_FILE, {})
-    try:
-        updated = ensure_tools(state, force=truthy(payload.get("force_update")))
-    except InstallError as exc:
-        return callback(payload, {"t": "error", "kind": "install", "msg": str(exc), "url": url})
-    latest = check_project_updates(state, str(payload.get("v") or "0"))
-    try:
-        write_json(STATE_FILE, state)
-    except Exception:
-        pass
+    latest = None
+    if job["state"] == "fetch":
+        try:
+            ensure_tools(state, force=truthy(payload.get("force_update")))
+        except InstallError as exc:
+            return callback(payload, {"t": "error", "kind": "install", "msg": str(exc), "url": url})
+        latest = check_project_updates(state, str(payload.get("v") or "0"))
+        try:
+            write_json(STATE_FILE, state)
+        except Exception:
+            pass
+    else:
+        log("carrying on: %d file%s already downloaded" % (len(job["items"]), "" if len(job["items"]) == 1 else "s"))
+        ui.write("  Carrying on from the last run.\n")
 
     quality = settings_from(cfg)
     log("limits: resolution %s, frame rate %s" % (quality["res"], quality["fps"]))
     ctx = {
-        "url": url, "dir": job_dir, "mode": mode, "limit": limit, "threshold": threshold,
+        "url": url, "dir": folder, "mode": mode, "limit": limit, "threshold": threshold,
         "quality": quality, "album": str(cfg.get("album") or "Recents"),
-        "titles": {}, "title": "", "failed": 0, "converted": [],
+        "titles": {}, "title": job["title"], "failed": job["failed"], "converted": job["converted"],
+        "checkpoint": lambda: write_json(os.path.join(folder, "job.json"), job),
     }
-    files, errors = [], []
-    blocked = False
-    # Reddit only: if the site blocks both tools, its own browser is asked instead.
-    for engine in plan_engines(url) + (["redditweb"] if is_reddit(url) else []):
-        if engine == "redditweb" and not blocked:
-            continue
+    while job["state"] in MACHINE:
+        log("state: " + job["state"])
         try:
-            files = ENGINES[engine](ctx)
-            if files:
-                break
-        except NeedConfirm as ask:
-            return callback(payload, {
-                "t": "confirm", "url": url, "thr": str(threshold),
-                "n": str(ask.count) if ask.count else "",
-                "title": safe_title(ask.title, "")[:60],
-            })
-        except EngineError as exc:
-            errors.append(str(exc))
-            blocked = blocked or bool(BLOCKED.search(str(exc)))
-            log("%s could not do it: %s" % (engine, exc))
-        except KeyboardInterrupt:
-            raise
-        except Exception as exc:
-            errors.append(tidy_error(str(exc)))
-            log("%s crashed:\n%s" % (engine, traceback.format_exc()))
+            job["state"] = MACHINE[job["state"]](job, ctx)
+        except Stop as stop:
+            if stop.reply.get("t") == "error":
+                state = read_json(STATE_FILE, {})
+                state["last_run"] = {"at": time.time(), "result": "failed (%s)" % stop.reply.get("kind")}
+                write_json(STATE_FILE, state)
+            return callback(payload, stop.reply)
+        ctx["checkpoint"]()
 
-    if not files:
-        # The first tool's message is the relevant one; the fallback's is noise.
-        message = errors[0] if errors else "Nothing to download at that link."
-        kind = classify_error(" ".join(errors))
-        host = hostname(url)
-        if BLOCKED.search(" ".join(errors)) and signed_in(host, read_cookie_store()):
-            # Signing in is not what is missing, so do not send the user to do it again.
-            entry = site_for(host)
-            kind = "unknown"
-            message = ("%s refused this device or network: %s Being signed in did not help. "
-                       "If a VPN is on, turn it off and try again."
-                       % (entry[0] if entry else base_domain(host), message.strip()))
-        state = read_json(STATE_FILE, {})
-        state["last_run"] = {"at": time.time(), "result": "failed (%s)" % kind}
-        write_json(STATE_FILE, state)
-        return callback(payload, {"t": "error", "kind": kind, "msg": message,
-                                  "url": url, "updated": "1" if updated else ""})
-
-    return deliver(payload, ctx, files, manifest, latest)
-
-
-def deliver(payload, ctx, files, manifest, latest=None):
-    """Get the files into Photos, or ready for Shortcuts to do it, and report."""
-    url = ctx["url"]
-    items = stage(ctx, files)
-    library = open_library(ctx["album"])
-    saved, ready, kept = 0, [], []
-    if library:
-        ui.start("Saving to Photos")
-    for item in items:
-        outcome = None
-        if library:
-            try:
-                outcome, path = place(ctx, item, library)
-            except Exception as exc:
-                log("photos: saving from a-Shell failed (%s: %s); handing files to Shortcuts"
-                    % (type(exc).__name__, exc))
-                ui.fail()
-                library = None
-        if outcome is None:
-            outcome, path = place(ctx, item, None)
-        if outcome == "saved":
-            saved += 1
-        elif outcome == "ready":
-            ready.append(path)
-        else:
-            os.makedirs(SAVED_DIR, exist_ok=True)
-            target = unique_path(SAVED_DIR, "%s.%s" % (item["stem"], ext_of(path) or "bin"))
-            shutil.move(path, target)
-            kept.append(os.path.basename(target))
-    if library:
-        ui._label = "Saving to Photos"
-        ui.done("%d item%s" % (saved, "" if saved == 1 else "s"))
-    converted = ctx["converted"]
-    result = {
-        "t": "done", "m": "", "np": str(len(ready)), "nk": str(len(kept)),
-        "nf": str(ctx["failed"]) if ctx["failed"] else "",
-        "nb": str(ctx["oversize"]) if ctx.get("oversize") else "",
-        "nc": str(len(converted)) if converted else "",
-        "conv": converted[0] if converted else "",
-        "title": safe_title(ctx.get("title"), "")[:60],
-    }
-    if ready:
-        # Shortcuts saves these. Until it has, they count as unsaved.
-        write_json(manifest, {"photos": ready, "kept": kept, "url": url})
-        result["m"] = manifest
-        with open(PENDING_FILE, "w", encoding="utf-8") as handle:
-            handle.write(manifest)
-    else:
-        # Everything is where it belongs: say so, and leave nothing behind.
-        result["msg"] = summary(saved, library.where() if library else "", converted, len(kept),
-                                ctx.get("oversize", 0), ctx["failed"])
-        shutil.rmtree(ctx["dir"], ignore_errors=True)
-    log("saved %d from a-Shell, %d for Shortcuts to save, %d kept in Files" % (saved, len(ready), len(kept)))
+    saved = len([i for i in job["items"] if i["state"] == "saved"])
+    kept = len(job["items"]) - saved
+    log("state: done. %d in Photos, %d in Files" % (saved, kept))
+    shutil.rmtree(folder, ignore_errors=True)
     state = read_json(STATE_FILE, {})
-    state["last_run"] = {"at": time.time(),
-                         "result": "saved %d, kept %d" % (saved + len(ready), len(kept))}
+    state["last_run"] = {"at": time.time(), "result": "saved %d, kept %d" % (saved, kept)}
     write_json(STATE_FILE, state)
+    result = {"t": "done", "title": safe_title(job["title"], "")[:60],
+              "msg": summary(saved, job.get("album") or "", job["converted"], kept, job["failed"],
+                             job.get("reason") or "")}
     if latest:
         result["upv"] = latest["v"]
         result["upurl"] = latest["url"]
@@ -2356,6 +2447,7 @@ def cmd_update(payload):
         return callback(payload, {"t": "error", "kind": "install", "msg": str(exc), "url": ""})
     check_project_updates(state, str(payload.get("v") or "0"), force=True)
     state.pop("photos_off", None)  # an update is also the way to try saving from a-Shell again
+    state.pop("av1_refused", None)
     write_json(STATE_FILE, state)
     versions = tool_versions()
     # This helper keeps running to the end of the update. What will run next
@@ -2403,6 +2495,7 @@ def status_text(payload):
     lines.append("ffmpeg %s" % versions["ffmpeg"])
     usable = [name for name in ("hevc_videotoolbox", "h264_videotoolbox", "libx264") if name in encoders()]
     lines.append("Converts with: %s" % (", ".join(usable) if usable else "no encoder found"))
+    lines.append("AV1: " + av1_verdict()[1])
     checked = float(state.get("tools_checked", 0) or 0)
     lines.append("Tools last updated: %s" % (time.strftime("%d %b %H:%M", time.localtime(checked))
                                              if checked > DAY else "never"))
@@ -2416,7 +2509,9 @@ def status_text(payload):
     except OSError:
         saved = 0
     lines.append("Kept in Files: %d %s" % (saved, "item" if saved == 1 else "items"))
-    lines.append("Unsaved download: %s" % ("yes" if os.path.exists(PENDING_FILE) else "none"))
+    unfinished = len([n for n in (os.listdir(JOBS_DIR) if os.path.isdir(JOBS_DIR) else [])
+                      if os.path.exists(os.path.join(JOBS_DIR, n, "job.json"))])
+    lines.append("Unfinished downloads: %s" % (unfinished or "none"))
     try:
         lines.append("Free space: %s" % human_size(shutil.disk_usage(WORKSPACE).free))
     except Exception:
@@ -2566,7 +2661,9 @@ def main(argv):
             cmd_logout(payload)
     except KeyboardInterrupt:
         ui.stop_spinner()
-        OUT.write("\n  Cancelled.\n")
+        OUT.write("\n  Stopped. What is already downloaded is kept in UMDL > Working;\n"
+                  "  run UMDL and choose Resume last download to carry on.\n"
+                  if command == "run" else "\n  Cancelled.\n")
         return 130
     except Exception as exc:
         # Never strand the user in the terminal: always report back.

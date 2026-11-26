@@ -8,13 +8,13 @@
 
 UMDL is a free and open-source Shortcut. Downloads run on your own device with [yt-dlp](https://github.com/yt-dlp/yt-dlp) and [gallery-dl](https://github.com/mikf/gallery-dl) inside the free [a-Shell](https://apps.apple.com/app/a-shell/id1473805438) app. Nothing you share is sent to a UMDL server, because there isn't one.
 
-> **Status: 1.5.0.** On a device, setup, sign-in, private posts from Instagram and X, and YouTube are confirmed with earlier versions. New in 1.5 and not yet run on a device: saving from a-Shell straight into Photos. Reddit is refused on the test network. [docs/BEHAVIOR.md](docs/BEHAVIOR.md) keeps the list. Please [report](https://github.com/TheKfcBandit/UMDL/issues) what you find.
+> **Status: 1.6.0.** On a device, setup, sign-in, private posts from Instagram and X, and YouTube are confirmed with earlier versions. Not yet seen on a device: saving from a-Shell straight into Photos, which since 1.6 is the only route. Reddit is refused on the test network. [docs/BEHAVIOR.md](docs/BEHAVIOR.md) keeps the list. Please [report](https://github.com/TheKfcBandit/UMDL/issues) what you find.
 
 ## Install
 
 1. Install [a-Shell](https://apps.apple.com/app/a-shell/id1473805438) from the App Store and open it once.
 2. On your iPhone or iPad, download `UMDL.shortcut` from the [latest release](https://github.com/TheKfcBandit/UMDL/releases/latest) and tap **Add Shortcut**.
-3. Share a post or video to UMDL, or run it from the Shortcuts app, and tap **Quick setup**. UMDL creates an album named UMDL, a-Shell opens and installs the download tools, and the shared post is downloaded. That takes about two minutes. **Custom setup** opens the settings first.
+3. Share a post or video to UMDL, or run it from the Shortcuts app, and tap **Quick setup**. a-Shell opens and installs the download tools, and the shared post is downloaded to an album named UMDL. That takes about two minutes. **Custom setup** opens the settings first.
 
 Built for iOS and iPadOS 18 and later. Keep the shortcut's name as **UMDL**, and keep only one copy: a-Shell uses that name to hand results back. When updating, choose **Replace** if Shortcuts asks, or delete the old copy first.
 
@@ -28,14 +28,15 @@ In any app, tap **Share**, then **UMDL**. a-Shell opens, downloads, and saves to
 - **Saved items** are named by their title and dated the day you downloaded them.
 - **Posts with several photos or videos** are saved whole.
 - **Playlists, albums and profiles** with more than 10 items ask first: everything, the first 10, or just the first. You can change the number.
-- **Audio and other files** Photos has no place for are kept in the Files app under *a-Shell › UMDL › Saved*.
+- **Audio and other files** Photos has no place for are kept in the Files app under *a-Shell › UMDL › Saved*. That is the only other place a download can end.
+- **An interrupted download** carries on. Each one works in *a-Shell › UMDL › Working*; share the link again, or choose **Resume last download**, and what was already downloaded is not downloaded twice.
 
 Open UMDL on its own, without sharing anything, for the menu:
 
 | Menu item | What it does |
 |---|---|
 | Download from clipboard | Downloads the link you copied last |
-| Resume last download | Appears when a download was interrupted |
+| Resume last download | Appears when a download was interrupted, and carries on from where it stopped |
 | Settings | Album, resolution, frame rate, the ask-first limit, what happens when a download finishes, reset |
 | Sign in to a site | For private posts. UMDL confirms when the sign-in is saved |
 | Status | Which sites are signed in, tool versions, storage, and a button to copy the log |
@@ -54,6 +55,10 @@ UMDL downloads the best version a site has. Two settings limit that, and both st
 | Frame rate | Best available, or up to 60 or 30 fps |
 
 The file is then offered to Photos as it is. Most sites serve H.264, which Photos plays, so most downloads are saved untouched. If Photos refuses a file, as it does YouTube's VP9 above 1080p, the picture is converted to HEVC on your device at the best quality, same size and frame rate, and saved. The notification says so: "1 converted (VP9 → HEVC)". Setting Resolution to 1080p avoids conversion on YouTube.
+
+Between versions of the same size and frame rate, UMDL takes the one that needs no conversion. That never costs quality: a 4K version is taken over a 1080p one whatever its format.
+
+**4K from YouTube is the slow case.** Above 1080p YouTube has only VP9 and AV1. iOS gives apps no hardware reader for VP9, so converting a long 4K video takes a long time, and it only moves while a-Shell is on screen. Where the device's chip reads AV1, UMDL takes AV1 instead, which may go into Photos untouched; that has not been confirmed on a device yet. To skip conversion altogether, set Resolution to 1080p: YouTube has H.264 up to there.
 
 [docs/BEHAVIOR.md](docs/BEHAVIOR.md#saving) has the flow chart.
 
@@ -78,13 +83,13 @@ A failed download returns to Shortcuts with the reason and these choices:
 
 Other things worth knowing:
 
-- **"There was a problem running the shortcut."** With UMDL 1.1.0 or earlier on iOS 27.2 this appears after every download: a-Shell's Get File action fails on that iOS version ([a-Shell issue 1138](https://github.com/holzschu/a-shell/issues/1138)). Update UMDL; 1.2.0 uses the mode that still works. The download that failed is not lost: the next run offers to save it.
+- **"There was a problem running the shortcut."** Versions before 1.6 could stop this way after a download, at the hand-over of the file from a-Shell to Shortcuts. Update UMDL: since 1.6 no file is handed over.
 - **Is it set up properly?** Open **Status**. It shows the tool versions, whether GitHub can be reached, which sites are signed in, and the result of the last download. **Copy** puts all of it, and the log, on the clipboard.
-- **You are left in a-Shell.** Keep a-Shell in the foreground while it works. iOS suspends it otherwise. Share the same link again and the download resumes where it stopped.
-- **"An earlier download was not saved."** The download finished but saving was interrupted, for example by a permission prompt. Choose **Save now**.
-- **A conversion is slow.** Converting 4K takes time even with the hardware encoder. Set Resolution to 1080p and YouTube needs no conversion.
+- **You are left in a-Shell, or you left it.** Keep a-Shell in the foreground while it works; iOS pauses it otherwise. Coming back to a-Shell lets it carry on. If iOS closed it meanwhile, share the same link again or choose **Resume last download**: the files already downloaded are in *a-Shell › UMDL › Working* and are used as they are.
+- **"Nothing was added to Photos."** The notification's last line says why, and the files are in the Files app under *a-Shell › UMDL › Saved*. If it says a-Shell is not allowed to add to Photos, allow it in the Settings app under a-Shell, Photos.
+- **A conversion is slow.** See [Quality](#quality): 4K from YouTube is the slow case. Set Resolution to 1080p and YouTube needs no conversion.
 - **"Setup incomplete."** The helper or the download tools could not be downloaded. The message says which, and why. Check the connection and run UMDL again; it continues from where it stopped.
-- **The album was not found.** If you renamed or deleted the album, pick it again under Settings › *Album*.
+- **Items are in the library but not in the album.** Saving to an album needs fuller access to Photos than adding to the library. Allow it in the Settings app under a-Shell, Photos.
 - **Start over.** Settings › *Reset* › **Remove everything** removes UMDL's files, the download tools and every sign-in from a-Shell. It leaves anything else you keep in a-Shell alone; deleting the a-Shell app removes that too.
 
 ## Privacy and security

@@ -136,11 +136,8 @@ class World:
         self.set_scenario({})
         self.clipboard = ""
         self.extra_env = {}
-        self.get_file_limit = 0   # bytes above which Get File fails, 0 for none
         self.ui = []          # scripted answers: ("menu"|"list"|"ask", text)
         self.events = []      # everything the user would see or that left the shortcut
-        self.photos = []      # (file name, album, byte size)
-        self.albums = []
         self.commands = []    # (openWindow, command text)
         self.helper_runs = [] # (command, decoded payload)
         self.callbacks = []   # callback texts waiting to re-run the shortcut
@@ -293,19 +290,31 @@ class World:
         with open(self.record_path) as handle:
             return [json.loads(line) for line in handle if line.strip()]
 
-    def save_from_a_shell(self, plays="h264,hevc"):
-        """Let the helper save to Photos itself, as on a device. `plays` is what
-        this stand-in for Photos accepts."""
-        self.extra_env.update(UMDL_TEST_PHOTOS=os.path.join(self.home, "PhotosLibrary"),
-                              UMDL_TEST_PHOTOS_PLAYS=plays)
+    # -- Photos, as the helper sees it: a folder that "plays" some codecs
+
+    def photos_plays(self, *codecs):
+        self.extra_env["UMDL_TEST_PHOTOS_PLAYS"] = ",".join(codecs)
+
+    def refuse_photos(self):
+        self.extra_env["UMDL_TEST_PHOTOS_REFUSED"] = "1"
 
     def library(self):
-        """What the helper saved to Photos itself: (album, name, date) per item."""
+        """What is in Photos: (album, name, date, size) per item, in order."""
         path = os.path.join(self.home, "PhotosLibrary", "added.txt")
         if not os.path.exists(path):
             return []
         with open(path, encoding="utf-8") as handle:
             return [tuple(line.rstrip("\n").split("\t")) for line in handle if line.strip()]
+
+    @property
+    def photos(self):
+        """(name, album, size) per item; "Recents" stands for no album."""
+        return [(name, "Recents" if album == "Library" else album, int(size))
+                for album, name, _, size in self.library()]
+
+    @property
+    def albums(self):
+        return sorted({album for album, _, _, _ in self.library() if album != "Library"})
 
     def kept_files(self):
         saved = os.path.join(self.workspace, "Saved")
@@ -322,6 +331,7 @@ class World:
             "NO_COLOR": "1",
             "UMDL_FAKE_SCENARIO": self.scenario_path,
             "UMDL_FAKE_RECORD": self.record_path,
+            "UMDL_TEST_PHOTOS": os.path.join(self.home, "PhotosLibrary"),
             "PYTHONPATH": os.path.join(self.home, "site-packages"),
             "PATH": os.path.join(FAKES, "bin") + os.pathsep + env.get("PATH", ""),
         })
@@ -765,16 +775,6 @@ class Run:
                 raise SimError("Open App has a malformed app reference: %r" % (app,))
             world.events.append(("openapp", p["WFAppIdentifier"]))
             return None
-        if name == "photos.createalbum":
-            world.albums.append(as_text(get("AlbumName")))
-            return None
-        if name == "savetocameraroll":
-            item = get("WFInput")
-            if not isinstance(item, File) or not item.data:
-                raise SimError("Save to Photo Album got no file")
-            album = as_text(get("WFCameraRollSelectedGroup", "Recents"))
-            world.photos.append((item.name, album, len(item.data)))
-            return None
         if name == ASHELL + "ExecuteCommandIntent":
             command = as_text(get("command"))
             window = p.get("openWindow")
@@ -789,22 +789,4 @@ class Run:
                 raise SimError("a-Shell must be opened before a foreground command")
             world.foreground(command)
             return None
-        if name == ASHELL + "GetFileIntent":
-            path = as_text(get("fileName"))
-            if not os.path.isabs(path):
-                raise SimError("Get File needs an absolute path, got %r" % path)
-            if p.get("copyFile") is not True:
-                # https://github.com/holzschu/a-shell/issues/1138
-                raise SimError("Shortcuts would stop with \"There was a problem running the "
-                               "shortcut\": on iOS 27.2 a-Shell's Get File fails unless it is "
-                               "asked for a copy")
-            if not os.path.exists(path):
-                raise SimError("a-Shell has no file %r" % path)
-            if world.get_file_limit and os.path.getsize(path) > world.get_file_limit:
-                # a-Shell's own source: "INFile(data:) causes a crash for large files".
-                raise SimError("Shortcuts would stop with \"There was a problem running the "
-                               "shortcut\": a-Shell cannot hand over a copy this large")
-            with open(path, "rb") as handle:
-                # As seen on a device: the copy is named after its whole path.
-                return File(handle.read(), path=path, name=path.replace("/", ":"))
         raise SimError("the simulator has no model for action %r" % ident)

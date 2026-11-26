@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import types
 import unittest
 import urllib.parse
@@ -66,7 +67,7 @@ def make_clip(path, vcodec=None, acodec=None, extra=()):
 def payload(url, **extra):
     data = {"v": umdl.HELPER_VERSION, "p": str(umdl.PROTOCOL), "name": "UMDL", "url": url,
             "mode": "auto",
-            "cfg": {"album": "UMDL", "threshold": "10", "convert": "1", "after": "notify"}}
+            "cfg": {"album": "UMDL", "threshold": "10", "after": "notify", "res": "best", "fps": "best"}}
     data.update(extra)
     return base64.b64encode(json.dumps(data).encode()).decode()
 
@@ -190,11 +191,24 @@ class Base(unittest.TestCase):
         os.makedirs(umdl.WORKSPACE)
         self.out = io.StringIO()
         umdl.OUT = self.out
-        for key in ("FAKE_GALLERY_FAIL", "FAKE_GALLERY_COUNT"):
+        for key in ("FAKE_GALLERY_FAIL", "FAKE_GALLERY_COUNT", "UMDL_TEST_PHOTOS_PLAYS",
+                    "UMDL_TEST_PHOTOS_REFUSED", "UMDL_TEST_HARDWARE"):
             os.environ.pop(key, None)
+        # Photos, for the helper: a folder that takes what it "plays".
+        self.photos = tempfile.mkdtemp(dir=WORK, prefix="photos-")
+        os.environ["UMDL_TEST_PHOTOS"] = self.photos
+        self.addCleanup(os.environ.pop, "UMDL_TEST_PHOTOS", None)
         for name in list(sys.modules):
             if name.split(".")[0] in ("yt_dlp", "gallery_dl"):
                 del sys.modules[name]
+
+    def library(self):
+        """(album, name) of everything added to Photos, in order."""
+        path = os.path.join(self.photos, "added.txt")
+        if not os.path.exists(path):
+            return []
+        with open(path, encoding="utf-8") as handle:
+            return [tuple(line.split("\t")[:2]) for line in handle if line.strip()]
 
     def run_helper(self, command, blob):
         code = umdl.main(["umdl.py", command, blob])
@@ -298,6 +312,86 @@ class Quality(unittest.TestCase):
                          "bv*[fps<=?30]+ba/b[fps<=?30]/bv*+ba/b/ba")
 
 
+class Labels(unittest.TestCase):
+    def test_a_size_is_named_after_the_frame_it_fills(self):
+        cases = {(3840, 2160): "2160p", (3840, 1920): "2160p", (3840, 1600): "2160p", (2160, 3840): "2160p",
+                 (1920, 1080): "1080p", (1920, 800): "1080p", (1080, 1920): "1080p", (1440, 1080): "1080p",
+                 (2560, 1440): "1440p", (1280, 720): "720p", (854, 480): "480p", (640, 360): "360p",
+                 (1000, 1000): "1000p", (0, 0): ""}
+        for (width, height), name in cases.items():
+            self.assertEqual(umdl.tier(width, height), name, (width, height))
+
+    def test_what_is_being_converted_reads_like_a_listing(self):
+        info = {"width": 3840, "height": 1920, "fps": 59.94, "v": "vp9", "a": "opus"}
+        self.assertEqual(umdl.describe_media(info), "2160p60 VP9 + Opus")
+        self.assertEqual(umdl.describe_media(dict(info, fps=30, a=None)), "2160p VP9")
+
+
+class ChoiceAmongEquals(Base):
+    """yt-dlp ranks by size and frame rate. Among versions equal in both, the
+    one that costs least to get into Photos is taken."""
+
+    FORMATS = [  # worst first, as yt-dlp lists them
+        {"format_id": "251", "vcodec": "none", "acodec": "opus"},
+        {"format_id": "140", "vcodec": "none", "acodec": "mp4a.40.2"},
+        {"format_id": "137", "vcodec": "avc1.640028", "acodec": "none", "width": 1920, "height": 1080, "fps": 30},
+        {"format_id": "401", "vcodec": "av01.0.12M.08", "acodec": "none", "width": 3840, "height": 2160, "fps": 30},
+        {"format_id": "313", "vcodec": "vp9", "acodec": "none", "width": 3840, "height": 2160, "fps": 30},
+    ]
+    BEST = {"res": "best", "fps": "best"}
+
+    def test_quality_is_never_given_up_for_an_easier_codec(self):
+        self.assertEqual(umdl.choose_formats(self.FORMATS, self.BEST, False), "313+140")   # 4K, not the 1080p H.264
+
+    def test_av1_is_taken_where_the_chip_reads_it(self):
+        self.assertEqual(umdl.choose_formats(self.FORMATS, self.BEST, True), "401+140")
+
+    def test_h264_or_hevc_of_the_same_size_wins_outright(self):
+        formats = self.FORMATS + [{"format_id": "hev", "vcodec": "hev1.2.4", "acodec": "none",
+                                   "width": 3840, "height": 2160, "fps": 30}]
+        formats.insert(-1, formats.pop())                       # yt-dlp still ranks VP9 last, so best
+        formats[-1], formats[-2] = formats[-2], formats[-1]
+        self.assertEqual(umdl.choose_formats(formats, self.BEST, True), "hev+140")
+
+    def test_a_smoother_version_is_not_traded_away(self):
+        formats = self.FORMATS + [{"format_id": "315", "vcodec": "vp9", "acodec": "none",
+                                   "width": 3840, "height": 2160, "fps": 60}]
+        self.assertEqual(umdl.choose_formats(formats, self.BEST, True), "315+140")
+
+    def test_one_file_with_sound_needs_no_partner_and_nothing_listed_means_no_choice(self):
+        whole = [{"format_id": "18", "vcodec": "avc1", "acodec": "mp4a", "width": 640, "height": 360, "fps": 30}]
+        self.assertEqual(umdl.choose_formats(whole, self.BEST, False), "18")
+        self.assertEqual(umdl.choose_formats([], self.BEST, False), "")
+        self.assertEqual(umdl.choose_formats(None, self.BEST, False), "")
+
+    def test_av1_needs_the_chip_a_way_to_convert_it_and_no_refusal_on_record(self):
+        self.addCleanup(umdl._FFMPEG_HAS.clear)
+        umdl._FFMPEG_HAS["-decoders"] = {"vp9", "libdav1d"}
+        self.assertEqual(umdl.av1_verdict(), (False, "not taken, the chip does not read it"))
+        os.environ["UMDL_TEST_HARDWARE"] = "av01"
+        self.assertEqual(umdl.av1_verdict(), (True, "taken where a site has it"))
+        umdl._FFMPEG_HAS["-decoders"] = {"vp9", "av1"}             # ffmpeg's own AV1 reader needs hardware
+        self.assertEqual(umdl.av1_verdict(), (False, "not taken, this ffmpeg could not convert it"))
+        umdl._FFMPEG_HAS["-decoders"] = {"libdav1d"}
+        umdl.write_json(umdl.STATE_FILE, {"av1_refused": True})
+        self.assertEqual(umdl.av1_verdict(), (False, "not taken, Photos turned it down"))
+
+    @unittest.skipUnless(has_encoder("libsvtav1") or has_encoder("libaom-av1"), "no AV1 encoder")
+    def test_a_refused_av1_file_is_converted_and_av1_is_not_taken_again(self):
+        os.environ["UMDL_TEST_HARDWARE"] = "av01"
+        encoder = "libsvtav1" if has_encoder("libsvtav1") else "libaom-av1"
+        clip = make_clip(os.path.join(self.media, "av1.mp4"), encoder, "aac")
+        folder = tempfile.mkdtemp(dir=WORK)
+        ctx = {"dir": folder, "titles": {"a.mp4": "Clip"}, "converted": [], "checkpoint": lambda: None}
+        shutil.copy(clip, os.path.join(folder, "a.mp4"))
+        library, _ = umdl.open_library("UMDL")                   # this Photos plays H.264 and HEVC only
+        self.assertTrue(umdl.av1_goes_in())
+        self.assertEqual(umdl.place(ctx, umdl.stage(ctx, [os.path.join(folder, "a.mp4")])[0], library), "saved")
+        self.assertEqual(ctx["converted"], ["AV1 → H.264"])
+        self.assertFalse(umdl.av1_goes_in())
+        self.assertEqual(self.library(), [("UMDL", "Clip.mp4")])
+
+
 class Saving(Base):
     """Names, the order of attempts, and the fence around saving from a-Shell."""
 
@@ -317,7 +411,7 @@ class Saving(Base):
 
     def ctx(self, titles):
         folder = tempfile.mkdtemp(dir=WORK)
-        return {"dir": folder, "titles": titles, "converted": []}
+        return {"dir": folder, "titles": titles, "converted": [], "checkpoint": lambda: None}
 
     def test_names_are_titles_made_safe_and_never_collide(self):
         ctx = self.ctx({"a.mp4": "AMD's Gaslighting: Part 2/3?", "b.mp4": "AMD's Gaslighting: Part 2/3?"})
@@ -329,7 +423,10 @@ class Saving(Base):
         items = umdl.stage(ctx, files)
         self.assertEqual([i["stem"] for i in items],
                          ["AMD's Gaslighting Part 2 3", "AMD's Gaslighting Part 2 3 2", "IMG_0042"])
-        self.assertEqual([os.path.basename(i["path"]) for i in items], ["001.mp4", "002.mp4", "003.jpg"])
+        self.assertEqual([os.path.basename(i["path"]) for i in items],
+                         ["001-AMD-s-Gaslighting-Part-2-3.mp4", "002-AMD-s-Gaslighting-Part-2-3-2.mp4",
+                          "003-IMG-0042.jpg"])
+        self.assertEqual({i["state"] for i in items}, {"waiting"})
 
     @unittest.skipUnless(has_encoder("libvpx-vp9"), "no libvpx-vp9")
     def test_photos_is_offered_the_file_before_anything_is_converted(self):
@@ -339,7 +436,7 @@ class Saving(Base):
             path = os.path.join(ctx["dir"], "v.webm")
             shutil.copy(clip, path)
             library = self.Library(plays)
-            outcome, final = umdl.place(ctx, umdl.stage(ctx, [path])[0], library)
+            outcome = umdl.place(ctx, umdl.stage(ctx, [path])[0], library)
             self.assertEqual(outcome, "saved", plays)
             self.assertEqual(library.asked, ["Clip.mp4"] * attempts, plays)   # as it is first
             self.assertEqual(len(ctx["converted"]), converted, plays)
@@ -351,44 +448,49 @@ class Saving(Base):
         shutil.copy(clip, path)
         library = self.Library()
         before = os.path.getsize(path)
-        outcome, final = umdl.place(ctx, umdl.stage(ctx, [path])[0], library)
-        self.assertEqual((outcome, library.added, os.path.getsize(final)), ("saved", ["Clip.mp4"], before))
+        item = umdl.stage(ctx, [path])[0]
+        outcome = umdl.place(ctx, item, library)
+        self.assertEqual((outcome, library.added, os.path.getsize(item["path"])), ("saved", ["Clip.mp4"], before))
 
-    def test_through_shortcuts_the_file_carries_its_name_in_its_path(self):
+    def test_without_photos_a_file_is_kept_and_nothing_is_converted(self):
         clip = make_clip(os.path.join(self.media, "native.mp4"), "libx264", "aac")
         ctx = self.ctx({"n.mp4": "My clip"})
         path = os.path.join(ctx["dir"], "n.mp4")
         shutil.copy(clip, path)
-        outcome, final = umdl.place(ctx, umdl.stage(ctx, [path])[0], None)
-        self.assertEqual(outcome, "ready")
-        self.assertTrue(final.endswith(os.path.join("out", "001", "My clip.mp4")))
+        self.assertEqual(umdl.place(ctx, umdl.stage(ctx, [path])[0], None), "kept")
+        self.assertEqual(ctx["converted"], [])
 
     def test_summary(self):
-        self.assertEqual(umdl.summary(1, "UMDL", [], 0, 0, 0), "Saved to the UMDL album.")
-        self.assertEqual(umdl.summary(3, "", ["VP9 → HEVC"], 1, 0, 2),
+        self.assertEqual(umdl.summary(1, "UMDL", [], 0, 0), "Saved to the UMDL album.")
+        self.assertEqual(umdl.summary(3, "", ["VP9 → HEVC"], 1, 2),
                          "Saved 3 items to Photos.\n1 converted (VP9 → HEVC).\n"
                          "1 kept in Files (a-Shell, UMDL, Saved).\n2 failed.")
-        self.assertEqual(umdl.summary(0, "UMDL", [], 1, 0, 0),
-                         "Nothing was added to Photos.\n1 kept in Files (a-Shell, UMDL, Saved).")
+        self.assertEqual(umdl.summary(0, "", [], 1, 0, "a-Shell is not allowed to add to Photos."),
+                         "Nothing was added to Photos.\n1 kept in Files (a-Shell, UMDL, Saved).\n"
+                         "a-Shell is not allowed to add to Photos.")
 
-    def test_a_step_that_stopped_a_shell_turns_direct_saving_off_until_the_helper_changes(self):
+    def test_a_step_that_stopped_a_shell_turns_saving_off_until_update_tools(self):
+        os.environ.pop("UMDL_TEST_PHOTOS")
         self.addCleanup(setattr, umdl, "IOS", umdl.IOS)
         umdl.IOS = True
-        os.makedirs(umdl.WORKSPACE, exist_ok=True)
         with open(umdl.GUARD_FILE, "w") as handle:
-            handle.write("save My clip")
-        self.assertIsNone(umdl.open_library("UMDL"))
+            handle.write("add My clip.mp4")
+        library, reason = umdl.open_library("UMDL")
+        self.assertIsNone(library)
+        self.assertEqual(reason, 'Saving to Photos stopped a-Shell last time (at "add My clip.mp4"). '
+                                 'Run Update tools to try again.')
         self.assertFalse(os.path.exists(umdl.GUARD_FILE))
+        self.assertEqual(umdl.open_library("UMDL"), (None, reason))    # and stays off, touching nothing
         state = umdl.read_json(umdl.STATE_FILE, {})
-        self.assertEqual(state["photos_off"], {"step": "save My clip", "helper": umdl.HELPER_VERSION})
-        self.assertIsNone(umdl.open_library("UMDL"))          # and stays off without touching anything
-        state["photos_off"]["helper"] = "0.0.1"               # a different helper tries again
+        state["photos_off"]["helper"] = "0.0.1"                         # a different helper tries again
         umdl.write_json(umdl.STATE_FILE, state)
-        self.assertIsNone(umdl.open_library("UMDL"))          # (here it cannot: this is not a device)
-        self.assertIn("cannot save from a-Shell", open(umdl.LOG_FILE).read())
+        library, reason = umdl.open_library("UMDL")                     # (here it cannot: no device)
+        self.assertIsNone(library)
+        self.assertRegex(reason, r"^Photos could not be reached \(\w+\)\.$")
 
-    def test_off_a_device_files_go_through_shortcuts(self):
-        self.assertIsNone(umdl.open_library("UMDL"))
+    def test_off_a_device_there_is_a_reason_not_a_library(self):
+        os.environ.pop("UMDL_TEST_PHOTOS")
+        self.assertEqual(umdl.open_library("UMDL"), (None, "Photos can only be reached on an iPhone or iPad."))
 
 
 class ConversionOrder(unittest.TestCase):
@@ -518,84 +620,74 @@ class Planning(Base):
 
 
 @unittest.skipUnless(HAVE_FFMPEG, "ffmpeg not installed")
-class PhotosReady(Base):
+class RepackAndConvert(Base):
+    """The two things ffmpeg is asked to do, and what each leaves behind."""
+
     def stage(self, source):
         folder = tempfile.mkdtemp(dir=WORK)
         target = os.path.join(folder, "001." + source.rsplit(".", 1)[1])
         shutil.copy(source, target)
         return target
 
-    def test_native_mp4_untouched(self):
-        clip = make_clip(os.path.join(self.media, "native.mp4"), "libx264", "aac")
-        staged = self.stage(clip)
-        self.assertEqual(umdl.make_photos_ready(staged, []), staged)
+    def test_what_a_download_is(self):
+        native = make_clip(os.path.join(self.media, "native.mp4"), "libx264", "aac")
+        song = make_clip(os.path.join(self.media, "song.m4a"), None, "aac")
+        silent = make_clip(os.path.join(self.media, "audio_only.mp4"), None, "aac")
+        other = os.path.join(self.media, "archive.zip")
+        with open(other, "wb") as handle:
+            handle.write(b"PK\x03\x04")
+        self.assertEqual([umdl.inspect(p)[0] for p in (native, song, silent, other, self.jpg)],
+                         ["video", "other", "other", "other", "image"])
 
     def test_mkv_is_rewrapped_without_reencoding(self):
-        clip = make_clip(os.path.join(self.media, "wrapped.mkv"), "libx264", "aac")
-        ready = umdl.make_photos_ready(self.stage(clip), [])
+        staged = self.stage(make_clip(os.path.join(self.media, "wrapped.mkv"), "libx264", "aac"))
+        ready = umdl.repack(staged, umdl.probe_media(staged))
         self.assertTrue(ready.endswith("001.mp4"))           # takes the original's place
         info = umdl.probe_media(ready)
         self.assertEqual((info["v"], info["a"]), ("h264", "aac"))
+        self.assertEqual(os.listdir(os.path.dirname(ready)), ["001.mp4"])
 
     @unittest.skipUnless(has_encoder("libopus"), "no libopus")
     def test_wrong_audio_only_reencodes_audio(self):
-        clip = make_clip(os.path.join(self.media, "opus.mkv"), "libx264", "libopus")
-        ready = umdl.make_photos_ready(self.stage(clip), [])
-        info = umdl.probe_media(ready)
+        staged = self.stage(make_clip(os.path.join(self.media, "opus.mkv"), "libx264", "libopus"))
+        info = umdl.probe_media(umdl.repack(staged, umdl.probe_media(staged)))
         self.assertEqual((info["v"], info["a"]), ("h264", "aac"))
 
-    @unittest.skipUnless(has_encoder("libvpx-vp9"), "no libvpx-vp9")
-    def test_vp9_converted_only_when_allowed(self):
-        clip = make_clip(os.path.join(self.media, "vp9.webm"), "libvpx-vp9", None)
-        ready = umdl.make_photos_ready(self.stage(clip), [])
-        self.assertIsNotNone(ready)
-        self.assertEqual(umdl.probe_media(ready)["v"], "h264")
-
     @unittest.skipUnless(has_encoder("libx265"), "no libx265")
-    def test_hevc_is_retagged_for_apple(self):
-        clip = make_clip(os.path.join(self.media, "hev1.mp4"), "libx265", "aac",
-                         extra=("-tag:v", "hev1"))
+    def test_hevc_under_the_wrong_label_is_relabelled_not_converted(self):
+        clip = make_clip(os.path.join(self.media, "hev1.mp4"), "libx265", "aac", extra=("-tag:v", "hev1"))
         self.assertEqual(umdl.probe_media(clip)["tag"], "hev1")
-        ready = umdl.make_photos_ready(self.stage(clip), [])
-        self.assertEqual(umdl.probe_media(ready)["tag"], "hvc1")
-
-    @unittest.skipUnless(has_encoder("libvpx-vp9"), "no libvpx-vp9")
-    def test_verdicts(self):
-        native = make_clip(os.path.join(self.media, "native.mp4"), "libx264", "aac")
-        wrapped = make_clip(os.path.join(self.media, "wrapped.mkv"), "libx264", "aac")
-        vp9 = make_clip(os.path.join(self.media, "vp9.webm"), "libvpx-vp9", None)
-        song = make_clip(os.path.join(self.media, "song.m4a"), None, "aac")
-        self.assertEqual([umdl.photos_verdict(p)[0] for p in (native, wrapped, vp9, song, self.jpg)],
-                         ["ready", "repack", "convert", "files", "ready"])
+        folder = tempfile.mkdtemp(dir=WORK)
+        ctx = {"dir": folder, "titles": {"h.mp4": "Clip"}, "converted": [], "checkpoint": lambda: None}
+        shutil.copy(clip, os.path.join(folder, "h.mp4"))
+        item = umdl.stage(ctx, [os.path.join(folder, "h.mp4")])[0]
+        os.environ["UMDL_TEST_PHOTOS_PLAYS"] = "h264,hevc"
+        library, _ = umdl.open_library("UMDL")
+        self.assertEqual(umdl.place(ctx, item, library), "saved")
+        self.assertEqual(umdl.probe_media(item["path"])["tag"], "hvc1")
+        self.assertEqual(ctx["converted"], [])
 
     @unittest.skipUnless(has_encoder("libvpx-vp9"), "no libvpx-vp9")
     def test_conversion_keeps_size_and_frame_rate_and_is_noted(self):
         clip = make_clip(os.path.join(self.media, "vp9.webm"), "libvpx-vp9", None)
         before = umdl.probe_media(clip)
         notes = []
-        ready = umdl.make_photos_ready(self.stage(clip), notes)
+        staged = self.stage(clip)
+        ready = umdl.convert(staged, umdl.probe_media(staged), notes)
         after = umdl.probe_media(ready)
         self.assertEqual((after["width"], after["height"]), (before["width"], before["height"]))
         self.assertAlmostEqual(after["fps"], before["fps"], places=1)
         self.assertEqual(notes, ["VP9 → H.264"])            # this machine has no VideoToolbox
         self.assertTrue(ready.endswith("001.mp4"))
         self.assertEqual(os.listdir(os.path.dirname(ready)), ["001.mp4"])   # the original is gone
+        self.assertRegex(open(umdl.LOG_FILE).read(), r"converted \S+ VP9 to H\.264 in \d+ s with -c:v libx264")
 
-    def test_audio_and_unknown_stay_in_files(self):
-        clip = make_clip(os.path.join(self.media, "song.m4a"), None, "aac")
-        self.assertIsNone(umdl.make_photos_ready(self.stage(clip), []))
-        other = os.path.join(self.media, "archive.zip")
-        with open(other, "wb") as handle:
-            handle.write(b"PK\x03\x04")
-        self.assertIsNone(umdl.make_photos_ready(self.stage(other), []))
-
-    def test_audio_in_video_container_stays_in_files(self):
-        clip = make_clip(os.path.join(self.media, "audio_only.mp4"), None, "aac")
-        self.assertIsNone(umdl.make_photos_ready(self.stage(clip), []))
-
-    def test_images_pass_through(self):
-        staged = self.stage(self.jpg)
-        self.assertEqual(umdl.make_photos_ready(staged, []), staged)
+    def test_hardware_reading_is_asked_for_only_where_ffmpeg_offers_it(self):
+        self.addCleanup(umdl._FFMPEG_HAS.clear)
+        umdl._FFMPEG_HAS["-hwaccels"] = {"videotoolbox"}
+        self.assertEqual(umdl.decode_args(), ["-hwaccel", "videotoolbox"])
+        umdl._FFMPEG_HAS["-hwaccels"] = {"vaapi"}
+        self.assertEqual(umdl.decode_args(), [])
 
 
 class EndToEnd(Base):
@@ -618,16 +710,10 @@ class EndToEnd(Base):
         self.assertEqual(code, 0)
         self.assertEqual(name, "UMDL")
         self.assertEqual(data["t"], "done")
-        self.assertEqual((data["np"], data["nk"]), ("1", "0"))
-        self.assertEqual(data["title"], "My clip")
+        self.assertEqual((data["title"], data["msg"]), ("My clip", "Saved to the UMDL album."))
         self.assertEqual(data["cfg"]["album"], "UMDL")
-        with open(data["m"]) as handle:
-            manifest = json.load(handle)
-        self.assertEqual(len(manifest["photos"]), 1)
-        self.assertTrue(os.path.exists(manifest["photos"][0]))
-        self.assertTrue(manifest["photos"][0].endswith(os.path.join("out", "001", "My clip.mp4")))
-        with open(umdl.PENDING_FILE) as handle:
-            self.assertEqual(handle.read(), data["m"])
+        self.assertEqual(self.library(), [("UMDL", "My clip.mp4")])
+        self.assertEqual(os.listdir(umdl.JOBS_DIR), [])            # nothing is left behind
         self.assertFalse(os.path.exists(umdl.LAST_FILE))
         opts = fake["opts"][-1]
         self.assertEqual(opts["format"], "bv*+ba/b/ba")
@@ -641,7 +727,7 @@ class EndToEnd(Base):
         code, (_, data) = self.run_helper("run", payload("https://video.test/playlist/1"))
         self.assertEqual(data["t"], "confirm")
         self.assertEqual((data["n"], data["thr"], data["title"]), ("37", "10", "Mix"))
-        self.assertFalse(os.path.exists(umdl.PENDING_FILE))
+        self.assertEqual(self.library(), [])
 
     def test_playlist_with_limit(self):
         clip = self.clip()
@@ -652,7 +738,8 @@ class EndToEnd(Base):
         install_fake_gallery(False)
         code, (_, data) = self.run_helper(
             "run", payload("https://video.test/playlist/1", mode="limit", limit="10"))
-        self.assertEqual((data["t"], data["np"]), ("done", "2"))
+        self.assertEqual((data["t"], data["msg"]), ("done", "Saved 2 items to the UMDL album."))
+        self.assertEqual(self.library(), [("UMDL", "One.mp4"), ("UMDL", "Two.mp4")])
         self.assertEqual(fake["opts"][-1]["playlist_items"], "1-10")
         self.assertEqual(fake["opts"][-1]["ignoreerrors"], "only_download")
 
@@ -664,18 +751,15 @@ class EndToEnd(Base):
         })
         install_fake_gallery(False)
         code, (_, data) = self.run_helper("run", payload("https://video.test/playlist/2"))
-        self.assertEqual((data["t"], data["np"]), ("done", "2"))
+        self.assertEqual((data["t"], data["msg"]), ("done", "Saved 2 items to the UMDL album."))
 
     def test_falls_back_to_gallery(self):
         install_fake_ytdlp({"raw": FakeDownloadError("No video could be found in this post")})
         install_fake_gallery(True)
         os.environ["FAKE_GALLERY_COUNT"] = "3"
         code, (_, data) = self.run_helper("run", payload("https://video.test/post/9"))
-        self.assertEqual((data["t"], data["np"]), ("done", "3"))
-        with open(data["m"]) as handle:
-            manifest = json.load(handle)
-        self.assertTrue(all(os.path.exists(p) for p in manifest["photos"]))
-        self.assertEqual([p.split(os.sep)[-2] for p in manifest["photos"]], ["001", "002", "003"])
+        self.assertEqual((data["t"], data["msg"]), ("done", "Saved 3 items to the UMDL album."))
+        self.assertEqual(len(self.library()), 3)
 
     def test_gallery_first_and_confirm(self):
         install_fake_ytdlp({"raw": {"_type": "video", "id": "x"}})
@@ -689,7 +773,7 @@ class EndToEnd(Base):
         os.environ["FAKE_GALLERY_COUNT"] = "25"
         code, (_, data) = self.run_helper(
             "run", payload("https://x.com/user/media", mode="first"))
-        self.assertEqual((data["t"], data["np"]), ("done", "1"))
+        self.assertEqual((data["t"], data["msg"]), ("done", "Saved to the UMDL album."))
 
     def test_error_reports_first_tool(self):
         install_fake_ytdlp({"raw": FakeDownloadError("Sign in to confirm your age")})
@@ -709,7 +793,7 @@ class EndToEnd(Base):
         })
         install_fake_gallery(False)
         code, (_, data) = self.run_helper("run", payload("https://video.test/playlist/3"))
-        self.assertEqual((data["t"], data["np"], data["nf"]), ("done", "1", "1"))
+        self.assertEqual((data["t"], data["msg"]), ("done", "Saved to the UMDL album.\n1 failed."))
 
     @unittest.skipUnless(HAVE_FFMPEG, "ffmpeg not installed")
     def test_audio_goes_to_files(self):
@@ -720,41 +804,88 @@ class EndToEnd(Base):
         })
         install_fake_gallery(False)
         code, (_, data) = self.run_helper("run", payload("https://audio.test/s1"))
-        self.assertEqual((data["t"], data["np"], data["nk"]), ("done", "0", "1"))
+        self.assertEqual(data["msg"], "Nothing was added to Photos.\n1 kept in Files (a-Shell, UMDL, Saved).")
         self.assertEqual(os.listdir(umdl.SAVED_DIR), ["A song live 2024.m4a"])
-        self.assertFalse(os.path.exists(umdl.PENDING_FILE))
+        self.assertEqual(self.library(), [])
 
     def test_no_link(self):
         code, (_, data) = self.run_helper("run", payload("just some words"))
         self.assertEqual((data["t"], data["kind"]), ("error", "nolink"))
 
-    def test_other_jobs_are_cleaned_but_pending_kept(self):
+    def test_old_working_folders_are_cleared_and_recent_ones_kept(self):
         stale = os.path.join(umdl.JOBS_DIR, "stale")
-        unsaved = os.path.join(umdl.JOBS_DIR, "unsaved")
+        recent = os.path.join(umdl.JOBS_DIR, "recent")
         os.makedirs(stale)
-        os.makedirs(unsaved)
-        with open(umdl.PENDING_FILE, "w") as handle:
-            handle.write(os.path.join(unsaved, "manifest.json"))
+        os.makedirs(recent)
+        long_ago = time.time() - umdl.KEEP_JOBS_FOR - 60
+        os.utime(stale, (long_ago, long_ago))
         install_fake_ytdlp({"raw": FakeDownloadError("Unsupported URL")})
         install_fake_gallery(False)
         self.run_helper("run", payload("https://video.test/none"))
         self.assertFalse(os.path.exists(stale))
-        self.assertTrue(os.path.exists(unsaved))
+        self.assertTrue(os.path.exists(recent))
 
-    def test_redownload_drops_its_own_stale_pending_marker(self):
+    def test_an_interrupted_save_carries_on_without_downloading_again(self):
         clip = self.clip()
-        install_fake_ytdlp({"raw": {"_type": "video", "id": "abc", "title": "T"},
-                            "files": [("abc.mp4", clip, "T")]})
-        install_fake_gallery(False)
         url = "https://video.test/watch/again"
-        self.run_helper("run", payload(url))
-        self.assertTrue(os.path.exists(umdl.PENDING_FILE))
+        install_fake_ytdlp({"raw": {"_type": "video", "id": "abc", "title": "T"},
+                            "files": [("abc.mp4", clip, "T"), ("def.mp4", clip, "U")]})
+        install_fake_gallery(False)
+        # The first run is stopped while the second file is being saved.
+        real_place, calls = umdl.place, []
+
+        def stopped(ctx, item, library):
+            calls.append(item["stem"])
+            if len(calls) == 2:
+                raise KeyboardInterrupt()
+            return real_place(ctx, item, library)
+
+        umdl.place = stopped
+        self.addCleanup(setattr, umdl, "place", real_place)
+        self.assertEqual(umdl.main(["umdl.py", "run", payload(url)]), 130)
+        self.assertIn("Resume last download", self.out.getvalue())
+        self.assertTrue(os.path.exists(umdl.LAST_FILE))           # which is what that menu row replays
+        umdl.place = real_place
+        self.assertEqual(self.library(), [("UMDL", "T.mp4")])
+        folder = os.path.join(umdl.JOBS_DIR, os.listdir(umdl.JOBS_DIR)[0])
+        job = umdl.read_json(os.path.join(folder, "job.json"), {})
+        self.assertEqual((job["state"], [i["state"] for i in job["items"]]), ("save", ["saved", "waiting"]))
+        self.assertIn("Unfinished downloads: 1", umdl.status_text({}))
+
+        # The second run may not download: the tool would fail if it were asked.
         self.setUp_keep_workspace()
         install_fake_ytdlp({"raw": FakeDownloadError("HTTP Error 500")})
         install_fake_gallery(False)
         code, (_, data) = self.run_helper("run", payload(url))
-        self.assertEqual(data["t"], "error")
-        self.assertFalse(os.path.exists(umdl.PENDING_FILE))
+        self.assertEqual((data["t"], data["title"], data["msg"]), ("done", "T", "Saved 2 items to the UMDL album."))
+        self.assertEqual(self.library(), [("UMDL", "T.mp4"), ("UMDL", "U.mp4")])     # the first is not added twice
+        self.assertIn("carrying on: 2 files already downloaded", open(umdl.LOG_FILE).read())
+        self.assertEqual(os.listdir(umdl.JOBS_DIR), [])
+
+    def test_an_unfinished_job_whose_files_are_gone_starts_over(self):
+        clip = self.clip()
+        url = "https://video.test/watch/again"
+        folder = os.path.join(umdl.JOBS_DIR, umdl.job_id_for(url))
+        os.makedirs(folder)
+        umdl.write_json(os.path.join(folder, "job.json"), {
+            "url": url, "state": "save", "title": "T", "failed": 0, "converted": [],
+            "items": [{"path": os.path.join(folder, "out", "001-T.mp4"), "stem": "T", "state": "waiting"}]})
+        install_fake_ytdlp({"raw": {"_type": "video", "id": "abc", "title": "T"},
+                            "files": [("abc.mp4", clip, "T")]})
+        install_fake_gallery(False)
+        code, (_, data) = self.run_helper("run", payload(url))
+        self.assertEqual(data["msg"], "Saved to the UMDL album.")
+        self.assertEqual(self.library(), [("UMDL", "T.mp4")])
+
+    def test_when_photos_cannot_be_used_the_file_is_kept_with_the_reason(self):
+        os.environ["UMDL_TEST_PHOTOS_REFUSED"] = "1"
+        install_fake_ytdlp({"raw": {"_type": "video", "id": "abc", "title": "T"},
+                            "files": [("abc.mp4", self.clip(), "T")]})
+        install_fake_gallery(False)
+        code, (_, data) = self.run_helper("run", payload("https://video.test/watch/abc"))
+        self.assertEqual(data["msg"], "Nothing was added to Photos.\n1 kept in Files (a-Shell, UMDL, Saved).\n"
+                                      "a-Shell is not allowed to add to Photos. Allow it in Settings, a-Shell, Photos.")
+        self.assertEqual(os.listdir(umdl.SAVED_DIR), ["T.mp4"])
 
     def setUp_keep_workspace(self):
         self.out = io.StringIO()

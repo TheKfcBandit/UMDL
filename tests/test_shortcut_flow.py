@@ -11,6 +11,7 @@ the simulator does and does not prove.
 """
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -158,7 +159,7 @@ class Onboarding(Flow):
         w = self.world
         w.set_scenario(self.one_video())
         w.script(("menu", "Custom setup"),
-                 ("list", "Album"), ("menu", "New album"), ("ask", "Clips"),
+                 ("list", "Album"), ("menu", "An album"), ("ask", "Clips"),
                  ("list", "Resolution"), ("menu", "1080p"),
                  ("list", "Frame rate"), ("menu", "30 fps"),
                  ("list", "Done"))
@@ -167,8 +168,7 @@ class Onboarding(Flow):
         self.assertEqual(first[1], "Settings")
         self.assertEqual(first[2], [row for row in SETTINGS_MENU if row != "Reset"])   # nothing to reset yet
         self.assertEqual(first[4][-1], "Install and finish")
-        self.assertEqual(w.seen("menu")[1][1:3], ("Save to", ["🆕 New album", "🖼️ Existing album",
-                                                               "📚 Library only"]))
+        self.assertEqual(w.seen("menu")[1][1:3], ("Save to", ["🖼️ An album", "📚 Library only"]))
         self.assertEqual(w.albums, ["Clips"])
         self.assertEqual(w.read_config(), dict(CONFIG, res="1080", fps="30"))
         self.assertEqual(self.helper_commands(w), ["run"])
@@ -180,30 +180,26 @@ class Onboarding(Flow):
         w.script(("menu", "Custom setup"), ("list", "Done"))
         w.share(None)
         self.assertEqual(w.read_config(), DEFAULTS)
-        self.assertEqual(w.albums, ["UMDL"])                 # the default album is still created
         self.assertEqual(self.helper_commands(w), ["setup"])
 
     def test_custom_setup_with_an_existing_album_or_none(self):
         w = self.world
-        w.script(("menu", "Custom setup"), ("list", "Album"), ("menu", "Existing album"),
+        w.script(("menu", "Custom setup"), ("list", "Album"), ("menu", "An album"),
                  ("ask", "Holiday"), ("list", "Done"))
         w.share(None)
         self.assertEqual(w.read_config(), dict(DEFAULTS, album="Holiday"))
-        self.assertEqual(w.albums, [])                      # an existing album is not created again
 
         w = self.new_world()
         w.script(("menu", "Custom setup"), ("list", "Album"), ("menu", "Library only"), ("list", "Done"))
         w.share(None)
         self.assertEqual(w.read_config(), dict(DEFAULTS, album="Recents"))
-        self.assertEqual(w.albums, [])
 
     def test_an_empty_album_name_falls_back(self):
         w = self.world
-        w.script(("menu", "Custom setup"), ("list", "Album"), ("menu", "New album"), ("ask", ""),
+        w.script(("menu", "Custom setup"), ("list", "Album"), ("menu", "An album"), ("ask", ""),
                  ("list", "Done"))
         w.share(None)
         self.assertEqual(w.read_config()["album"], "UMDL")
-        self.assertEqual(w.albums, ["UMDL"])
 
     def test_declining_setup_changes_nothing(self):
         w = self.world
@@ -261,12 +257,6 @@ class Onboarding(Flow):
         w.share(VIDEO)
         self.assertEqual(len(w.seen("menu")), 1)
         self.assertEqual(len(w.photos), 1)
-
-    def test_setup_never_reports_an_unsaved_download(self):
-        w = self.world
-        w.script(("menu", "Quick setup"))
-        w.share(None)
-        self.assertFalse(any("was not saved" in m[1] for m in w.seen("menu")))
 
     def test_upgrade_from_1_0_refetches_the_helper_and_removes_the_old_environment(self):
         w = self.world
@@ -379,19 +369,6 @@ class OneTap(Flow):
         self.assertEqual(len(w.photos), 2)
         self.assertEqual(self.notifications(w)[0],
                          ("Set", "Saved 2 items to the Clips album.\n1 failed."))
-
-    def test_file_too_large_to_hand_over_is_kept_in_files(self):
-        w = self.world
-        w.install(CONFIG)
-        w.extra_env["UMDL_MAX_PHOTOS_MB"] = "0.00001"       # ten bytes
-        w.set_scenario(self.one_video())
-        w.share(VIDEO)
-        self.assertEqual(w.photos, [])
-        self.assertEqual(self.notifications(w)[0][1],
-                         "Nothing was added to Photos.\n"
-                         "1 kept in Files (a-Shell, UMDL, Saved).\n"
-                         "1 over 1 GB, kept in Files.")
-        self.assertEqual(os.listdir(os.path.join(w.workspace, "Saved")), ["My clip.mp4"])
 
     def test_reddit_link_blocked_on_the_website_is_fetched_through_the_api(self):
         w = self.world
@@ -591,6 +568,8 @@ class RedditThroughTheBrowser(Flow):
 MANY = [
     {"format_id": "18", "vcodec": "avc1.42001E", "acodec": "mp4a.40.2", "width": 640,
      "height": 360, "fps": 30, "tbr": 500},
+    {"format_id": "401", "vcodec": "av01.0.13M.08", "acodec": "none", "width": 3840,
+     "height": 2160, "fps": 60, "tbr": 21000},
     {"format_id": "315", "vcodec": "vp09.00.51.08", "acodec": "none", "width": 3840,
      "height": 2160, "fps": 60, "tbr": 26000},
     {"format_id": "140", "vcodec": "none", "acodec": "mp4a.40.2", "abr": 129},
@@ -625,9 +604,20 @@ class Quality(WithVersions):
         w.share(VIDEO)
         self.assertEqual(w.seen("list") + w.seen("menu"), [])
         asked = w.recorded_options()[-1]
-        self.assertEqual(asked["format"], "bv*+ba/b/ba")
+        self.assertEqual(asked["format"], "315+140/bv*+ba/b/ba")     # the 4K one, with the AAC sound
         self.assertEqual(asked["format_sort"], ["lang", "res", "fps", "vcodec:h265", "acodec:aac"])
         self.assertEqual(len(w.photos), 1)
+
+    def test_av1_is_taken_in_place_of_vp9_where_the_chip_reads_it(self):
+        w = self.world
+        w.install(CONFIG)
+        w.extra_env["UMDL_TEST_HARDWARE"] = "av01"
+        w.set_scenario(self.many_versions())
+        w.share(VIDEO)
+        self.assertEqual(w.recorded_options()[-1]["format"], "401+140/bv*+ba/b/ba")   # the same size and rate
+        w.script(("list", "Status"), ("menu", "Done"))
+        w.share(None)
+        self.assertIn("AV1: taken where a site has it", self.alerts(w)[-1][1].split("\n"))
 
     def test_each_limit_works_on_its_own(self):
         expected = {
@@ -641,7 +631,7 @@ class Quality(WithVersions):
             w.set_scenario(self.many_versions())
             w.share(VIDEO)
             asked = w.recorded_options()[-1]
-            self.assertEqual(asked["format"], fmt, (res, fps))
+            self.assertTrue(asked["format"].endswith("/" + fmt), (res, fps))
             self.assertEqual(asked["format_sort"][1:3], [res_field, fps_field], (res, fps))
             self.assertEqual(w.seen("list") + w.seen("menu"), [], (res, fps))
 
@@ -654,19 +644,16 @@ class Quality(WithVersions):
         self.assertEqual(len(w.photos), 1)
 
 
-class SavedFromAShell(WithVersions):
+class Saving(WithVersions):
     """docs/BEHAVIOR.md, "Saving"."""
 
     def test_the_helper_saves_it_itself_under_its_title_dated_today(self):
         w = self.world
         w.install(CONFIG)
-        w.save_from_a_shell()
         w.set_scenario(self.one_video("AMD's Gaslighting: Part 2"))
         w.share(VIDEO)
         today = time.strftime("%Y-%m-%d")
-        self.assertEqual(w.library(), [("Clips", "AMD's Gaslighting Part 2.mp4", today)])
-        self.assertEqual(w.photos, [])                       # nothing went through Shortcuts
-        self.assertEqual([c for c in w.commands if "GetFile" in str(c)], [])
+        self.assertEqual([entry[:3] for entry in w.library()], [("Clips", "AMD's Gaslighting Part 2.mp4", today)])
         self.assertEqual(self.notifications(w), [("AMD's Gaslighting Part 2", "Saved to the Clips album.")])
         self.assertEqual(self.jobs_left(w), [])
         self.assertEqual(w.seen("menu") + w.seen("alert"), [])
@@ -674,27 +661,14 @@ class SavedFromAShell(WithVersions):
     def test_no_album_saves_to_the_library(self):
         w = self.world
         w.install(dict(CONFIG, album="Recents"))
-        w.save_from_a_shell()
         w.set_scenario(self.one_video())
         w.share(VIDEO)
         self.assertEqual([entry[:2] for entry in w.library()], [("Library", "My clip.mp4")])
         self.assertEqual(self.notifications(w), [("My clip", "Saved to Photos.")])
 
-    def test_a_file_of_any_size_is_saved(self):
-        w = self.world
-        w.install(CONFIG)
-        w.save_from_a_shell()
-        w.get_file_limit = 1                                # Shortcuts could not have taken it
-        w.extra_env["UMDL_MAX_PHOTOS_MB"] = "0.000001"      # nor would the old size limit have let it
-        w.set_scenario(self.one_video())
-        w.share(VIDEO)
-        self.assertEqual(len(w.library()), 1)
-        self.assertEqual(w.kept_files(), [])
-
     def test_several_items_get_names_that_do_not_collide(self):
         w = self.world
         w.install(CONFIG)
-        w.save_from_a_shell()
         w.set_scenario({"ytdlp": {"raw": {"_type": "playlist", "title": "Set", "entries": [
             {"id": "a", "title": "Same"}, {"id": "b", "title": "Same"}]},
             "files": [["a.mp4", self.clip, "Same"], ["b.mp4", self.clip, "Same"]]}})
@@ -706,7 +680,7 @@ class SavedFromAShell(WithVersions):
     def test_photos_is_asked_first_and_a_file_it_takes_is_not_converted(self):
         w = self.world
         w.install(CONFIG)
-        w.save_from_a_shell(plays="h264,hevc,vp9,vp8")       # a device whose Photos plays VP9
+        w.photos_plays("h264", "hevc", "vp9", "vp8")         # a device whose Photos plays VP9
         w.set_scenario(self.old_clip())
         w.share(VIDEO)
         self.assertEqual([entry[1] for entry in w.library()], ["Old clip.mp4"])
@@ -718,7 +692,6 @@ class SavedFromAShell(WithVersions):
     def test_a_file_photos_refuses_is_converted_and_saved(self):
         w = self.world
         w.install(CONFIG)
-        w.save_from_a_shell()
         w.set_scenario(self.old_clip())
         w.share(VIDEO)
         self.assertEqual([entry[1] for entry in w.library()], ["Old clip.mp4"])
@@ -728,10 +701,26 @@ class SavedFromAShell(WithVersions):
         self.assertIn("Photos would not take Old clip.mp4 as it is", log)
         self.assertLess(log.index("Photos would not take"), log.index("converted "))    # in that order
 
+    def test_when_photos_cannot_be_used_files_are_kept_and_the_reason_given(self):
+        w = self.world
+        w.install(CONFIG)
+        w.refuse_photos()
+        w.set_scenario(self.one_video())
+        w.share(VIDEO)
+        self.assertEqual(w.photos, [])
+        self.assertEqual(w.kept_files(), ["My clip.mp4"])
+        self.assertEqual(self.notifications(w), [("My clip", "Nothing was added to Photos.\n"
+            "1 kept in Files (a-Shell, UMDL, Saved).\n"
+            "a-Shell is not allowed to add to Photos. Allow it in Settings, a-Shell, Photos.")])
+
+    def test_nothing_ever_travels_through_shortcuts(self):
+        actions = {a["WFWorkflowActionIdentifier"] for a in self.world.plist["WFWorkflowActions"]}
+        self.assertNotIn(ASHELL + "GetFileIntent", actions)
+        self.assertNotIn(PREFIX + "savetocameraroll", actions)
+
     def test_audio_is_still_kept_in_files(self):
         w = self.world
         w.install(CONFIG)
-        w.save_from_a_shell()
         w.set_scenario({"ytdlp": {"raw": {"_type": "video", "id": "s", "title": "Song"},
                                   "files": [["s.m4a", self.song, "Song"]]}})
         w.share(VIDEO)
@@ -739,36 +728,6 @@ class SavedFromAShell(WithVersions):
         self.assertEqual(w.kept_files(), ["Song.m4a"])
         self.assertEqual(self.notifications(w), [("Song", "Nothing was added to Photos.\n"
                                                   "1 kept in Files (a-Shell, UMDL, Saved).")])
-
-
-class HandedToShortcuts(WithVersions):
-    """docs/BEHAVIOR.md, "When a-Shell cannot save"."""
-
-    def test_files_keep_their_titles_on_the_way_through_shortcuts(self):
-        w = self.world
-        w.install(CONFIG)
-        w.set_scenario(self.one_video("AMD's Gaslighting: Part 2"))
-        w.share(VIDEO)
-        self.assertEqual(w.library(), [])
-        self.assertEqual([p[:2] for p in w.photos], [("AMD's Gaslighting Part 2.mp4", "Clips")])
-
-    @unittest.skipUnless(shutil.which("ffmpeg"), "needs ffmpeg")
-    def test_without_photos_to_ask_the_list_of_formats_decides(self):
-        w = self.world
-        w.install(CONFIG)
-        w.set_scenario(self.old_clip())
-        w.share(VIDEO)
-        self.assertEqual([p[0] for p in w.photos], ["Old clip.mp4"])
-        self.assertIn("1 converted (VP", self.notifications(w)[0][1])
-
-    def test_a_file_too_large_to_hand_over_is_kept_in_files(self):
-        w = self.world
-        w.install(CONFIG)
-        w.extra_env["UMDL_MAX_PHOTOS_MB"] = "0.000001"
-        w.set_scenario(self.one_video())
-        w.share(VIDEO)
-        self.assertEqual(w.photos, [])
-        self.assertEqual(w.kept_files(), ["My clip.mp4"])
 
 
 class LargeDownloads(Flow):
@@ -930,46 +889,7 @@ class Errors(Flow):
 
 
 class Recovery(Flow):
-    """docs/BEHAVIOR.md, "Unsaved and interrupted downloads"."""
-
-    def test_unsaved_download_is_offered_again(self):
-        w = self.world
-        w.install(CONFIG)
-        w.set_scenario(self.one_video())
-        w.run(VIDEO)                 # helper finishes...
-        w.callbacks.clear()          # ...but the hand-back to Shortcuts never happens
-        self.assertTrue(os.path.exists(os.path.join(w.workspace, "pending")))
-        w.script(("menu", "Save now"))
-        w.share(None)
-        menu = w.seen("menu")[0]
-        self.assertEqual(menu[1], "An earlier download was not saved.")
-        self.assertEqual(menu[2], ["💾 Save now", "🗑️ Discard"])
-        self.assertEqual(len(w.photos), 1)
-        self.assertEqual(self.jobs_left(w), [])
-        self.assertEqual(self.notifications(w), [("UMDL", "Saved to the Clips album.")])
-
-    def test_unsaved_download_can_be_discarded(self):
-        w = self.world
-        w.install(CONFIG)
-        w.set_scenario(self.one_video())
-        w.run(VIDEO)
-        w.callbacks.clear()
-        w.script(("menu", "Discard"), ("list", "About UMDL"), ("menu", "Done"))
-        w.share(None)
-        self.assertEqual(w.photos, [])
-        self.assertEqual(self.jobs_left(w), [])
-        self.assertFalse(os.path.exists(os.path.join(w.workspace, "pending")))
-
-    def test_saving_an_earlier_download_then_continues_with_the_new_link(self):
-        w = self.world
-        w.install(CONFIG)
-        w.set_scenario(self.one_video())
-        w.run(VIDEO)
-        w.callbacks.clear()
-        w.script(("menu", "Save now"))
-        w.share("https://video.test/watch/other")
-        self.assertEqual(len(w.photos), 2)
-        self.assertEqual(w.helper_runs[-1][1]["url"], "https://video.test/watch/other")
+    """docs/BEHAVIOR.md, "Interrupted downloads"."""
 
     def test_interrupted_download_can_be_resumed_from_the_menu(self):
         w = self.world
@@ -987,21 +907,32 @@ class Recovery(Flow):
         self.assertEqual(len(w.photos), 1)
         self.assertFalse(os.path.exists(os.path.join(w.workspace, "last.b64")))
 
-    def test_unsaved_download_whose_files_are_gone_is_explained(self):
+    def test_a_download_stopped_while_saving_is_finished_without_downloading_again(self):
         w = self.world
         w.install(CONFIG)
-        w.set_scenario(self.one_video())
-        w.run(VIDEO)
-        w.callbacks.clear()
-        shutil.rmtree(os.path.join(w.workspace, "jobs"))
-        w.script(("menu", "Save now"))
+        request = {"v": VERSION["shortcut"], "p": str(VERSION["protocol"]), "name": "UMDL", "url": VIDEO,
+                   "mode": "auto", "limit": "", "force_update": "", "cfg": CONFIG}
+        with open(os.path.join(w.workspace, "last.b64"), "w") as handle:
+            handle.write(base64.b64encode(json.dumps(request).encode()).decode())
+        # What an interrupted run leaves in a-Shell > UMDL > Working: the file and its job.
+        folder = os.path.join(w.workspace, "Working", hashlib.md5(VIDEO.encode()).hexdigest()[:16])
+        os.makedirs(os.path.join(folder, "out"))
+        waiting = os.path.join(folder, "out", "001-My-clip.mp4")
+        shutil.copy(self.one_video()["ytdlp"]["files"][0][1], waiting)
+        with open(os.path.join(folder, "job.json"), "w") as handle:
+            json.dump({"url": VIDEO, "state": "save", "title": "My clip", "failed": 0, "converted": [],
+                       "items": [{"path": waiting, "stem": "My clip", "state": "waiting"}]}, handle)
+        w.set_scenario({"ytdlp": {"error": "HTTP Error 500"}, "gallery": {"found": False}})   # no second download
+        w.script(("list", "Status"), ("menu", "Done"))
         w.share(None)
-        self.assertEqual(self.alerts(w)[0][0], "Nothing to save")
-        self.assertFalse(os.path.exists(os.path.join(w.workspace, "pending")))
-        w.script(("list", "About UMDL"), ("menu", "Done"))
-        w.share(None)                                       # and it is not offered again
-        offers = [m for m in w.seen("menu") if "was not saved" in m[1]]
-        self.assertEqual(len(offers), 1)
+        self.assertIn("Unfinished downloads: 1", self.alerts(w)[0][1].split("\n"))
+        w.script(("list", "Resume last download"))
+        w.share(None)
+        self.assertEqual([(name, album) for name, album, _ in w.photos], [("My clip.mp4", "Clips")])
+        self.assertEqual(self.notifications(w), [("My clip", "Saved to the Clips album.")])
+        with open(os.path.join(w.workspace, "last.log"), encoding="utf-8") as handle:
+            self.assertIn("carrying on: 1 file already downloaded", handle.read())
+        self.assertEqual(os.listdir(os.path.join(w.workspace, "Working")), [])
 
     def test_damaged_settings_file_restarts_setup_instead_of_failing(self):
         w = self.world
@@ -1117,7 +1048,7 @@ class MainMenu(Flow):
         self.assertIn("Reddit: not signed in", lines)       # that cookie expired long ago
         self.assertIn("TikTok: not signed in", lines)       # visited, never signed in
         self.assertIn("Other sites that may be signed in: example.org", lines)
-        self.assertIn("Unsaved download: none", lines)
+        self.assertIn("Unfinished downloads: none", lines)
         self.assertIn("Download tools: ready", lines)
         self.assertIn("Last download: none yet", lines)
         self.assertEqual(w.seen("menu")[0][2], ["📋 Copy", "Done"])
@@ -1252,7 +1183,7 @@ class Settings(Flow):
     def test_change_album(self):
         w = self.world
         w.install(CONFIG)
-        self.open_settings(w, ("list", "Album"), ("menu", "Existing album"), ("ask", "Holiday"),
+        self.open_settings(w, ("list", "Album"), ("menu", "An album"), ("ask", "Holiday"),
                            ("list", "Done"))
         self.assertEqual(w.read_config(), dict(CONFIG, album="Holiday"))
         self.assertEqual(w.albums, [])
@@ -1335,21 +1266,13 @@ class Hygiene(Flow):
                      and a["WFWorkflowActionParameters"].get("WFCondition") in (100, 101)]
         self.assertEqual(offenders, [])
 
-    def test_get_file_always_asks_for_a_copy(self):
-        # Without it the action stops the shortcut on iOS 27.2, with no message.
-        # https://github.com/holzschu/a-shell/issues/1138
-        actions = [a["WFWorkflowActionParameters"] for a in self.world.plist["WFWorkflowActions"]
-                   if a["WFWorkflowActionIdentifier"] == ASHELL + "GetFileIntent"]
-        self.assertTrue(actions)
-        self.assertTrue(all(p.get("copyFile") is True for p in actions))
-
     def test_background_commands_survive_a_failing_command(self):
         # a-Shell fails the action, and Shortcuts the whole run, when a background
         # command exits with an error and "keepGoing" is off.
         actions = [a["WFWorkflowActionParameters"] for a in self.world.plist["WFWorkflowActions"]
                    if a["WFWorkflowActionIdentifier"] == ASHELL + "ExecuteCommandIntent"]
         background = [p for p in actions if p.get("openWindow") == "close"]
-        self.assertGreater(len(background), 8)
+        self.assertGreater(len(background), 5)
         self.assertTrue(all(p.get("keepGoing") is True for p in background))
 
     def test_shortcut_metadata(self):

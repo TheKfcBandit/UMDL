@@ -17,8 +17,8 @@ sys.path.insert(0, os.path.join(ROOT, "tests"))
 
 import test_shortcut_flow as flows  # noqa: E402
 
-SECTIONS = ("Onboarding", "OneTap", "Quality", "SavedFromAShell", "HandedToShortcuts",
-            "RedditThroughTheBrowser", "LargeDownloads", "Errors", "Recovery", "MainMenu", "Settings")
+SECTIONS = ("Onboarding", "OneTap", "Quality", "Saving", "RedditThroughTheBrowser", "LargeDownloads",
+            "Errors", "Recovery", "MainMenu", "Settings")
 VARIABLE = "\ufffc"  # where Shortcuts inserts a variable into a text
 
 

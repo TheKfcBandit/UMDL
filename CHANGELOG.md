@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.6.0
+
+One route, and a download that survives being interrupted. Install the new shortcut; it brings its helper with it.
+
+Removed:
+
+- **Saving through Shortcuts.** 1.5 kept it for when a-Shell could not save. Now a file goes to Photos from a-Shell, or it stays in Files, and the notification says why. With it went the "An earlier download was not saved" prompt, the 1 GB limit, and every step in which the shortcut touched a file.
+- The **New album** and **Existing album** choices. Album asks for a name; the album is used if Photos has it and made if not.
+
+Added:
+
+- **A working folder.** Each download works in *a-Shell › UMDL › Working* and notes how far it got. If a-Shell is closed or iOS stops it, sharing the link again or **Resume last download** carries on: nothing is downloaded twice, and nothing already in Photos is added twice. A conversion that was cut short starts again from the downloaded file.
+- **AV1 in place of VP9, where that is free.** YouTube above 1080p has only those two. Where the device's chip reads AV1 and a-Shell's ffmpeg can read it too, UMDL takes AV1, which Photos may accept untouched. If Photos refuses it once, that file is converted and UMDL takes VP9 from then on. Status shows which applies on its "AV1" line.
+
+Changed:
+
+- **The size in "Converting…" is the usual name.** A 3840×1920 video is 2160p; 1.5 called it "1920p".
+- **Conversion asks the hardware to read the source as well as write the result**, where a-Shell's ffmpeg can. VP9 is still read in software, because iOS gives apps no hardware reader for it, so a long 4K VP9 video remains slow. The log now records how long each conversion took and with which arguments.
+- HEVC under the `hev1` label is relabelled, not converted.
+- **Resume last download** is no longer forgotten when Status, Settings or Update tools is opened first.
+- Stopping the helper with Control-C says where the download stands.
+- Internally, a download is a job with a state (`fetch`, `save`, `done`) saved after each step; see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#a-download-is-a-job).
+
+Not possible: converting in the background. iOS pauses a-Shell when it leaves the screen.
+
+
 ## 1.5.0
 
 One tap, and nothing else. Install the new shortcut; it brings its helper with it.
