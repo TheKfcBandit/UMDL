@@ -744,18 +744,20 @@ class RepackAndConvert(Base):
         self.assertEqual(os.listdir(os.path.dirname(ready)), ["001.mp4"])   # the original is gone
         self.assertRegex(open(umdl.LOG_FILE).read(), r"converted \S+ VP9 to H\.264 in \d+ s with -c:v libx264")
 
-    @unittest.skipUnless(has_encoder("libvpx-vp9"), "no libvpx-vp9")
     def test_hdr_colours_are_carried_across_a_conversion(self):
-        clip = make_clip(os.path.join(self.media, "hdr.webm"), "libvpx-vp9", None,
+        # H.264 carries the three values in its own stream, whatever the ffmpeg at hand
+        # writes into a container; that is all this needs from the source.
+        clip = make_clip(os.path.join(self.media, "hdr.mp4"), "libx264", None,
                          extra=("-color_primaries", "bt2020", "-color_trc", "smpte2084", "-colorspace", "bt2020nc"))
         staged = self.stage(clip)
         before = umdl.probe_media(staged)
         self.assertEqual(before["colour"], ["-color_primaries", "bt2020", "-color_trc", "smpte2084",
                                             "-colorspace", "bt2020nc"])
-        self.assertIn(" HDR VP9", umdl.describe_media(before))
+        self.assertIn(" HDR H.264", umdl.describe_media(before))
         after = umdl.probe_media(umdl.convert(staged, before, []))
         self.assertEqual(after["colour"], before["colour"])
         self.assertTrue(after["hdr"])
+        self.assertIn("-color_trc smpte2084", open(umdl.LOG_FILE).read())
 
     @unittest.skipUnless(has_encoder("libvpx-vp9"), "no libvpx-vp9")
     def test_a_plain_video_is_given_no_colour_options(self):
