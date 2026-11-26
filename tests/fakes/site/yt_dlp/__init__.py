@@ -4,6 +4,7 @@ Behaviour comes from the JSON file named in UMDL_FAKE_SCENARIO:
     {"ytdlp": {"suitable": true, "raw": {...}, "error": "message",
                "files": [["name.mp4", "/source/file", "Title"]],
                "download_error": "message",
+               "formats": [{"format_id": "137", "vcodec": "avc1", "acodec": "none", ...}],
                "urls": {"part of a link": {...the same keys, for links containing it...}}}}
 """
 
@@ -41,8 +42,10 @@ class YoutubeDL:
         record = os.environ.get("UMDL_FAKE_RECORD")
         if record:
             with open(record, "a") as handle:
-                handle.write(json.dumps({k: v for k, v in opts.items()
-                                         if isinstance(v, (str, int, bool))}) + "\n")
+                plain = {k: v for k, v in opts.items()
+                         if isinstance(v, (str, int, bool))
+                         or (isinstance(v, list) and all(isinstance(i, str) for i in v))}
+                handle.write(json.dumps(plain) + "\n")
 
     def __enter__(self):
         return self
@@ -77,6 +80,9 @@ class YoutubeDL:
             raise DownloadError(self.scenario["download_error"])
 
     def process_ie_result(self, raw, download=True):
+        if not download:
+            # Listing what the site offers: the scenario's "formats".
+            return dict(raw, formats=self.scenario.get("formats") or raw.get("formats") or [])
         self._produce()
 
     def download(self, urls):

@@ -7,6 +7,8 @@ Labels are written exactly as they appear. Tests are in `tests/test_shortcut_flo
 - [How a run starts](#how-a-run-starts)
 - [First run](#first-run)
 - [Sharing a link](#sharing-a-link)
+- [Quality and conversion](#quality-and-conversion)
+- [Advanced mode](#advanced-mode)
 - [Reddit](#reddit)
 - [Large downloads](#large-downloads)
 - [When a download fails](#when-a-download-fails)
@@ -45,20 +47,17 @@ flowchart TD
     S["UMDL runs for the first time<br/>from the share sheet or the Shortcuts app"] --> P["Read settings from a-Shell<br/>(background, nothing shown)"]
     P --> W{{"Welcome to UMDL"}}
     W -- "Not now" --> X(["Stop. Nothing is changed"])
-    W -- "✅ Quick setup (recommended)" --> QA["Create the album UMDL<br/>Use the default settings"]
-    W -- "⚙️ Custom setup" --> C1{{"Where should downloads be saved?"}}
-    C1 -- "🆕 A new album" --> C1a["Ask for a name, default UMDL<br/>Create the album"]
-    C1 -- "🖼️ An existing album" --> C1b["Ask for the album's name"]
-    C1 -- "📚 The photo library, without an album" --> C2
-    C1a --> C2{{"Formats Photos cannot play:<br/>convert, or keep in Files?"}}
-    C1b --> C2
+    W -- "✅ Quick setup" --> QA["Create the album UMDL<br/>Use the default settings"]
+    W -- "⚙️ Custom setup" --> C{{"Settings list<br/>Album · Mode · Resolution · Frame rate<br/>Conversion · Large downloads · When finished"}}
+    C -- "tap a row" --> C1["Change that one setting<br/>Saved at once"]
+    C1 --> C
+    C -- "Done" --> SV
     QA --> SV["Save the settings in a-Shell<br/>(background)"]
-    C2 --> SV
     SV --> F["Download the helper script<br/>(background)"]
     F -- "downloaded" --> A["a-Shell opens<br/>pip installs yt-dlp and gallery-dl"]
     F -- "could not download" --> F2["a-Shell opens<br/>and downloads the helper there"]
     F2 -- "downloaded" --> A
-    F2 -- "could not download" --> E1(["Alert: Setup incomplete<br/>helper script"])
+    F2 -- "could not download" --> E1(["Alert: Setup incomplete<br/>helper"])
     A --> H["Helper starts<br/>installs any tool still missing"]
     H -- "a tool cannot be installed" --> E2(["Alert: Setup incomplete<br/>with pip's own message"])
     H -- "ready, a link was shared" --> D(["Download, save to Photos, notify"])
@@ -71,54 +70,46 @@ flowchart TD
 
 > **Welcome to UMDL**
 >
-> UMDL saves shared posts and videos to Photos at the best quality your library can play. Downloads run on this device, in the a-Shell app.
+> Saves shared posts and videos to Photos at the best quality, on this device.
 >
-> Quick setup saves to a new album named UMDL and installs the download tools. It takes about two minutes and needs an internet connection.
+> Setup takes about two minutes.
 
 | Choice | Result | Test |
 |---|---|---|
-| ✅ Quick setup (recommended) | Creates the album **UMDL**, saves the default settings, installs everything, and downloads the shared link if there was one. No further questions | `Onboarding.test_quick_setup_from_the_share_sheet_is_one_tap_and_downloads` |
-| ⚙️ Custom setup | Asks the two questions below, then continues exactly as quick setup does | `Onboarding.test_custom_setup_asks_album_then_conversion` |
+| ✅ Quick setup | Creates the album **UMDL**, saves the default settings, installs everything, and downloads the shared link if there was one. No further questions | `Onboarding.test_quick_setup_from_the_share_sheet_is_one_tap_and_downloads` |
+| ⚙️ Custom setup | Opens the [Settings](#settings) list so anything can be changed first, then continues exactly as quick setup does | `Onboarding.test_custom_setup_is_the_settings_list_then_the_same_install` |
 | Not now | Stops. Nothing is created in Photos or a-Shell. The welcome screen appears again next time | `Onboarding.test_declining_setup_changes_nothing` |
 
-The defaults are: album **UMDL**, ask before downloading more than **10** items, **convert** formats Photos cannot play, and **show a notification** when finished.
+The defaults are: album **UMDL**, **Simple** mode, resolution and frame rate **Best available**, conversion **Only when needed**, ask above **10** items, and **Show a notification** when finished.
 
-### Custom setup: where to save
+### Custom setup
 
-> Where should downloads be saved?
+Custom setup is the Settings list itself, with two differences: there is no **Reset** row, and the last row, **Done**, reads "Install and finish". Every row works as described under [Settings](#settings).
 
-| Choice | Follow-up | Result | Test |
-|---|---|---|---|
-| 🆕 A new album | "Name for the new album", filled in with `UMDL` | Creates the album. An empty name becomes `UMDL` | `Onboarding.test_custom_setup_asks_album_then_conversion`, `Onboarding.test_an_empty_album_name_falls_back` |
-| 🖼️ An existing album | "Enter the album name exactly as Photos shows it" | Uses that album; nothing is created. An empty name means no album | `Onboarding.test_custom_setup_with_an_existing_album_or_none` |
-| 📚 The photo library, without an album | None | Saves to the library only | `Onboarding.test_custom_setup_with_an_existing_album_or_none` |
-
-### Custom setup: formats Photos cannot play
-
-> UMDL downloads the best quality that Photos can play. When a site only offers a format Photos cannot play, what should happen?
-
-| Choice | Result |
-|---|---|
-| 🎞️ Convert it for Photos (slower) | The video is converted on the device, then saved to Photos |
-| 📁 Keep the original in Files | The file is kept in the Files app, under *a-Shell › UMDL › Saved* |
+| Situation | Result | Test |
+|---|---|---|
+| Rows are changed, then **Done** | Those values are saved and used by the download that follows | `Onboarding.test_custom_setup_is_the_settings_list_then_the_same_install` |
+| **Done** with nothing changed | The same as quick setup, including the album **UMDL** | `Onboarding.test_custom_setup_left_as_it_is_equals_quick_setup` |
+| **Album** set to an existing album, or to the library | Nothing is created in Photos | `Onboarding.test_custom_setup_with_an_existing_album_or_none` |
+| A new album with an empty name | The name becomes `UMDL` | `Onboarding.test_an_empty_album_name_falls_back` |
 
 ### How setup ends
 
 | Situation | Shown | Test |
 |---|---|---|
 | A link was shared | The download runs and is saved, exactly as in [Sharing a link](#sharing-a-link). No "ready" message | `Onboarding.test_quick_setup_from_the_share_sheet_is_one_tap_and_downloads` |
-| No link | Alert **UMDL is ready**: "Setup is complete. To download, share a post or video to UMDL from any app. To change settings, open UMDL from the Shortcuts app." | `Onboarding.test_quick_setup_opened_from_the_app_installs_and_reports_ready` |
-| The helper script cannot be downloaded | Alert **Setup incomplete**: "UMDL could not download its helper script. Check the internet connection, then run UMDL again." | `Onboarding.test_no_connection_during_setup_is_reported_and_the_next_run_finishes` |
+| No link | Alert **UMDL is ready**: "Share a post or video to UMDL to download it. Open UMDL in Shortcuts for settings." | `Onboarding.test_quick_setup_opened_from_the_app_installs_and_reports_ready` |
+| The helper cannot be downloaded | Alert **Setup incomplete**: "The helper could not be downloaded. Check the connection, then run UMDL again." | `Onboarding.test_no_connection_during_setup_is_reported_and_the_next_run_finishes` |
 | The helper cannot be downloaded in the background, but can in the app | Nothing extra. a-Shell downloads it before continuing | `Onboarding.test_helper_is_downloaded_in_the_app_when_the_background_cannot` |
-| yt-dlp or gallery-dl cannot be installed | Alert **Setup incomplete**: "The download tools could not be installed.", then the reason pip gave, then "Check the internet connection, then run UMDL again." | `Onboarding.test_tools_that_fail_to_install_are_reported_and_retried_next_time` |
+| yt-dlp or gallery-dl cannot be installed | Alert **Setup incomplete**: "The download tools could not be installed.", then the reason pip gave | `Onboarding.test_tools_that_fail_to_install_are_reported_and_retried_next_time` |
 
 After **Setup incomplete**, running UMDL again does not repeat the questions. The settings were saved before anything was downloaded, so the next run goes straight to whatever was missing.
 
 Setup never shows the unsaved download prompt (`Onboarding.test_setup_never_reports_an_unsaved_download`).
 
-### Updating from 1.0
+### Updating from an earlier version
 
-Installing a new version of the shortcut over an old one keeps the settings. The first run after the update downloads the matching helper, removes the Python environment 1.0 created, and continues with what was asked (`Onboarding.test_upgrade_from_1_0_refetches_the_helper_and_removes_the_old_environment`).
+Installing a new version of the shortcut over an old one keeps the settings. The first run after the update downloads the matching helper, removes the Python environment 1.0 created, and continues with what was asked (`Onboarding.test_upgrade_from_1_0_refetches_the_helper_and_removes_the_old_environment`). Settings saved before 1.3 have no mode, resolution or frame rate; they are read as **Simple** and **Best available**, and the old conversion answer keeps its meaning (`Settings.test_settings_saved_before_1_3_are_read_and_upgraded`).
 
 ## Sharing a link
 
@@ -139,23 +130,138 @@ The title is the post's title, or `UMDL` when the site gives none.
 | One item, album set | Saved to the *name* album. | `OneTap.test_download_asks_nothing`, `OneTap.test_awkward_titles_and_album_names_survive` |
 | One item, no album | Saved to Photos. | `OneTap.test_no_album_saves_to_the_library` |
 | Several items | Saved *N* items to the *name* album. | `OneTap.test_gallery_post_saves_every_image` |
-| Nothing could go to Photos | No items could be added to Photos. | `OneTap.test_audio_is_kept_in_files` |
-| Some files were kept in Files | A second line: *N* kept in Files, under a-Shell, UMDL, Saved. | `OneTap.test_audio_is_kept_in_files` |
-| A file is over 1 GB | It is kept in Files, with a further line: *N* too large to pass to Photos (over 1 GB). | `OneTap.test_file_too_large_to_hand_over_is_kept_in_files` |
-| Some items failed | A further line: *N* could not be downloaded. | `OneTap.test_partial_download_saves_what_arrived_and_says_what_did_not` |
+| Nothing could go to Photos | Nothing was added to Photos. | `OneTap.test_audio_is_kept_in_files` |
+| A video was converted | A further line naming the change: 1 converted (VP9 → HEVC). | `AdvancedMode.test_simple_mode_converts_without_asking_and_says_so` |
+| Some files were kept in Files | A further line: *N* kept in Files (a-Shell, UMDL, Saved). | `OneTap.test_audio_is_kept_in_files` |
+| A file is over 1 GB | It is kept in Files, with a further line: *N* over 1 GB, kept in Files. | `OneTap.test_file_too_large_to_hand_over_is_kept_in_files` |
+| Some items failed | A further line: *N* failed. | `OneTap.test_partial_download_saves_what_arrived_and_says_what_did_not` |
 
 ### After the notification
 
 | Situation | Shown | Test |
 |---|---|---|
-| A newer UMDL has been released | "UMDL *new* is available. The installed version is *current*." with **⬇️ Get the update** (opens the release page) and **Later** | `OneTap.test_newer_release_is_offered_after_the_download`, `OneTap.test_declining_the_update_ends_quietly` |
-| The shortcut and the helper are different versions | "This copy of UMDL is out of date and cannot continue." with **⬇️ Get the latest version** and **Cancel**. Shown in place of the download | `OneTap.test_helper_from_another_version_is_reported_as_out_of_date` |
+| A newer UMDL has been released | "UMDL 1.4.0 is available. Installed: 1.3.0." with **⬇️ Get the update** (opens the release page) and **Later** | `OneTap.test_newer_release_is_offered_after_the_download`, `OneTap.test_declining_the_update_ends_quietly` |
+| The shortcut and the helper are different versions | "UMDL is out of date." and the reason, with **⬇️ Get the latest version** and **Cancel**. Shown in place of the download | `OneTap.test_helper_from_another_version_is_reported_as_out_of_date` |
 
-Two things happen without being shown:
+Three things happen without being shown:
 
 - A download tool that has gone missing is installed again before the download (`OneTap.test_tools_removed_behind_umdls_back_are_reinstalled_on_the_way`), including when pip installs to a folder Python was not searching (`OneTap.test_tools_installed_where_python_is_not_looking_are_found`).
 - A result UMDL cannot read is ignored, and the run continues as if nothing had been shared (`OneTap.test_unreadable_callback_falls_back_to_the_main_menu`).
 - A Reddit link that Reddit refuses is tried by other routes before any error is shown. See [Reddit](#reddit).
+
+## Quality and conversion
+
+Four settings decide which version of a video is downloaded and what happens to it afterwards. In **Simple** mode they are applied without a question. In **Advanced** mode they set the limits, and UMDL asks; see [Advanced mode](#advanced-mode).
+
+```mermaid
+flowchart TD
+    L["Link shared"] --> M{"Mode"}
+    M -- "Simple" --> SF["Pick the version from the settings<br/>Resolution limit · Frame rate limit · Conversion"]
+    M -- "Advanced" --> AL["List what the site offers<br/>within the limits"]
+    AL --> AQ{{"Choose a version<br/>shows best video, best audio, best single file"}}
+    AQ -- "cancel" --> X(["Stop. Nothing is downloaded"])
+    AQ -- "a version" --> DL
+    AL -- "only one version, and Photos plays it" --> DL
+    SF --> DL["Download<br/>merge picture and sound if separate"]
+    DL --> V{"Can Photos play the file?"}
+    V -- "yes" --> PH(["Save to Photos"])
+    V -- "wrong wrapper or sound only" --> RP["Repack<br/>picture untouched, sound copied or made AAC"]
+    RP --> PH
+    V -- "picture codec not supported" --> CQ{"Convert?"}
+    CQ -- "Simple: setting is not Never<br/>Advanced: the version chosen said so" --> CV["Convert the picture to HEVC<br/>same size, same frame rate"]
+    CQ -- "Advanced, not yet decided" --> ASK{{"Photos cannot play this video.<br/>Source: … Converted: …"}}
+    ASK -- "🎞️ Convert" --> CV
+    ASK -- "📁 Keep in Files" --> FL
+    CQ -- "Simple: setting is Never" --> FL(["Keep the original in Files"])
+    CV -- "worked" --> PH
+    CV -- "every encoder failed" --> FL
+```
+
+### Which version is downloaded
+
+| Setting | Effect |
+|---|---|
+| Resolution | The largest picture up to the limit. A site with nothing at or under the limit gives its smallest version above it. The limit is the short side, so a tall phone video counts by its width |
+| Frame rate | The same rule, for frames a second. The two limits work independently |
+| Conversion: Only when needed | Prefers a version Photos already plays (H.264 or HEVC with AAC). Only when a site has none is another version downloaded and converted |
+| Conversion: For best quality | Takes the best version the site has, whatever its codec, and converts it. On sites like YouTube this is how anything above 1080p is reached. Slower |
+| Conversion: Never | Prefers a playable version, as above. A file Photos cannot play is kept in Files |
+
+Tests: `AdvancedMode.test_simple_mode_applies_the_saved_limits_without_asking`, `AdvancedMode.test_best_quality_conversion_asks_the_site_for_its_best_version`, `AdvancedMode.test_simple_mode_set_to_never_convert_keeps_the_original`.
+
+### How a file is made ready for Photos
+
+The helper inspects every downloaded video with ffprobe and does the least that makes it playable.
+
+| The file | What is done | Quality |
+|---|---|---|
+| H.264 or HEVC with AAC, in MP4 or MOV | Nothing | Untouched |
+| Playable picture in the wrong wrapper (MKV, WebM), or HEVC tagged `hev1` | Repacked into MP4. The picture is copied bit for bit | Untouched |
+| Playable picture with Opus or Vorbis sound | The same repack; only the sound is re-encoded, to AAC at 256 kbit/s | Picture untouched |
+| VP9, AV1 or another picture codec | Converted, if conversion is allowed | See below |
+| Sound only, or not media | Kept in Files | Untouched |
+
+A conversion keeps the picture's size and frame rate. The encoders are tried in this order, and the first that succeeds is used:
+
+1. HEVC with the device's hardware encoder, at a constant quality level (75 of 100) and tagged `hvc1`. A 10-bit source stays 10-bit.
+2. The same encoder, at a bitrate no lower than the source's.
+3. H.264 with the hardware encoder, at a higher bitrate.
+4. H.264 in software, at a visually lossless setting. Slow; a last resort.
+
+Only encoders that a-Shell's ffmpeg has are tried; Status lists them under "Converts with". When every attempt fails the original is kept in Files and the notification says so. The notification names each conversion, for example "1 converted (VP9 → HEVC)."
+
+## Advanced mode
+
+Set with the **Mode** row in Settings. A link is then handled in two steps, and each asks only when there is something to decide.
+
+### Before the download: which version
+
+a-Shell opens briefly, the helper lists what the site offers, and Shortcuts returns with a list:
+
+> *Title*
+>
+> Best video: 2160p60 VP9 · 650 MB
+> Best audio: Opus · 160 kbps
+> Single file: 360p H.264 + AAC
+> Your limit: 1080p 30 fps
+
+"Best video" and "Best audio" are the best separate streams, which the tools merge. "Single file" is the best version that already holds both. "Your limit" appears only when a resolution or frame rate limit is set.
+
+Up to three versions are offered, best first. Versions that would be identical are listed once.
+
+| Row, by example | Meaning |
+|---|---|
+| ⬇️ 2160p60 · VP9 → HEVC | The best there is. Photos cannot play its codec, so it will be converted to the one after the arrow |
+| ⬇️ 1080p · H.264 | The best version Photos plays as it is |
+| ⬇️ 360p · H.264 · single file | The best version the site serves as one file. Nothing is merged |
+
+| Situation | Result | Test |
+|---|---|---|
+| A version is chosen | a-Shell downloads exactly that one and the usual save follows | `AdvancedMode.test_shows_what_the_site_has_and_downloads_the_version_picked` |
+| A limit is set | Nothing above it is offered, and the limit is shown | `AdvancedMode.test_the_resolution_limit_is_shown_and_applied` |
+| The site has one version and Photos plays it | No question | `AdvancedMode.test_one_playable_version_asks_nothing` |
+| The link holds several videos | One question for all: "*N* items. One choice applies to all." with **⬇️ Best available · converts if needed** and **⬇️ Best that Photos plays** | `AdvancedMode.test_a_link_with_several_videos_asks_once_for_all` |
+| The list is dismissed | Stops. Nothing is downloaded | `AdvancedMode.test_cancelling_the_choice_downloads_nothing` |
+
+Photo posts, and sites handled by gallery-dl, have one version and are not asked about.
+
+### After the download: a file Photos cannot play
+
+Asked only when a downloaded video needs converting and the version chosen did not already say so.
+
+> *Title*
+>
+> Photos cannot play this video.
+>
+> Source: 1080p60 VP9 + Opus · 48 MB
+> Converted: 1080p60 HEVC + AAC
+
+| Choice | Result | Test |
+|---|---|---|
+| 🎞️ Convert | a-Shell converts as described [above](#how-a-file-is-made-ready-for-photos), then the file is saved to Photos | `AdvancedMode.test_a_file_photos_cannot_play_asks_before_converting` |
+| 📁 Keep in Files | The original is kept under *a-Shell › UMDL › Saved* | `AdvancedMode.test_keeping_the_original_puts_it_in_files` |
+
+With several files the first line reads "Photos cannot play 2 of these 5 files." and the answer applies to all of them. If the files have been removed from a-Shell in the meantime, the alert **Nothing to finish** says so.
 
 ## Reddit
 
@@ -187,15 +293,15 @@ When a link holds more items than the limit in Settings (10 unless changed), UMD
 
 > *Title of the playlist or profile*
 >
-> This link contains 37 items.
+> 37 items.
 
-When the site does not say how many, the text is "This link contains more than 10 items." (`LargeDownloads.test_unknown_size_says_more_than`).
+When the site does not say how many, the text is "More than 10 items." (`LargeDownloads.test_unknown_size_says_more_than`).
 
 | Choice | Result | Test |
 |---|---|---|
 | ⬇️ Download all | Downloads every item | `LargeDownloads.test_download_all_first_only_and_cancel` |
-| ⬇️ Download the first 10 | Downloads up to the limit. The number shown is the limit | `LargeDownloads.test_more_than_ten_items_asks_then_limits` |
-| ⬇️ Download the first item only | Downloads one | `LargeDownloads.test_download_all_first_only_and_cancel` |
+| ⬇️ First 10 | Downloads up to the limit. The number shown is the limit | `LargeDownloads.test_more_than_ten_items_asks_then_limits` |
+| ⬇️ First only | Downloads one | `LargeDownloads.test_download_all_first_only_and_cancel` |
 | Cancel | Stops. Nothing is downloaded | `LargeDownloads.test_download_all_first_only_and_cancel` |
 
 A link at or under the limit downloads without asking (`LargeDownloads.test_threshold_setting_is_respected`).
@@ -212,39 +318,39 @@ The last line depends on the kind of failure (`Errors.test_each_kind_of_failure_
 
 | Kind of failure | Advice shown |
 |---|---|
-| The post needs an account | This post appears to require an account. Sign in to the site, then try again. |
-| No connection | Check the internet connection, then try again. |
-| Removed, private or region-locked | The post may be private, removed, or unavailable in your region. |
-| Copy-protected | This media is copy-protected and cannot be downloaded. |
+| The post needs an account | Sign in to the site, then try again. |
+| No connection | Check the connection. |
+| Removed, private or region-locked | The post may be private, removed or region-locked. |
+| Copy-protected | Copy-protected media cannot be downloaded. |
 | Site not recognised | This site may not be supported. |
-| Anything else | Updating the download tools resolves most failures. |
+| Anything else | Updating the tools fixes most failures. |
 
 | Choice | Result | Test |
 |---|---|---|
 | 🔄 Try again | Runs the same download again. Parts already downloaded are reused | `Errors.test_try_again_succeeds_once_the_site_recovers` |
-| 🛠️ Update tools and try again | Upgrades yt-dlp and gallery-dl first, then downloads | `Errors.test_update_tools_and_try_again` |
-| 🔑 Sign in to this site | Opens that site's sign-in page and confirms the sign-in. See [Sign in to a site](#sign-in-to-a-site) | `Errors.test_sign_in_from_a_failed_download_opens_that_sites_sign_in_page` |
-| 📋 Copy error details | Copies the UMDL version, the link, the error and the end of the helper's log to the clipboard, for a bug report. A notification confirms: "Error details copied to the clipboard." | `Errors.test_error_details_can_be_copied_with_the_log` |
+| 🛠️ Update tools and retry | Upgrades yt-dlp and gallery-dl first, then downloads | `Errors.test_update_tools_and_try_again` |
+| 🔑 Sign in | Opens that site's sign-in page and confirms the sign-in. See [Sign in to a site](#sign-in-to-a-site) | `Errors.test_sign_in_from_a_failed_download_opens_that_sites_sign_in_page` |
+| 📋 Copy details | Copies the UMDL version, the link, the error and the end of the helper's log, for a bug report. A notification confirms: "Details copied." | `Errors.test_error_details_can_be_copied_with_the_log` |
 | Cancel | Stops | `Errors.test_error_menu_explains_and_cancels` |
 
-One failure changes the text. When a site blocks the request and UMDL is signed in to that site, the reason reads "*Site* refused this device or network: *what the site said* UMDL is signed in, so the account is not the cause. A VPN is a common one: turn it off, then try again.", and the advice to sign in is not shown (`Errors.test_a_block_while_signed_in_is_not_blamed_on_the_account`).
+One failure changes the text. When a site blocks the request and UMDL is signed in to that site, the reason reads "*Site* refused this device or network: *what the site said* Being signed in did not help. If a VPN is on, turn it off and try again.", and the advice to sign in is not shown (`Errors.test_a_block_while_signed_in_is_not_blamed_on_the_account`).
 
-Two failures have their own screen in place of this menu: **Setup incomplete** (see [How setup ends](#how-setup-ends)) and **No link found**, "UMDL needs a web link. Share a post or video to UMDL, or copy its link first."
+Two failures have their own screen in place of this menu: **Setup incomplete** (see [How setup ends](#how-setup-ends)) and **No link**, "Share a post or video to UMDL, or copy its link first."
 
 ## Unsaved and interrupted downloads
 
 **A download that finished but never reached Photos**, for example because Shortcuts was closed during the hand-back. The next run, however it starts, begins with:
 
-> A download from an earlier run has not been saved to Photos.
+> An earlier download was not saved.
 
 | Choice | Result | Test |
 |---|---|---|
-| 💾 Save it now | Saves it and notifies. If this run also has a link, that download follows | `Recovery.test_unsaved_download_is_offered_again`, `Recovery.test_saving_an_earlier_download_then_continues_with_the_new_link` |
-| 🗑️ Discard it | Deletes the files, then carries on with the run | `Recovery.test_unsaved_download_can_be_discarded` |
+| 💾 Save now | Saves it and notifies. If this run also has a link, that download follows | `Recovery.test_unsaved_download_is_offered_again`, `Recovery.test_saving_an_earlier_download_then_continues_with_the_new_link` |
+| 🗑️ Discard | Deletes the files, then carries on with the run | `Recovery.test_unsaved_download_can_be_discarded` |
 
 This prompt appears only when such a download exists. It is never shown during setup, or on a run that is itself delivering a download.
 
-If the files of that download have since been removed from a-Shell, **Save it now** shows the alert **Nothing to save**, "The files of that download are no longer in a-Shell. Download the link again.", and the prompt does not return (`Recovery.test_unsaved_download_whose_files_are_gone_is_explained`).
+If the files of that download have since been removed from a-Shell, **Save now** shows the alert **Nothing to save**, "Those files are no longer in a-Shell. Download the link again.", and the prompt does not return (`Recovery.test_unsaved_download_whose_files_are_gone_is_explained`).
 
 **A download that was interrupted**, for example because a-Shell was closed. The main menu gains **Resume last download**, which repeats the request exactly as it was made (`Recovery.test_interrupted_download_can_be_resumed_from_the_menu`). Sharing the same link again has the same effect.
 
@@ -256,67 +362,66 @@ With no link to work on, UMDL shows its main menu straight away (`MainMenu.test_
 
 | Item | Detail line | Result | Test |
 |---|---|---|---|
-| Download from clipboard | Uses the most recently copied link | Downloads the first link on the clipboard. With no link there: alert **No link found**, "The clipboard does not contain a link. Copy the link to a post or video, then try again." | `MainMenu.test_download_from_clipboard`, `MainMenu.test_clipboard_without_a_link_is_explained` |
-| Enter a link | Type or paste a link to a post or video | Asks "Link to download" with the URL keyboard, then downloads. Anything that is not a link: alert **No link found**, "The text entered is not a web link." | `MainMenu.test_enter_a_link`, `MainMenu.test_entering_something_that_is_not_a_link` |
-| Resume last download | Continues the download that was interrupted | Listed only when a download was interrupted | `Recovery.test_interrupted_download_can_be_resumed_from_the_menu` |
-| Settings | Album and download options | Opens [Settings](#settings) | `Settings.test_settings_menu_shows_current_values` |
-| Sign in to a site | Required for private or age-restricted posts | See below | `MainMenu.test_sign_in_is_confirmed_once_the_site_has_stored_it` |
-| Status | Sign-ins, versions and logs | Opens [Status](#status) | `MainMenu.test_status_shows_sign_ins_versions_and_storage` |
-| Update tools | Installs the latest yt-dlp and gallery-dl | a-Shell upgrades the tools, then an alert **Download tools updated** lists the installed versions. If the upgrade fails the title is **The update could not be completed** | `MainMenu.test_update_tools_reports_back` |
-| About UMDL | Version *x*. Updates and project page | See below | `MainMenu.test_about_project_page_and_done` |
+| Download from clipboard | The link you copied | Downloads the first link on the clipboard. With no link there: alert **No link**, "The clipboard holds no link." | `MainMenu.test_download_from_clipboard`, `MainMenu.test_clipboard_without_a_link_is_explained` |
+| Enter a link | Type or paste | Asks "Link" with the URL keyboard, then downloads. Anything that is not a link: alert **No link**, "That is not a web link." | `MainMenu.test_enter_a_link`, `MainMenu.test_entering_something_that_is_not_a_link` |
+| Resume last download | Continue where it stopped | Listed only when a download was interrupted | `Recovery.test_interrupted_download_can_be_resumed_from_the_menu` |
+| Settings | Album, quality, mode | Opens [Settings](#settings) | `Settings.test_one_list_shows_every_setting_with_its_value` |
+| Sign in to a site | For private posts | See below | `MainMenu.test_sign_in_is_confirmed_once_the_site_has_stored_it` |
+| Status | Sign-ins, versions, log | Opens [Status](#status) | `MainMenu.test_status_shows_sign_ins_versions_and_storage` |
+| Update tools | Latest yt-dlp and gallery-dl | a-Shell upgrades the tools, then an alert **Download tools updated** lists the installed versions. If the upgrade fails the title is **The update could not be completed** | `MainMenu.test_update_tools_reports_back` |
+| About UMDL | Version *x* | See below | `MainMenu.test_about_project_page_and_done` |
 
 Dismissing the menu stops the shortcut.
 
 ### Sign in to a site
 
-> Choose a site to sign in to.
->
-> The sign-in is stored on this device, inside a-Shell. Status shows which sites are signed in.
+> Sign in to
 
-Choices: **Instagram**, **X (Twitter)**, **Reddit**, **TikTok**, **Facebook**, **Another site**. "Another site" asks for the "Address of the site's sign-in page"; text that is not a web address gives the alert **Sign in**, "The text entered is not a web address."
+Choices: **Instagram**, **X (Twitter)**, **Reddit**, **TikTok**, **Facebook**, **Another site**. "Another site" asks for the "Sign-in page address"; text that is not a web address gives the alert **Sign in**, "That is not a web address."
 
-Then the alert **Sign in** explains what follows: "a-Shell will open the sign-in page. Sign in as usual. UMDL returns here and confirms as soon as the sign-in has been saved, usually within a few seconds. If it does not, swipe right from the left edge of the screen to close the page, then check Status in the UMDL menu."
+Then the alert **Sign in** says what follows: "Sign in on the page that opens. UMDL returns here once the sign-in is saved. If it does not, swipe in from the left edge and check Status."
 
 a-Shell opens the site's sign-in page in its own browser, and the helper watches a-Shell's cookie store. UMDL does not see what is typed, and never reads a cookie's value, only which site it belongs to and its name. yt-dlp and gallery-dl read the same store, so nothing is copied anywhere.
 
 | What happens | Shown | Test |
 |---|---|---|
-| The site stores a sign-in | Shortcuts returns to the front with the alert **Signed in to** *site*: "The sign-in is saved on this device, inside a-Shell. UMDL uses it for *site* links from now on." | `MainMenu.test_sign_in_is_confirmed_once_the_site_has_stored_it` |
-| The site was already signed in | The page is not opened. Alert **Already signed in to** *site*, which also says how to switch accounts | `MainMenu.test_signing_in_again_reports_the_existing_sign_in` |
-| No sign-in appears within 10 minutes | Alert **Sign-in not confirmed**: "No sign-in to *site* was found after 10 minutes. If you did sign in, open Status from the UMDL menu to check. Some sites do not allow signing in from an app's built-in browser." | `MainMenu.test_sign_in_that_was_not_completed_says_so` |
+| The site stores a sign-in | Shortcuts returns to the front with the alert **Signed in to** *site*: "UMDL will use this sign-in for *site* links." | `MainMenu.test_sign_in_is_confirmed_once_the_site_has_stored_it` |
+| The site was already signed in | The page is not opened. Alert **Already signed in to** *site*: "To switch accounts, sign out first: Settings, Reset." | `MainMenu.test_signing_in_again_reports_the_existing_sign_in` |
+| No sign-in appears within 10 minutes | Alert **Sign-in not confirmed**: "No sign-in to *site* appeared within 10 minutes. Status shows whether it was saved. Some sites block sign-in from in-app browsers." | `MainMenu.test_sign_in_that_was_not_completed_says_so` |
 | A site that is not in the list | The address entered is opened as it is. A sign-in is recognised by a session cookie for that site, and confirmed under the site's domain name | `MainMenu.test_sign_in_to_another_site` |
 
 For the five listed sites "signed in" means the site's own session cookie is present and has not expired. Visiting a site without signing in does not count.
 
 ### About UMDL
 
-> **UMDL 1.2.0**
+> **UMDL 1.3.0**
 >
-> A free, open-source media downloader.
-> Powered by yt-dlp, gallery-dl and a-Shell.
+> Free and open source.
+> Built on yt-dlp, gallery-dl and a-Shell.
 
 | Choice | Result | Test |
 |---|---|---|
-| 🔄 Check for a new version | Up to date: alert **UMDL is up to date**. Newer release: "UMDL *new* is available…" and its release notes, with **⬇️ Get the update** and **Later**. No connection: alert **Update check**, "GitHub could not be reached. Check the internet connection, then try again." | `MainMenu.test_check_for_new_version` |
-| 🌐 Open the project page | Opens the repository on GitHub | `MainMenu.test_about_project_page_and_done` |
+| 🔄 Check for updates | Up to date: alert **Up to date**. Newer release: "UMDL 1.4.0 is available. Installed: 1.3.0." and its release notes, with **⬇️ Get the update** and **Later**. No connection: alert **Update check**, "GitHub could not be reached." | `MainMenu.test_check_for_new_version` |
+| 🌐 Project page | Opens the repository on GitHub | `MainMenu.test_about_project_page_and_done` |
 | Done | Closes the menu | `MainMenu.test_about_project_page_and_done` |
 
 ## Status
 
-**Status** in the main menu opens a-Shell for a few seconds, then shows the alert **UMDL status**. It answers "is everything in place?" and "am I signed in?" (`MainMenu.test_status_shows_sign_ins_versions_and_storage`).
+**Status** in the main menu opens a-Shell for a few seconds, then shows the alert **Status**. It answers "is everything in place?" and "am I signed in?" (`MainMenu.test_status_shows_sign_ins_versions_and_storage`).
 
 ```
-UMDL 1.2.0, helper 1.2.0
-a-Shell 2.3.0 (512)
-Python 3.11.9
-yt-dlp 2026.11.20
-gallery-dl 1.31.2
-ffmpeg 6.1
+UMDL 1.3.0, helper 1.3.0
+a-Shell 2.4.0 (613)
+Python 3.13.1
+yt-dlp 2026.11.23
+gallery-dl 1.32.21
+ffmpeg n7.0
+Converts with: hevc_videotoolbox, h264_videotoolbox, libx264
 Tools last updated: 25 Nov 17:20
 
 Sign-ins
 Instagram: signed in
-X (Twitter): not signed in
+X (Twitter): signed in
 Reddit: signed in
 TikTok: not signed in
 Facebook: not signed in
@@ -334,41 +439,61 @@ GitHub: reachable
 Last download: 25 Nov 17:36, failed (auth)
 ```
 
-The version numbers above are examples. When nothing has ever been stored, the sign-in section reads "No sign-ins are stored."
+The values above are examples. "Converts with" lists the video encoders a-Shell's ffmpeg has, in the order UMDL tries them. When nothing has ever been stored, the sign-in section reads "No sign-ins are stored."
 
 After the alert:
 
-> Copy the status and the last log to the clipboard?
->
-> Useful when reporting a problem.
+> Copy the status and log?
 
 | Choice | Result | Test |
 |---|---|---|
-| 📋 Copy status and log | Copies the status text and the end of the helper's log of the last download. A notification confirms: "Status and log copied to the clipboard." Works when there is no log yet | `MainMenu.test_status_and_log_can_be_copied`, `MainMenu.test_copying_status_before_any_download_does_not_fail` |
+| 📋 Copy | Copies the status text and the end of the helper's log of the last download. A notification confirms: "Status and log copied." Works when there is no log yet | `MainMenu.test_status_and_log_can_be_copied`, `MainMenu.test_copying_status_before_any_download_does_not_fail` |
 | Done | Closes the menu | `MainMenu.test_status_shows_sign_ins_versions_and_storage` |
 
-The log holds the link, which tool was tried, and the error each tool reported. It holds no cookies and no passwords.
+The log holds the link, which tool was tried, the version chosen, any conversion and the error each tool reported. It holds no cookies and no passwords.
 
 ## Settings
 
-Each row shows its current value as the detail line (`Settings.test_settings_menu_shows_current_values`). A change is saved at once and confirmed by the notification "Settings saved." Settings never open a-Shell, except **Forget saved sign-ins**.
+One list, titled **Settings**, which stays open until **Done**. Each row shows its current value (`Settings.test_one_list_shows_every_setting_with_its_value`, `Settings.test_defaults_read_plainly`). A change is saved the moment it is made, and the list returns with the new value (`Settings.test_the_list_stays_open_and_each_change_is_saved_at_once`). Closing the list after a change shows the notification "Settings saved." Settings never open a-Shell, except **Reset**.
 
-| Item | Detail line | Changing it | Test |
+A row with two values switches when tapped, with no menu in between (`Settings.test_two_value_rows_switch_when_tapped`). A row with more opens one menu, never a second.
+
+| Row | Value shown | Tapping it | Test |
 |---|---|---|---|
-| Save to | The album's name, or "Photo library. No album" | The same question as [custom setup](#custom-setup-where-to-save) | `Settings.test_change_album_conversion_and_finish_action` |
-| Ask before large downloads | When a link contains more than *N* items | Asks for a number, filled in with the current one. Accepts 1 to 9999. Anything else: alert **Not saved**, "Enter a whole number from 1 to 9999." | `Settings.test_change_threshold`, `Settings.test_reject_a_bad_threshold` |
-| Unsupported video formats | "Convert for Photos" or "Keep the original in Files" | The same question as [custom setup](#custom-setup-formats-photos-cannot-play) | `Settings.test_change_album_conversion_and_finish_action` |
-| When a download finishes | "Show a notification" or "Open Photos" | **🔔 Show a notification** or **🖼️ Open Photos**. A notification is shown either way | `Settings.test_change_album_conversion_and_finish_action` |
-| Forget saved sign-ins | Signs out of every site | a-Shell deletes its stored cookies, then an alert **Sign-ins removed**. If that fails: **The sign-ins could not be removed** | `Settings.test_forget_sign_ins` |
-| Reset UMDL | Removes the helper and all settings | Asks first, see below | `Settings.test_reset_removes_everything_and_can_be_cancelled` |
+| Album | The album's name, or "Library only" | Menu **Save to**: **🆕 New album** asks "Album name" and creates it; **🖼️ Existing album** asks "Album name, as Photos shows it"; **📚 Library only** uses no album | `Settings.test_change_album` |
+| Mode | "Simple · uses these settings" or "Advanced · asks each time" | Switches | `Settings.test_two_value_rows_switch_when_tapped` |
+| Resolution | "Best available" or "Up to 1080p" | Menu **Highest resolution**: Best available, 2160p (4K), 1440p, 1080p, 720p, 480p | `Settings.test_resolution_and_frame_rate_choices` |
+| Frame rate | "Best available" or "Up to 30 fps" | Menu **Highest frame rate**: Best available, 60 fps, 30 fps | `Settings.test_resolution_and_frame_rate_choices` |
+| Conversion | "Only when needed", "For best quality" or "Never" | Menu **Convert for Photos**, which explains the three in a line each | `Settings.test_conversion_choices_are_explained_in_one_menu` |
+| Large downloads | Ask above *N* items | Asks "Ask before downloading more than", filled in with the current number. Accepts 1 to 9999. Anything else: alert **Not saved**, "Enter a whole number from 1 to 9999.", and the list returns | `Settings.test_change_threshold`, `Settings.test_a_bad_threshold_is_refused_and_the_list_returns` |
+| When finished | "Show a notification" or "Open Photos" | Switches. A notification is shown either way | `Settings.test_two_value_rows_switch_when_tapped` |
+| Reset | Sign out, or remove everything | See below. Not listed during setup | `Settings.test_reset_sign_out` |
+| Done | "Close settings", or "Install and finish" during setup | Closes the list | `Settings.test_one_list_shows_every_setting_with_its_value` |
 
-### Reset UMDL
+What the quality rows do is described under [Quality and conversion](#quality-and-conversion).
 
-> Remove UMDL's helper, settings and working files from a-Shell?
+The menu for **Conversion** reads:
+
+> **Convert for Photos**
 >
-> Photos and the shortcut itself are not affected. Files kept under a-Shell, UMDL, Saved are deleted.
+> Only when needed: prefers what Photos already plays.
+> For best quality: takes the best version and converts it. Slower.
+> Never: unplayable files go to Files.
 
-**🗑️ Reset UMDL** deletes UMDL's folder in a-Shell and shows the alert **UMDL was reset**. The next run is a first run. **Cancel** changes nothing. yt-dlp and gallery-dl stay installed in a-Shell; removing a-Shell removes them.
+### Reset
+
+> **Reset**
+>
+> Sign out: forgets every site sign-in.
+> Remove everything: also removes UMDL's files and the download tools from a-Shell. Photos are not affected.
+
+| Choice | Result | Test |
+|---|---|---|
+| 🔑 Sign out of all sites | a-Shell deletes its stored cookies and the tools' saved tokens. Alert **Signed out**; if that fails, **Could not sign out**. Settings are kept | `Settings.test_reset_sign_out` |
+| 🗑️ Remove everything | a-Shell uninstalls yt-dlp and gallery-dl, signs out of every site, and deletes UMDL's folder, including files kept under *Saved*. Alert **UMDL was reset**. The next run is a first run | `Settings.test_reset_everything_removes_umdl_the_tools_and_the_sign_ins` |
+| Cancel | Returns to the list. Nothing is changed | `Settings.test_reset_can_be_cancelled` |
+
+**Remove everything** returns a-Shell to how it was before UMDL, as far as UMDL can tell what is its own. It does not touch files you keep in a-Shell for other purposes, other Python packages, or a-Shell's own settings. Deleting the a-Shell app removes those too. Nothing in Photos is ever removed.
 
 ## What UMDL asks a-Shell to do
 
@@ -377,17 +502,18 @@ a-Shell runs commands for a shortcut in two ways. Background commands return the
 | When | Where | Command |
 |---|---|---|
 | Start of every run that is not a result | Background | Print the settings file, the helper's version marker, and any unsaved or interrupted download |
-| Settings saved | Background | Write `config.b64` |
+| A setting is changed | Background | Write `config.b64` |
 | Before saving to Photos | Background | `cat` the list of files of that download |
 | Each file to save | a-Shell's Get File action, as a copy | Hand one file to Shortcuts |
 | Files saved to Photos, or discarded | Background | Delete that download's working folder |
-| Copy error details, copy status and log | Background | `tail` the last 40 lines of the helper's log |
-| Check for a new version | Background | `curl` this repository's `version.json` |
-| Reset UMDL | Background | Delete `~/Documents/UMDL` |
+| Copy details, copy status and log | Background | `tail` the last 40 lines of the helper's log |
+| Check for updates | Background | `curl` this repository's `version.json` |
 | Helper missing, or from another version | Background | `curl` `src/umdl.py` from this repository, and record which shortcut version fetched it |
 | The same, when the background download fails | In the app | The same download, typed into the a-Shell window |
 | After the helper was fetched | In the app | `pip install --upgrade yt-dlp gallery-dl`, before the helper starts |
-| Download, setup, update tools, status, sign in, forget sign-ins | In the app | `python umdl.py <command> <request>` |
+| Download, finish a download (advanced mode), setup, update tools, status, sign in, sign out, remove everything | In the app | `python umdl.py <command> <request>` |
+| Listing versions, checking and converting files | By the helper | yt-dlp without downloading; `ffprobe`; `ffmpeg` |
+| Remove everything | By the helper | `pip uninstall` the download tools, delete the cookie store and `~/Documents/UMDL` |
 | Sign in | By the helper | `internalbrowser <address>`, then it watches the cookie store |
 | Reddit, when the tools are refused | By the helper | `jsc <script>`, which runs a short script in a-Shell's web view |
 
@@ -410,25 +536,31 @@ A first run from the share sheet can therefore need several taps on **Allow** be
 
 ## What the tests can and cannot show
 
-The flow tests run the compiled shortcut, action by action, in `tests/shortcut_sim.py`, against the real helper script. yt-dlp, gallery-dl, pip and curl are replaced by stand-ins in `tests/fakes`, so a test can stage an offline device, a failed install, a playlist of any size, or a site that returns an error.
+The flow tests run the compiled shortcut, action by action, in `tests/shortcut_sim.py`, against the real helper script. yt-dlp, gallery-dl, pip and curl are replaced by stand-ins in `tests/fakes`, so a test can stage an offline device, a failed install, a playlist of any size, a site with many versions of a video, or a site that returns an error. ffmpeg and ffprobe are the real ones, so repacking and conversion are actually carried out.
 
-That shows the logic is right. It cannot show how iOS behaves. Two device tests have each found something the simulator had wrong, and each is now part of the simulator, so the old build fails in it the way it failed on the phone:
+That shows the logic is right. It cannot show how iOS behaves. Device tests have found four things the simulator had wrong, and each is now part of the simulator, so the old build fails in it the way it failed on the phone:
 
 | Found on a device | What it caused | Now |
 |---|---|---|
 | An empty text counts as having a value in an **If** action (1.0.0) | A false "unsaved download" prompt on every run, and no main menu | The shortcut compares with `[]` instead; `Hygiene.test_no_condition_relies_on_has_any_value` |
 | On iOS 27.2, a-Shell's **Get File** stops the shortcut unless it is asked for a copy ([a-Shell issue 1138](https://github.com/holzschu/a-shell/issues/1138)) (1.1.0) | "There was a problem running the shortcut" after every successful download | Get File always asks for a copy; `Hygiene.test_get_file_always_asks_for_a_copy` |
+| A background a-Shell command that exits with an error stops the shortcut the same way (1.1.0) | The same message, with no cause named | Every background command continues after an error; `Hygiene.test_background_commands_survive_a_failing_command` |
+| On iOS 27.2, a-Shell's `jsc` cannot hand a script's value back, not even a text (helper 1.2.2) | The Reddit browser route stopped at its first step | Scripts report through a-Shell's print channel and leave no value; the stand-in `jsc` refuses any other kind, and `tests/test_reddit_js.py` runs the script in Node |
+
+Other checks on the shortcut as built: `Hygiene.test_every_action_in_the_shortcut_is_modelled`, `Hygiene.test_shortcut_metadata`, `Hygiene.test_unscripted_question_fails_loudly`.
 
 Confirmed on a device so far:
 
 - Setup, the download tools installing, and a download running in a-Shell.
 - The main menu and the menus under it.
-- The helper's result reaching the shortcut, the failed-download menu, and **Copy error details**.
-- The sign-in page opening in a-Shell, and sign-ins being recognised.
+- The helper's result reaching the shortcut, the failed-download menu, and copying details.
+- Signing in, and private posts downloading with the sign-in (Instagram and X).
+- Saving to Photos.
 - Status, and copying the status and the log.
 
 Not yet confirmed on a device, and so the first things to check ([device checklist](BUILDING.md#device-checklist)):
 
-- Saving to the album and the notification. This is the step the Get File fault blocked.
-- The sign-in confirmation. It depends on a-Shell writing its cookie store while the page is still open; if it writes later, the result is **Sign-in not confirmed** and Status shows the sign-in afterwards.
-- Reddit through a-Shell's browser. Each step of it is written to the log, so a failure there can be read from **Copy status and log**.
+- Which encoders a-Shell's ffmpeg has. Status shows them under "Converts with". If the hardware encoders are missing, conversions fall back to software H.264, which is slow on large videos.
+- How long a 4K conversion takes with the hardware encoder.
+- The Settings list returning after each change, and the two questions of Advanced mode.
+- Reddit through a-Shell's browser, now that scripts report through the print channel. Each step is written to the log, so a failure there can be read from Status, **📋 Copy**.

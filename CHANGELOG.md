@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.3.0
+
+Quality settings, two modes, a better conversion, and shorter wording throughout. Install the new shortcut; the helper follows by itself.
+
+Added:
+
+- **Resolution** and **Frame rate** limits, each set on its own. Both default to Best available. A site with nothing under a limit still downloads, at its smallest version above it.
+- **Mode.** Simple uses the settings and asks nothing, as before. Advanced shows what the site offers (best video, best audio, best single file, with codec and size) and lets you pick the version; if a download turns out to be something Photos cannot play, it shows the source and what it would be converted to, and asks.
+- **Conversion** has three settings. "Only when needed" is the behaviour of earlier versions. "For best quality" takes the best version a site has, whatever its codec, and converts it; this is what reaches 4K on YouTube. "Never" keeps unplayable files in Files.
+- Custom setup is now the settings list, so all of the above can be set before the first download.
+- Status lists the video encoders a-Shell's ffmpeg has.
+
+Changed:
+
+- Conversion now targets HEVC with the device's hardware encoder at a quality level, in place of H.264 at a fixed quality. Size and frame rate are kept, 10-bit sources stay 10-bit, and the sound is copied when Photos can play it. Three fallbacks follow for an ffmpeg without that encoder. The notification names each conversion.
+- Settings is one list that stays open. Rows with two values switch on a tap; no row leads to more than one menu.
+- "Forget saved sign-ins" and "Reset UMDL" are one row, **Reset**. "Sign out of all sites" also clears the tokens the download tools keep. "Remove everything" now also uninstalls yt-dlp and gallery-dl and signs out, leaving a-Shell as it was before UMDL. It does not touch other files kept in a-Shell.
+- Prompts, descriptions and button labels are shorter.
+
+Fixed:
+
+- Reddit through a-Shell's browser stopped at its first step with "JavaScript execution returned a result of an unsupported type". Scripts now report through a-Shell's print channel. Not yet confirmed on a device.
+
+Settings from earlier versions are kept and read as Simple mode with no limits.
+
 ## Helper 1.2.2
 
 A helper-only update, picked up by **Update tools** or within a day.

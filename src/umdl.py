@@ -7,16 +7,19 @@ result importable by Photos, and calls the shortcut back with the outcome.
 
 Usage (the shortcut builds these commands, you never need to type them):
     python umdl.py run <payload>        download the link in the payload
+    python umdl.py finish <payload>     advanced mode: convert or keep what was downloaded
     python umdl.py setup <payload>      install the download tools and report
     python umdl.py update <payload>     force-update the download tools
     python umdl.py status <payload>     report versions, sign-ins and storage
     python umdl.py signin <payload>     open a site's sign-in page and confirm the sign-in
-    python umdl.py logout <payload>     forget saved site sign-ins
+    python umdl.py logout <payload>     sign out of every site
+    python umdl.py reset <payload>      remove UMDL, the tools and the sign-ins from a-Shell
 
 Project: https://github.com/TheKfcBandit/UMDL   Licence: MIT
 """
 
 import base64
+import copy
 import hashlib
 import importlib
 import importlib.util
@@ -35,9 +38,9 @@ import time
 import traceback
 import urllib.parse
 
-HELPER_VERSION = "1.2.2"
+HELPER_VERSION = "1.3.0"
 # Bumped only when the payload/callback format changes incompatibly.
-PROTOCOL = 2
+PROTOCOL = 3
 
 REPO = "TheKfcBandit/UMDL"
 RAW_BASE = "https://raw.githubusercontent.com/%s/main" % REPO
@@ -121,6 +124,218 @@ YTDLP_FORMAT = "/".join([
     "b",
     "ba",  # audio-only sources such as SoundCloud
 ])
+
+
+RES_CHOICES = ("2160", "1440", "1080", "720", "480")
+FPS_CHOICES = ("60", "30")
+
+
+def settings_from(cfg):
+    """The download settings in one predictable shape, whatever was stored."""
+    cfg = cfg if isinstance(cfg, dict) else {}
+    convert = str(cfg.get("convert") or "needed")
+    convert = {"1": "needed", "0": "never"}.get(convert, convert)  # values used before 1.3
+    res, fps = str(cfg.get("res") or "best"), str(cfg.get("fps") or "best")
+    return {
+        "convert": convert if convert in ("needed", "best", "never") else "needed",
+        "res": res if res in RES_CHOICES else "best",
+        "fps": fps if fps in FPS_CHOICES else "best",
+        "advanced": str(cfg.get("mode")) == "advanced",
+    }
+
+
+def ytdlp_format(policy):
+    """Which formats yt-dlp should prefer.
+
+    "native"  the best Photos can play as it is; anything else only as a last resort
+    "best"    the best there is, whatever the codec; converted afterwards if needed
+    "single"  the best file that already holds picture and sound together
+    """
+    if policy == "best":
+        return "bv*+ba/b/ba"
+    if policy == "single":
+        return "/".join(["b[%s][%s]" % (_NATIVE_V, _NATIVE_A), "b[%s]" % _NATIVE_V, "b",
+                         "bv*+ba", "ba"])
+    return YTDLP_FORMAT
+
+
+def ytdlp_sort(quality):
+    """Limits on resolution and frame rate, as yt-dlp sort fields. "res:1080"
+    means the largest picture up to 1080p, and the smallest above it only when
+    nothing fits; the same goes for "fps". "res" is the short side, so a tall
+    phone video counts by its width."""
+    fields = []
+    if quality["res"] != "best":
+        fields.append("res:" + quality["res"])
+    if quality["fps"] != "best":
+        fields.append("fps:" + quality["fps"])
+    return fields
+
+
+# ---- describing and choosing formats (advanced mode)
+
+CODEC_NAMES = (
+    (r"avc|h264", "H.264"), (r"hev|hvc|h265|hevc", "HEVC"), (r"vp0?9", "VP9"), (r"av0?1", "AV1"),
+    (r"vp0?8", "VP8"), (r"mp4a|aac", "AAC"), (r"opus", "Opus"), (r"vorbis", "Vorbis"),
+    (r"ec-?3|eac3", "E-AC-3"), (r"ac-?3", "AC-3"), (r"alac", "ALAC"), (r"flac", "FLAC"),
+    (r"mp3", "MP3"),
+)
+
+
+def codec_name(code):
+    code = str(code or "").lower()
+    for pattern, name in CODEC_NAMES:
+        if re.match(pattern, code):
+            return name
+    return code.split(".")[0].upper() or "unknown"
+
+
+def has_video(fmt):
+    return str(fmt.get("vcodec") or "none") != "none"
+
+
+def has_audio(fmt):
+    return str(fmt.get("acodec") or "none") != "none"
+
+
+def is_native_video(fmt):
+    return bool(re.match(r"avc|h264|hev|hvc|h265", str(fmt.get("vcodec") or "").lower()))
+
+
+def is_native_audio(fmt):
+    return bool(re.match(r"mp4a|aac|alac|ac-3|ec-3", str(fmt.get("acodec") or "").lower()))
+
+
+def short_side(fmt):
+    width, height = to_int(fmt.get("width"), 0), to_int(fmt.get("height"), 0)
+    return min(width, height) if width and height else (height or width)
+
+
+def frame_rate(fmt):
+    try:
+        return int(round(float(fmt.get("fps") or 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def picture(fmt):
+    """"2160p60", "1080p", or "" when the size is not known."""
+    side, fps = short_side(fmt), frame_rate(fmt)
+    if not side:
+        return ""
+    return "%dp%s" % (side, fps if fps > 30 else "")
+
+
+def describe_format(video, audio=None):
+    """"2160p60 VP9 + Opus" for a pair, "720p H.264 + AAC" for one file."""
+    parts = " ".join(x for x in (picture(video), codec_name(video.get("vcodec"))) if x)
+    sound = audio if audio is not None else (video if has_audio(video) else None)
+    if sound is not None:
+        parts += " + " + codec_name(sound.get("acodec"))
+    return parts
+
+
+def format_size(*formats):
+    total = 0
+    for fmt in formats:
+        if fmt is None:
+            continue
+        size = fmt.get("filesize") or fmt.get("filesize_approx")
+        if not size:
+            return ""
+        total += size
+    return human_size(total) if total else ""
+
+
+def build_plan(formats, quality, title="", target="HEVC"):
+    """The choices advanced mode offers for one video.
+
+    Returns {"info": text for the prompt, "options": [{"label", "format",
+    "convert"}]}: the best there is, the best Photos plays without conversion,
+    and the best single file, leaving out any that would be the same download.
+    Each option names exact format ids, so what is listed is what is fetched.
+    `target` is the codec a conversion on this device produces.
+    """
+    videos = [f for f in formats or [] if isinstance(f, dict) and has_video(f) and f.get("format_id")]
+    audios = [f for f in formats or [] if isinstance(f, dict) and has_audio(f) and not has_video(f)
+              and f.get("format_id")]
+    if not videos:
+        return {"info": "", "options": []}
+
+    res_cap = to_int(quality["res"], 0) if quality["res"] != "best" else 0
+    fps_cap = to_int(quality["fps"], 0) if quality["fps"] != "best" else 0
+
+    def fits(fmt):
+        return ((not res_cap or short_side(fmt) <= res_cap)
+                and (not fps_cap or frame_rate(fmt) <= fps_cap))
+
+    def best_of(pool, prefer_native=False):
+        if not pool:
+            return None
+        inside = [f for f in pool if fits(f)]
+        if not inside:
+            # Nothing within the limits: the smallest there is, as yt-dlp would.
+            least = min((short_side(f), frame_rate(f)) for f in pool)
+            inside = [f for f in pool if (short_side(f), frame_rate(f)) == least]
+        pool = inside
+        return max(pool, key=lambda f: (short_side(f), frame_rate(f),
+                                        1 if (prefer_native and is_native_video(f)) else 0,
+                                        f.get("tbr") or f.get("vbr") or 0))
+
+    def sound_for(video):
+        if has_audio(video) or not audios:
+            return None
+        pool = audios
+        if is_native_video(video):
+            # Nothing needs converting if the sound is one Photos plays too.
+            pool = [f for f in audios if is_native_audio(f)] or audios
+        return max(pool, key=lambda f: f.get("abr") or f.get("tbr") or 0)
+
+    def option(video, note=""):
+        audio = sound_for(video)
+        convert = not is_native_video(video)
+        label = "⬇️ %s · %s" % (picture(video) or "Video", codec_name(video.get("vcodec")))
+        if convert:
+            label += " → " + target
+        if note:
+            label += " · " + note
+        spec = video["format_id"] + ("+" + audio["format_id"] if audio else "")
+        return {"label": label, "format": spec, "convert": convert,
+                "what": describe_format(video, audio), "size": format_size(video, audio)}
+
+    options, seen = [], set()
+    top = best_of(videos, prefer_native=True)
+    native = best_of([f for f in videos if is_native_video(f)])
+    single = best_of([f for f in videos if has_audio(f)], prefer_native=True)
+    for video, note in ((top, ""), (native, ""), (single, "single file")):
+        if video is None:
+            continue
+        made = option(video, note)
+        if made["format"] in seen:
+            continue
+        seen.add(made["format"])
+        options.append(made)
+
+    # What the site has, whatever the limits say.
+    source = max(videos, key=lambda f: (short_side(f), frame_rate(f), f.get("tbr") or 0))
+    lines = []
+    if title:
+        lines += [title, ""]
+    size = format_size(source)
+    lines.append("Best video: " + " ".join(x for x in (picture(source), codec_name(source.get("vcodec"))) if x)
+                 + (" · " + size if size else ""))
+    if audios:
+        loudest = max(audios, key=lambda f: f.get("abr") or f.get("tbr") or 0)
+        rate = to_int(loudest.get("abr") or loudest.get("tbr"), 0)
+        lines.append("Best audio: " + codec_name(loudest.get("acodec")) + (" · %d kbps" % rate if rate else ""))
+    merged = max([f for f in videos if has_audio(f)] or [None],
+                 key=lambda f: (short_side(f), frame_rate(f)) if f else (0, 0))
+    if merged is not None and audios:
+        lines.append("Single file: " + describe_format(merged))
+    if res_cap or fps_cap:
+        limit = " ".join(x for x in ("%sp" % res_cap if res_cap else "", "%s fps" % fps_cap if fps_cap else "") if x)
+        lines.append("Your limit: " + limit)
+    return {"info": "\n".join(lines), "options": options}
 
 
 def detect_ios():
@@ -247,6 +462,15 @@ class EngineError(Exception):
     """One download tool could not handle the link; the next one may."""
 
 
+class NeedChoice(Exception):
+    """Advanced mode: the user picks what to download before anything is fetched."""
+
+    def __init__(self, info, labels):
+        Exception.__init__(self, "choice needed")
+        self.info = info
+        self.labels = labels
+
+
 class NeedConfirm(Exception):
     """The link holds more items than the ask-first threshold."""
 
@@ -258,6 +482,8 @@ class NeedConfirm(Exception):
 
 def log(text):
     try:
+        if not os.path.isdir(WORKSPACE):
+            return  # after a reset there is nowhere to write, and nothing should reappear
         with open(LOG_FILE, "a", encoding="utf-8") as handle:
             handle.write(text.rstrip("\n") + "\n")
     except Exception:
@@ -864,8 +1090,10 @@ def ytdlp_engine(ctx):
             return "live stream"
         return None
 
+    quality = ctx["quality"]
     opts = {
-        "format": YTDLP_FORMAT,
+        "format": ctx.get("format") or ytdlp_format(ctx["policy"]),
+        "format_sort": ytdlp_sort(quality),
         "merge_output_format": "mp4",
         "outtmpl": os.path.join(ctx["dir"], "%(id).64s.%(ext)s"),
         "restrictfilenames": True,
@@ -928,6 +1156,27 @@ def ytdlp_engine(ctx):
 
     if is_playlist and ctx["mode"] == "auto" and count > ctx["threshold"]:
         raise NeedConfirm(count if exact else None, title)
+
+    if quality["advanced"] and not ctx.get("picked"):
+        plan = None
+        if is_playlist:
+            plan = {"info": "%s\n\n%s items. One choice applies to all." % (
+                        title or "Playlist", count if exact else "Several"),
+                    "options": [
+                        {"label": "⬇️ Best available · converts if needed", "policy": "best", "convert": True},
+                        {"label": "⬇️ Best that Photos plays", "policy": "native", "convert": False},
+                    ]}
+        else:
+            try:
+                with yt_dlp.YoutubeDL(dict(opts, format="b/bv*+ba/ba")) as ydl:
+                    info = ydl.process_ie_result(copy.deepcopy(raw), download=False)
+                plan = build_plan((info or {}).get("formats"), quality, title, conversion_target())
+            except Exception as exc:
+                log("could not list the formats (%s); using the settings" % exc)
+        # One choice that needs no conversion is not a question worth asking.
+        if plan and plan["options"] and (len(plan["options"]) > 1 or plan["options"][0]["convert"]):
+            write_json(os.path.join(ctx["dir"], "plan.json"), plan)
+            raise NeedChoice(plan["info"], [o["label"] for o in plan["options"]])
 
     ui.start("Starting download")
     try:
@@ -1157,29 +1406,47 @@ window.__umdl = "";
     window.__umdl = "ERR " + e;
   }
 })();
-"started"
 """
 
 BROWSER_WAIT = float(os.environ.get("UMDL_BROWSER_WAIT") or 40)
 
 
-def browser_js(name, source):
-    """Run JavaScript in a-Shell's web view and return what it evaluates to."""
+def browser_script(expression, before=""):
+    """JavaScript that runs `before`, then reports `expression` as text.
+
+    The value is sent through the channel a-Shell gives page scripts for
+    printing, and the script itself evaluates to nothing: on iOS 27.2 jsc
+    refuses to hand back even a plain string ("a result of an unsupported
+    type").
+    """
+    return before + '''
+(function () {
+  var out = "";
+  try { out = String(%s); } catch (e) { out = ""; }
+  try { window.webkit.messageHandlers.aShell.postMessage("print:" + out + "\\n"); } catch (e) {}
+})();
+void 0;
+''' % expression
+
+
+def browser_js(name, expression, before=""):
+    """Run JavaScript in a-Shell's web view and return one value as text."""
     path = os.path.join(WORKSPACE, "web-%s.js" % name)
     try:
         with open(path, "w", encoding="utf-8") as handle:
-            handle.write(source)
+            handle.write(browser_script(expression, before))
         code, out, err = run_cmd(["jsc", path])
     finally:
         remove(path)
     if err.strip():
         log("browser %s: %s" % (name, err.strip()[:200]))
-    return (out or "").strip()
+    lines = [line for line in (out or "").splitlines() if line.strip()]
+    return lines[-1].strip() if lines else ""
 
 
 def reddit_post_from_browser(url):
     """Ask a-Shell's browser for a Reddit post. Returns the post's fields."""
-    here = browser_js("where", "location.href")
+    here = browser_js("where", "location.href")  # the page the web view is on
     if not here:
         raise EngineError("a-Shell's browser did not answer")
     log("browser was at " + here[:80])
@@ -1191,7 +1458,7 @@ def reddit_post_from_browser(url):
     answer = ""
     try:
         if moved:
-            browser_js("go", 'location.href = "%s"; "going"' % quiet_page)
+            browser_js("go", '"going"', 'location.href = "%s";' % quiet_page)
             deadline = time.time() + BROWSER_WAIT / 2
             while time.time() < deadline:
                 time.sleep(step)
@@ -1200,7 +1467,7 @@ def reddit_post_from_browser(url):
                     break
             else:
                 raise EngineError("a-Shell's browser could not open reddit.com")
-        if browser_js("start", REDDIT_JS.replace("__URL__", json.dumps(url))) != "started":
+        if browser_js("start", '"started"', REDDIT_JS.replace("__URL__", json.dumps(url))) != "started":
             raise EngineError("a-Shell's browser did not run the request")
         deadline = time.time() + BROWSER_WAIT
         while time.time() < deadline and not answer:
@@ -1208,7 +1475,7 @@ def reddit_post_from_browser(url):
             answer = browser_js("result", 'window.__umdl || ""')
     finally:
         if moved:
-            browser_js("back", 'history.back(); "back"')
+            browser_js("back", '"back"', "history.back();")
     log("browser answered: " + (answer[:200] or "nothing"))
     if answer.startswith("OK "):
         try:
@@ -1334,7 +1601,7 @@ def media_files(folder, ytdlp=False):
         path = os.path.join(folder, name)
         if not os.path.isfile(path) or name.startswith("."):
             continue
-        if name in ("manifest.json", "urls.txt"):
+        if name in ("manifest.json", "urls.txt", "plan.json", "job.json"):
             continue
         if ext_of(name) in JUNK_EXTS or ".part" in name:
             continue
@@ -1352,8 +1619,10 @@ def media_files(folder, ytdlp=False):
 
 
 def probe_media(path):
-    """Return {'v': codec, 'a': codec, 'tag': fourcc, 'bitrate': int} via ffprobe."""
-    info = {"v": None, "a": None, "tag": "", "bitrate": 0, "ok": False}
+    """What a media file holds, via ffprobe: codecs, picture size, frame rate,
+    bit depth and bitrates. "ok" is False when the file could not be read."""
+    info = {"v": None, "a": None, "tag": "", "bitrate": 0, "vbitrate": 0, "width": 0, "height": 0,
+            "fps": 0, "pix_fmt": "", "ok": False}
     code, out, err = run_cmd(["ffprobe", "-v", "error", "-print_format", "json",
                               "-show_streams", "-show_format", path])
     data = None
@@ -1371,6 +1640,16 @@ def probe_media(path):
                 if info["v"] is None:
                     info["v"] = (stream.get("codec_name") or "").lower()
                     info["tag"] = (stream.get("codec_tag_string") or "").lower()
+                    info["width"] = to_int(stream.get("width"), 0)
+                    info["height"] = to_int(stream.get("height"), 0)
+                    info["pix_fmt"] = str(stream.get("pix_fmt") or "")
+                    info["vbitrate"] = to_int(stream.get("bit_rate"), 0)
+                    rate = str(stream.get("avg_frame_rate") or stream.get("r_frame_rate") or "")
+                    top, _, bottom = rate.partition("/")
+                    try:
+                        info["fps"] = float(top) / float(bottom or 1)
+                    except (ValueError, ZeroDivisionError):
+                        info["fps"] = 0
             elif kind == "audio" and info["a"] is None:
                 info["a"] = (stream.get("codec_name") or "").lower()
         info["bitrate"] = to_int((data.get("format") or {}).get("bit_rate"), 0)
@@ -1388,7 +1667,75 @@ def probe_media(path):
         info["a"] = audio.group(1).lower() if audio else None
         rate = re.search(r"bitrate: (\d+) kb/s", text)
         info["bitrate"] = int(rate.group(1)) * 1000 if rate else 0
+        size = re.search(r"Video: [^\n]*?(\d{2,5})x(\d{2,5})", text)
+        if size:
+            info["width"], info["height"] = int(size.group(1)), int(size.group(2))
+        fps = re.search(r"([\d.]+) fps", text)
+        info["fps"] = float(fps.group(1)) if fps else 0
     return info
+
+
+def describe_media(info):
+    """"VP9 1080p60 + Opus" for a file that has been probed."""
+    fmt = {"width": info["width"], "height": info["height"], "fps": info["fps"],
+           "vcodec": info["v"], "acodec": info["a"] or "none"}
+    return describe_format(fmt)
+
+
+_ENCODERS = None
+
+
+def encoders():
+    """The video and audio encoders this ffmpeg was built with."""
+    global _ENCODERS
+    if _ENCODERS is None:
+        code, out, err = run_cmd(["ffmpeg", "-hide_banner", "-encoders"])
+        _ENCODERS = set(re.findall(r"(?m)^\s*[VAS][A-Z.]{5}\s+(\S+)", out))
+    return _ENCODERS
+
+
+def conversion_target():
+    """The codec a conversion on this device will most likely produce."""
+    have = encoders()
+    return "HEVC" if not have or "hevc_videotoolbox" in have else "H.264"
+
+
+# Bits per second that keep a picture of this height clean at 30 frames a second
+# in HEVC. Used only as a floor, and only when the encoder cannot be asked for
+# a quality level directly.
+BITRATE_FLOOR = ((2160, 24000000), (1440, 14000000), (1080, 8000000), (720, 5000000), (0, 2500000))
+
+
+def conversion_attempts(info, have):
+    """Ways to re-encode a video for Photos, best first. Each is (codec name,
+    ffmpeg arguments).
+
+    The picture keeps its size and frame rate. HEVC from the device's own
+    encoder comes first: it holds 4K, 60 frames a second and 10-bit colour, and
+    Photos plays it everywhere. It is asked for a quality level, not a bitrate,
+    so detail is kept wherever the picture needs it. H.264 and the software
+    encoder follow for an ffmpeg built without the first choice.
+    """
+    side = min(info["width"], info["height"]) or info["height"] or info["width"]
+    floor = next(rate for height, rate in BITRATE_FLOOR if side >= height)
+    if info["fps"] > 40:
+        floor = int(floor * 1.5)
+    source = info["vbitrate"] or info["bitrate"]
+    rate = int(min(80000000, max(floor, source * 1.1)))
+    deep = "10" in info["pix_fmt"]
+    hevc = ["-c:v", "hevc_videotoolbox", "-tag:v", "hvc1"] + (
+        ["-profile:v", "main10", "-pix_fmt", "p010le"] if deep else ["-pix_fmt", "yuv420p"])
+    attempts = []
+    if not have or "hevc_videotoolbox" in have:
+        attempts.append(("HEVC", hevc + ["-q:v", "75"]))
+        attempts.append(("HEVC", hevc + ["-b:v", str(rate)]))
+    if not have or "h264_videotoolbox" in have:
+        attempts.append(("H.264", ["-c:v", "h264_videotoolbox", "-profile:v", "high",
+                                   "-b:v", str(int(rate * 1.6)), "-pix_fmt", "yuv420p"]))
+    if not have or "libx264" in have:
+        attempts.append(("H.264", ["-c:v", "libx264", "-preset", "veryfast", "-crf", "17",
+                                   "-pix_fmt", "yuv420p"]))
+    return attempts
 
 
 def ffmpeg(args, target):
@@ -1401,62 +1748,82 @@ def ffmpeg(args, target):
     return good
 
 
-def make_photos_ready(path, convert):
-    """Return a path Photos can import, or None to keep the file in Files.
+def photos_verdict(path):
+    """What a file needs before Photos will take it.
 
-    Cheapest fix first: leave alone, then rewrap without re-encoding, then
-    (only if allowed) re-encode with the hardware encoder.
+    Returns (verdict, info): "ready", "repack" (same picture and sound, new
+    wrapper), "convert" (the picture has to be re-encoded) or "files" (Photos
+    has no place for it).
     """
     ext = ext_of(path)
     if ext in IMAGE_EXTS:
-        return path
+        return "ready", None
     if ext not in VIDEO_EXTS:
-        return None  # audio, archives, documents: Photos has no place for them
+        return "files", None  # audio, archives, documents
     info = probe_media(path)
     if not info["ok"]:
         # Cannot inspect it; trust the container for the usual suspects.
-        return path if ext in PHOTOS_CONTAINERS else None
+        return ("ready" if ext in PHOTOS_CONTAINERS else "files"), None
     if not info["v"]:
-        return None  # audio-only, whatever the extension says
-
+        return "files", info  # audio-only, whatever the extension says
     video_ok = info["v"] in PHOTOS_VCODECS
     audio_ok = info["a"] is None or info["a"] in PHOTOS_ACODECS
-    container_ok = ext in PHOTOS_CONTAINERS
     # Apple players only accept HEVC tagged hvc1, not hev1.
     tag_ok = info["v"] != "hevc" or info["tag"] in ("hvc1", "")
-    if video_ok and audio_ok and container_ok and tag_ok:
-        return path
+    if video_ok and audio_ok and ext in PHOTOS_CONTAINERS and tag_ok:
+        return "ready", info
+    return ("repack" if video_ok else "convert"), info
 
-    base = os.path.splitext(path)[0]
-    target = base + "_photos.mp4"
-    audio_args = ["-c:a", "copy"] if audio_ok else ["-c:a", "aac", "-b:a", "192k"]
+
+def replace_with(path, made):
+    """Put the converted file in the original's place: 001.webm becomes 001.mp4."""
+    final = os.path.splitext(path)[0] + ".mp4"
+    remove(path)
+    try:
+        os.replace(made, final)
+    except OSError:
+        return made
+    return final
+
+
+def make_photos_ready(path, convert, notes=None):
+    """Return a path Photos can import, or None to keep the file in Files.
+
+    Cheapest fix first: leave alone, then rewrap without re-encoding, then
+    (only if allowed) re-encode. Each conversion is noted as "VP9 → HEVC".
+    """
+    verdict, info = photos_verdict(path)
+    if verdict == "ready":
+        return path
+    if verdict == "files":
+        return None
+
+    audio_ok = info["a"] is None or info["a"] in PHOTOS_ACODECS
+    target = os.path.splitext(path)[0] + "_photos.mp4"
+    audio_args = ["-c:a", "copy"] if audio_ok else ["-c:a", "aac", "-b:a", "256k"]
     tail = ["-map", "0:v:0", "-map", "0:a:0?", "-movflags", "+faststart"]
 
-    if video_ok:
+    if verdict == "repack":
         ui.start("Repacking for Photos")
         tag = ["-tag:v", "hvc1"] if info["v"] == "hevc" else []
         if ffmpeg(["-i", path, "-c:v", "copy"] + tag + audio_args + tail, target):
             ui.done()
-            remove(path)
-            return target
+            return replace_with(path, target)
         ui.fail()
         return None
 
     if not convert:
         return None
 
-    ui.start("Converting for Photos (this can take a while)")
-    rate = info["bitrate"] or 6000000
-    rate = int(max(2000000, min(40000000, rate * 1.4)))
-    attempts = (
-        ["-c:v", "h264_videotoolbox", "-b:v", str(rate), "-pix_fmt", "yuv420p"],
-        ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p"],
-    )
-    for video_args in attempts:
-        if ffmpeg(["-i", path] + video_args + ["-c:a", "aac", "-b:a", "192k"] + tail, target):
-            ui.done()
-            remove(path)
-            return target
+    source = describe_media(info)
+    ui.start("Converting %s for Photos" % source)
+    for codec, video_args in conversion_attempts(info, encoders()):
+        if ffmpeg(["-i", path] + video_args + audio_args + tail, target):
+            ui.done(codec)
+            log("converted %s to %s with %s" % (source, codec, " ".join(video_args)))
+            if notes is not None:
+                notes.append("%s → %s" % (codec_name(info["v"]), codec))
+            return replace_with(path, target)
     ui.fail("kept the original in Files")
     return None
 
@@ -1483,7 +1850,7 @@ def finalize(ctx, files):
         # Plain sequential names: no spaces or symbols for ffmpeg or Shortcuts to trip on.
         staged = os.path.join(out_dir, "%03d.%s" % (index, ext_of(original) or "bin"))
         os.replace(original, staged)
-        ready = make_photos_ready(staged, ctx["convert"])
+        ready = make_photos_ready(staged, ctx["convert"] is True, ctx.setdefault("converted", []))
         if ready:
             try:
                 too_big = os.path.getsize(ready) > MAX_PHOTOS_BYTES
@@ -1529,8 +1896,7 @@ def clean_jobs(keep):
 def cmd_run(payload, blob):
     url = clean_url(str(payload.get("url") or ""))
     if not url:
-        return callback(payload, {"t": "error", "kind": "nolink",
-                                  "msg": "That did not contain a web link.", "url": ""})
+        return callback(payload, {"t": "error", "kind": "nolink", "msg": "No web link.", "url": ""})
     cfg = payload["cfg"]
     mode = str(payload.get("mode") or "auto")
     threshold = max(1, to_int(cfg.get("threshold"), 10))
@@ -1572,9 +1938,30 @@ def cmd_run(payload, blob):
     except Exception:
         pass
 
+    quality = settings_from(cfg)
+    policy = "best" if quality["convert"] == "best" else "native"
+    convert = quality["convert"] != "never"
+    chosen, picked = "", False
+    if quality["advanced"]:
+        # Nothing is converted without a yes: either the choice made before the
+        # download said so, or the question is asked once the file is here.
+        convert = "ask"
+        pick = str(payload.get("pick") or "")
+        for option in (read_json(os.path.join(job_dir, "plan.json"), {}).get("options") or []):
+            if pick and option.get("label") == pick:
+                picked = True
+                policy = option.get("policy") or ("best" if option.get("convert") else "native")
+                if option.get("format"):
+                    chosen = "%s/%s" % (option["format"], ytdlp_format(policy))
+                convert = True if option.get("convert") else ("ask" if option.get("format") else False)
+    log("settings: %s  policy=%s  convert=%s%s" % (
+        " ".join("%s=%s" % item for item in sorted(quality.items())), policy, convert,
+        "  picked=%s" % chosen if picked else ""))
+
     ctx = {
         "url": url, "dir": job_dir, "mode": mode, "limit": limit,
-        "threshold": threshold, "convert": truthy(cfg.get("convert", "1")),
+        "threshold": threshold, "convert": convert, "quality": quality, "policy": policy,
+        "format": chosen, "picked": picked,
         "titles": {}, "title": "", "failed": 0,
     }
     files, errors = [], []
@@ -1592,6 +1979,11 @@ def cmd_run(payload, blob):
                 "t": "confirm", "url": url, "thr": str(threshold),
                 "n": str(ask.count) if ask.count else "",
                 "title": safe_title(ask.title, "")[:60],
+            })
+        except NeedChoice as ask:
+            return callback(payload, {
+                "t": "choose", "url": url, "info": ask.info, "opts": ask.labels,
+                "mode": mode, "limit": str(limit) if mode == "limit" else "",
             })
         except EngineError as exc:
             errors.append(str(exc))
@@ -1612,8 +2004,8 @@ def cmd_run(payload, blob):
             # Signing in is not what is missing, so do not send the user to do it again.
             entry = site_for(host)
             kind = "unknown"
-            message = ("%s refused this device or network: %s UMDL is signed in, so the account "
-                       "is not the cause. A VPN is a common one: turn it off, then try again."
+            message = ("%s refused this device or network: %s Being signed in did not help. "
+                       "If a VPN is on, turn it off and try again."
                        % (entry[0] if entry else base_domain(host), message.strip()))
         state = read_json(STATE_FILE, {})
         state["last_run"] = {"at": time.time(), "result": "failed (%s)" % kind}
@@ -1621,12 +2013,63 @@ def cmd_run(payload, blob):
         return callback(payload, {"t": "error", "kind": kind, "msg": message,
                                   "url": url, "updated": "1" if updated else ""})
 
+    if ctx["convert"] == "ask":
+        waiting = conversions_pending(files)
+        if waiting:
+            # Advanced mode: say what is here and what it would become, and ask.
+            write_json(os.path.join(job_dir, "job.json"), {
+                "files": files, "titles": ctx["titles"], "title": ctx.get("title") or "",
+                "failed": ctx["failed"], "upv": latest["v"] if latest else "",
+                "upurl": latest["url"] if latest else ""})
+            return callback(payload, {"t": "convert", "url": url, "n": str(len(waiting)),
+                                      "info": conversion_question(ctx.get("title"), waiting, len(files))})
+        ctx["convert"] = False
+    return deliver(payload, ctx, files, manifest, latest)
+
+
+def conversions_pending(files):
+    """The videos among these files that Photos cannot play without re-encoding."""
+    found = []
+    for path in files:
+        verdict, info = photos_verdict(path)
+        if verdict == "convert":
+            found.append((path, info))
+    return found
+
+
+def conversion_question(title, waiting, total):
+    """What advanced mode shows before converting: the source, and the result."""
+    path, info = waiting[0]
+    attempts = conversion_attempts(info, encoders())
+    codec = attempts[0][0] if attempts else "H.264"
+    result = describe_format({"width": info["width"], "height": info["height"], "fps": info["fps"],
+                              "vcodec": codec.replace(".", "").lower(),
+                              "acodec": "aac" if info["a"] else "none"})
+    try:
+        size = " · " + human_size(os.path.getsize(path))
+    except OSError:
+        size = ""
+    lines = [safe_title(title, "")[:60], ""] if title else []
+    if total == 1:
+        lines.append("Photos cannot play this video.")
+    else:
+        lines.append("Photos cannot play %d of these %d files." % (len(waiting), total))
+    lines += ["", "Source: %s%s" % (describe_media(info), size), "Converted: " + result]
+    return "\n".join(lines)
+
+
+def deliver(payload, ctx, files, manifest, latest=None):
+    """Make the files Photos-ready, write the manifest and hand back to the shortcut."""
+    url = ctx["url"]
     photos, kept = finalize(ctx, files)
     write_json(manifest, {"photos": photos, "kept": kept, "url": url})
+    converted = ctx.get("converted") or []
     result = {
         "t": "done", "m": manifest, "np": str(len(photos)), "nk": str(len(kept)),
         "nf": str(ctx["failed"]) if ctx["failed"] else "",
         "nb": str(ctx["oversize"]) if ctx.get("oversize") else "",
+        "nc": str(len(converted)) if converted else "",
+        "conv": converted[0] if converted else "",
         "title": safe_title(ctx.get("title"), "")[:60],
     }
     state = read_json(STATE_FILE, {})
@@ -1640,6 +2083,29 @@ def cmd_run(payload, blob):
         result["upurl"] = latest["url"]
     ui.write("\n  %s\n" % ui.c("92", "Finished. Returning to Shortcuts."))
     return callback(payload, result)
+
+
+def cmd_finish(payload):
+    """Advanced mode, second half: the files are already here and the user has
+    said whether to convert the ones Photos cannot play."""
+    url = clean_url(str(payload.get("url") or ""))
+    job_dir = os.path.join(JOBS_DIR, job_id_for(url))
+    job = read_json(os.path.join(job_dir, "job.json"), {})
+    files = [path for path in job.get("files") or [] if os.path.exists(path)]
+    if not url or not files:
+        return callback(payload, {"t": "info", "title": "Nothing to finish",
+                                  "msg": "That download is no longer in a-Shell. Download it again."})
+    cfg = payload.get("cfg") or {}
+    ui.header(hostname(url) or "download")
+    log("finishing %s  decision=%s" % (url, payload.get("decision")))
+    ctx = {
+        "url": url, "dir": job_dir, "convert": str(payload.get("decision")) == "convert",
+        "quality": settings_from(cfg), "titles": job.get("titles") or {},
+        "title": job.get("title") or "", "failed": to_int(job.get("failed"), 0),
+    }
+    remove(os.path.join(job_dir, "job.json"))
+    latest = {"v": job["upv"], "url": job.get("upurl") or RELEASES_URL} if job.get("upv") else None
+    return deliver(payload, ctx, files, os.path.join(job_dir, "manifest.json"), latest)
 
 
 def cmd_setup(payload):
@@ -1687,7 +2153,7 @@ def folder_size(path):
 def human_size(size):
     for unit in ("bytes", "KB", "MB", "GB"):
         if size < 1000 or unit == "GB":
-            return ("%d %s" if unit == "bytes" else "%.1f %s") % (size, unit)
+            return ("%d %s" if unit == "bytes" or size >= 100 else "%.1f %s") % (size, unit)
         size /= 1000.0
 
 
@@ -1704,6 +2170,8 @@ def status_text(payload):
     lines.append("yt-dlp %s" % versions["yt-dlp"])
     lines.append("gallery-dl %s" % versions["gallery-dl"])
     lines.append("ffmpeg %s" % versions["ffmpeg"])
+    usable = [name for name in ("hevc_videotoolbox", "h264_videotoolbox", "libx264") if name in encoders()]
+    lines.append("Converts with: %s" % (", ".join(usable) if usable else "no encoder found"))
     checked = float(state.get("tools_checked", 0) or 0)
     lines.append("Tools last updated: %s" % (time.strftime("%d %b %H:%M", time.localtime(checked))
                                              if checked > DAY else "never"))
@@ -1735,13 +2203,11 @@ def status_text(payload):
     return "\n".join(lines)
 
 
-def cmd_status(payload, kind="status"):
+def cmd_status(payload):
     ui.header("status")
     ui.start("Checking tools, sign-ins and storage")
     text = status_text(payload)
     ui.done()
-    if kind == "info":  # the "doctor" command of shortcut 1.1.0
-        return callback(payload, {"t": "info", "title": "UMDL diagnostics", "msg": text})
     return callback(payload, {"t": "status", "msg": text})
 
 
@@ -1761,11 +2227,9 @@ def cmd_signin(payload):
     if signed_in(host, read_cookie_store()):
         return callback(payload, {
             "t": "info", "title": "Already signed in to " + label,
-            "msg": "UMDL already uses this sign-in for %s links.\n\nTo use another account, choose "
-                   "Forget saved sign-ins in Settings, then sign in again." % label})
-    ui.write("  The sign-in page opens now. Sign in as usual.\n"
-             "  UMDL returns to Shortcuts by itself once the sign-in is saved.\n"
-             "  If you are back here and nothing happens, check Status in the UMDL menu.\n\n")
+            "msg": "To switch accounts, sign out first: Settings, Reset."})
+    ui.write("  Sign in on the page that opens.\n"
+             "  UMDL returns to Shortcuts once the sign-in is saved.\n\n")
     run_cmd(["internalbrowser", page])
     ui.start("Waiting for the sign-in to %s" % label)
     deadline = time.time() + SIGNIN_WAIT
@@ -1780,28 +2244,55 @@ def cmd_signin(payload):
         log("signed in to " + label)
         return callback(payload, {
             "t": "info", "title": "Signed in to " + label,
-            "msg": "The sign-in is saved on this device, inside a-Shell. UMDL uses it for %s links "
-                   "from now on." % label})
+            "msg": "UMDL will use this sign-in for %s links." % label})
     ui.fail("not confirmed")
     return callback(payload, {
         "t": "info", "title": "Sign-in not confirmed",
-        "msg": "No sign-in to %s was found after %d minutes.\n\nIf you did sign in, open Status "
-               "from the UMDL menu to check. Some sites do not allow signing in from an app's "
-               "built-in browser." % (label, max(1, SIGNIN_WAIT // 60))})
+        "msg": "No sign-in to %s appeared within %d minutes. Status shows whether it was saved. "
+               "Some sites block sign-in from in-app browsers." % (label, max(1, SIGNIN_WAIT // 60))})
+
+
+def forget_sign_ins():
+    """Remove what the download tools use to act as the signed-in user: a-Shell's
+    cookie store, and the tools' own caches, where gallery-dl keeps tokens."""
+    remove(SAFARI_COOKIES)
+    for folder in (os.path.join(HOME, ".cache", "gallery-dl"), os.path.join(HOME, ".cache", "yt-dlp"),
+                   os.path.join(HOME, "Library", "Caches", "yt-dlp")):
+        shutil.rmtree(folder, ignore_errors=True)
+    return not os.path.exists(SAFARI_COOKIES)
 
 
 def cmd_logout(payload):
-    """Forget site sign-ins: the cookie file both download tools read."""
-    ui.header("removing sign-ins")
+    """Sign out of every site."""
+    ui.header("signing out")
     ui.start("Removing saved sign-ins")
-    remove(SAFARI_COOKIES)
+    gone = forget_sign_ins()
     ui.done()
-    gone = not os.path.exists(SAFARI_COOKIES)
     return callback(payload, {
         "t": "info",
-        "title": "Sign-ins removed" if gone else "The sign-ins could not be removed",
-        "msg": ("The download tools no longer hold any site sign-ins."
-                if gone else "Open a-Shell, then try again.")})
+        "title": "Signed out" if gone else "Could not sign out",
+        "msg": "All saved sign-ins were removed." if gone else "Open a-Shell, then try again."})
+
+
+def cmd_reset(payload):
+    """Remove everything UMDL put into a-Shell: its folder, the download tools
+    and the sign-ins. Files the user keeps in a-Shell for other purposes are
+    not touched."""
+    ui.header("resetting")
+    ui.start("Removing the download tools")
+    for command in pip_commands():
+        code, out, err = run_cmd(command + ["uninstall", "-y"] + list(REQUIRED_TOOLS) + OPTIONAL_TOOLS)
+        if code == 0:
+            break
+    ui.done()
+    ui.start("Removing sign-ins and UMDL's files")
+    forget_sign_ins()
+    shutil.rmtree(WORKSPACE, ignore_errors=True)
+    ui.done()
+    return callback(payload, {
+        "t": "info", "title": "UMDL was reset",
+        "msg": "UMDL's files, the download tools and all sign-ins were removed from a-Shell. "
+               "Run UMDL to set it up again."})
 
 
 def main(argv):
@@ -1821,12 +2312,11 @@ def main(argv):
         except Exception:
             pass
     use_site_dirs(read_json(STATE_FILE, {}).get("site_dirs"))
-    commands = ("run", "setup", "update", "status", "doctor", "signin", "logout")
+    commands = ("run", "finish", "setup", "update", "status", "signin", "logout", "reset")
     if command not in commands or to_int(payload.get("p"), PROTOCOL) != PROTOCOL:
         # A shortcut from another version is talking to this helper.
         callback(payload, {"t": "error", "kind": "outdated", "url": "",
-                           "msg": "The UMDL shortcut and its helper are different versions. "
-                                  "Install the latest UMDL from " + RELEASES_URL})
+                           "msg": "The shortcut and its helper are different versions."})
         return 2
     try:
         if command == "run":
@@ -1837,8 +2327,10 @@ def main(argv):
             cmd_update(payload)
         elif command == "status":
             cmd_status(payload)
-        elif command == "doctor":
-            cmd_status(payload, "info")
+        elif command == "finish":
+            cmd_finish(payload)
+        elif command == "reset":
+            cmd_reset(payload)
         elif command == "signin":
             cmd_signin(payload)
         elif command == "logout":

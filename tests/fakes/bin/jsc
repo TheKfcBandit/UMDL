@@ -2,7 +2,10 @@
 """Stand-in for a-Shell's jsc, which runs JavaScript in the app's web view.
 
 It does not run JavaScript. It recognises the few scripts the helper sends and
-answers as a browser would, from the "browser" part of UMDL_FAKE_SCENARIO:
+answers as a browser would. Like a-Shell on iOS 27.2, it only passes on what a
+script sends through the print channel: a script that tries to hand its value
+back directly gets "a result of an unsupported type" and nothing else.
+Answers come from the "browser" part of UMDL_FAKE_SCENARIO:
     {"browser": {"post": {...}}}             the signed-in browser gets the post
     {"browser": {"http": "403 Blocked"}}     Reddit refuses the browser too
     {"browser": {"silent": true}}            the request never finishes
@@ -31,6 +34,12 @@ if os.path.exists(store):
 with open(sys.argv[1]) as handle:
     script = handle.read()
 
+if ('messageHandlers.aShell.postMessage("print:"' not in script
+        or not script.rstrip().endswith("void 0;")):
+    sys.stderr.write("jsc: Error in file %s : JavaScript execution returned a result of an "
+                     "unsupported type\n" % sys.argv[1])
+    sys.exit(0)
+
 if "history.back()" in script:
     state["href"] = state["history"].pop()
     print("back")
@@ -57,7 +66,7 @@ elif "window.__umdl ||" in script:
     print(state["result"])
 elif "document.readyState" in script:
     print((urlsplit(state["href"]).hostname or "") + " complete")
-elif script.strip() == "location.href":
+elif "String(location.href)" in script:
     print(state["href"])
 else:
     sys.stderr.write("fake jsc: unexpected script\n")

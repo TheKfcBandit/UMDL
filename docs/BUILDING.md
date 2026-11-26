@@ -115,16 +115,22 @@ On an iPhone or iPad with a-Shell installed and UMDL not yet set up:
 - [ ] Share a YouTube link to UMDL and choose **Quick setup**. Nothing else is asked, the tools install, the video lands in the UMDL album.
 - [ ] Share a second link. No questions, saved, notification shown.
 - [ ] Open UMDL from the Shortcuts app. The main menu appears at once, with icons, and no other message first.
+- [ ] Open Status. Note the "Converts with" line: it should list `hevc_videotoolbox`.
+- [ ] Settings: change Resolution, then Frame rate. The list comes back after each with the new value. Tap Mode and When finished; each switches without a menu. **Done** closes it.
+- [ ] Set Resolution to 720p and share a YouTube link. The saved video is 720p.
+- [ ] Set Conversion to **For best quality**, Resolution to Best available, and share a 4K YouTube link. It downloads, converts, and plays in Photos at 2160p. Note how long the conversion took.
+- [ ] Set Mode to Advanced and share the same link. The list shows best video, best audio and single file; each row downloads what it says.
+- [ ] In Advanced mode, share a link whose only version is VP9 or AV1. The convert-or-keep question shows the source and the result; try both answers.
 - [ ] Share a post with several images from X, Instagram or Reddit.
-- [ ] Share a playlist with more than 10 videos. The menu appears; **Download the first 10** saves ten.
+- [ ] Share a playlist with more than 10 videos. The menu appears; **First 10** saves ten.
 - [ ] Share an audio link (SoundCloud). The file appears in Files under a-Shell › UMDL › Saved.
 - [ ] Share a link to a page with nothing on it. The error menu appears; **Cancel** works.
 - [ ] Try every menu item and every setting, against [BEHAVIOR.md](BEHAVIOR.md).
-- [ ] Settings › Reset UMDL, then run UMDL from the Shortcuts app and choose **Custom setup**.
-- [ ] Turn on Airplane Mode, reset, and run setup. **Setup incomplete** appears; with the connection back, the next run finishes setup without asking again.
-- [ ] Start a long download, leave a-Shell, share the same link again. It resumes.
 - [ ] Sign in to a site. UMDL returns to Shortcuts and says "Signed in to" with the site's name. Then download a post that needs the sign-in.
-- [ ] Open Status. The site shows as signed in; **Copy status and log** fills the clipboard.
+- [ ] Settings › Reset › **Sign out of all sites**. Status shows no sign-ins; settings are unchanged.
+- [ ] Settings › Reset › **Remove everything**, then run UMDL from the Shortcuts app and choose **Custom setup**. The settings list appears without a Reset row.
+- [ ] Turn on Airplane Mode, remove everything, and run setup. **Setup incomplete** appears; with the connection back, the next run finishes setup without asking again.
+- [ ] Start a long download, leave a-Shell, share the same link again. It resumes.
 
 ## Layout
 

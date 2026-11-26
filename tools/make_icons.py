@@ -151,6 +151,33 @@ def trash(draw, color):
         draw.line([(u(x), u(47)), (u(x), u(64))], fill=color + (255,), width=u(4))
 
 
+def sliders(draw, color):
+    # Two tracks with a knob on each: a setting that is chosen, not typed.
+    line(draw, [(27, 38), (69, 38)], width=5)
+    line(draw, [(27, 58), (69, 58)], width=5)
+    dot(draw, 40, 38, 8)
+    dot(draw, 57, 58, 8)
+    dot(draw, 40, 38, 3.5, color + (255,))
+    dot(draw, 57, 58, 3.5, color + (255,))
+
+
+def corners(draw, color):
+    # The four corners of a frame: picture size.
+    for sx, sy in ((1, 1), (-1, 1), (1, -1), (-1, -1)):
+        cx, cy = 48 - 19 * sx, 48 - 17 * sy
+        line(draw, [(cx, cy + 11 * sy), (cx, cy), (cx + 12 * sx, cy)], width=6)
+
+
+def frames(draw, color):
+    # Two chevrons: motion, frames per second.
+    line(draw, [(31, 32), (47, 48), (31, 64)], width=7)
+    line(draw, [(50, 32), (66, 48), (50, 64)], width=7)
+
+
+def tick(draw, color):
+    line(draw, [(30, 49), (43, 62), (67, 35)], width=8)
+
+
 def pulse(draw, color):
     line(draw, [(25, 50), (37, 50), (44, 34), (53, 65), (59, 50), (71, 50)], width=6)
 
@@ -164,6 +191,10 @@ ICONS = {
     "update": (cycle, GREEN),
     "info": (info, TEAL),
     "status": (pulse, CYAN),
+    "mode": (sliders, PURPLE),
+    "resolution": (corners, CYAN),
+    "fps": (frames, ORANGE),
+    "done": (tick, GREEN),
     "album": (album, PINK),
     "stack": (stack, ORANGE),
     "convert": (swap, INDIGO),

@@ -25,6 +25,12 @@ if words[:1] == ["show"]:
     for package in shown:
         sys.stdout.write("Name: %s\nLocation: %s\n---\n" % (package, target))
     sys.exit(0 if shown else 1)
+if words[:1] == ["uninstall"]:
+    with open(os.path.join(home, "pip.log"), "a") as handle:
+        handle.write(" ".join(words) + "\n")
+    for package in words[1:]:
+        shutil.rmtree(os.path.join(target, modules.get(package, "?")), ignore_errors=True)
+    sys.exit(0)
 packages = [a for a in words if a != "install"]
 with open(os.path.join(home, "pip.log"), "a") as handle:
     handle.write(" ".join(packages) + "\n")

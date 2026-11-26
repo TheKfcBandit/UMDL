@@ -23,6 +23,7 @@
  *      that exits with an error stops the shortcut in the same way.
  *   4. Cherri functions are not used. They re-run the shortcut and read its
  *      input, which is the same channel the helper's callback uses.
+ *   5. Wording: say it once, in few words. Symbols mark actions, not values.
  */
 
 #define name UMDL
@@ -40,8 +41,8 @@
 
 // Keep in step with version.json. The protocol number only changes when the
 // payload or callback format does.
-@umdlVersion = "1.2.0"
-@protocol = "2"
+@umdlVersion = "1.3.0"
+@protocol = "3"
 
 @shared = "{ShortcutInput}"
 @link = ""
@@ -49,6 +50,8 @@
 @runMode = "auto"
 @runLimit = ""
 @forceUpdate = ""
+@pick = ""
+@decision = ""
 @toolCmd = "none"
 @signInTo = ""
 @saveManifest = ""
@@ -56,21 +59,26 @@
 @resumeBlob = ""
 @choice = ""
 @firstRun = "0"
+@openSettings = "0"
 @probe = ""
 
+// Settings, with their defaults.
 @cfgAlbum = "UMDL"
 @cfgThreshold = "10"
-@cfgConvert = "1"
 @cfgAfter = "notify"
+@cfgMode = "simple"
+@cfgRes = "best"
+@cfgFps = "best"
+@cfgConvert = "needed"
 @haveCfg = "0"
 @needsHelper = "0"
 @saveCfg = "0"
-@askAlbum = "0"
-@askConvert = "0"
-@settingsChanged = "0"
+@albumMade = "0"
 
 @failedCount = ""
 @oversizeCount = ""
+@convertedCount = ""
+@convertedHow = ""
 @jobTitle = ""
 @updateVersion = ""
 @updateLink = ""
@@ -81,7 +89,7 @@
 
 // Sent by the in-app helper download (section 8) when it fails.
 if @shared == "UMDL-HELPER-MISSING" {
-    alert("UMDL could not download its helper script.\n\nCheck the internet connection, then run UMDL again.", "Setup incomplete")
+    alert("The helper could not be downloaded. Check the connection, then run UMDL again.", "Setup incomplete")
     stop()
 }
 
@@ -101,8 +109,11 @@ if @shared beginsWith "UMDLCB:" {
         if @probe != "[]" {
             @cfgAlbum = "{cbCfg['album']}"
             @cfgThreshold = "{cbCfg['threshold']}"
-            @cfgConvert = "{cbCfg['convert']}"
             @cfgAfter = "{cbCfg['after']}"
+            @cfgMode = "{cbCfg['mode']}"
+            @cfgRes = "{cbCfg['res']}"
+            @cfgFps = "{cbCfg['fps']}"
+            @cfgConvert = "{cbCfg['convert']}"
             @haveCfg = "1"
         }
 
@@ -110,6 +121,8 @@ if @shared beginsWith "UMDLCB:" {
             @saveManifest = "{cb['m']}"
             @failedCount = "{cb['nf']}"
             @oversizeCount = "{cb['nb']}"
+            @convertedCount = "{cb['nc']}"
+            @convertedHow = "{cb['conv']}"
             @jobTitle = "{cb['title']}"
             @updateVersion = "{cb['upv']}"
             @updateLink = "{cb['upurl']}"
@@ -118,10 +131,10 @@ if @shared beginsWith "UMDLCB:" {
         if @cbType == "confirm" {
             @link = "{cb['url']}"
             @confirmLimit = "{cb['thr']}"
-            @confirmPrompt = "This link contains more than {@confirmLimit} items."
+            @confirmPrompt = "More than {@confirmLimit} items."
             @probe = "[{cb['n']}]"
             if @probe != "[]" {
-                @confirmPrompt = "This link contains {cb['n']} items."
+                @confirmPrompt = "{cb['n']} items."
             }
             @probe = "[{cb['title']}]"
             if @probe != "[]" {
@@ -130,13 +143,35 @@ if @shared beginsWith "UMDLCB:" {
             menu "{@confirmPrompt}" {
                 item "⬇️ Download all":
                     @runMode = "all"
-                item "⬇️ Download the first {@confirmLimit}":
+                item "⬇️ First {@confirmLimit}":
                     @runMode = "limit"
                     @runLimit = @confirmLimit
-                item "⬇️ Download the first item only":
+                item "⬇️ First only":
                     @runMode = "first"
                 item "Cancel":
                     stop()
+            }
+        }
+
+        // Advanced mode, before the download: which version to get.
+        if @cbType == "choose" {
+            @link = "{cb['url']}"
+            @runMode = "{cb['mode']}"
+            @runLimit = "{cb['limit']}"
+            const chooseOptions = getValue(cb, "opts")
+            const chooseAnswer = chooseFromList(chooseOptions, "{cb['info']}")
+            @pick = "{chooseAnswer}"
+        }
+
+        // Advanced mode, after the download: Photos cannot play what arrived.
+        if @cbType == "convert" {
+            @link = "{cb['url']}"
+            @toolCmd = "finish"
+            menu "{cb['info']}" {
+                item "🎞️ Convert":
+                    @decision = "convert"
+                item "📁 Keep in Files":
+                    @decision = "keep"
             }
         }
 
@@ -145,11 +180,11 @@ if @shared beginsWith "UMDLCB:" {
             @errText = "{cb['msg']}"
             @errLink = "{cb['url']}"
             if @errKind == "install" {
-                alert("The download tools could not be installed.\n\n{@errText}\n\nCheck the internet connection, then run UMDL again.", "Setup incomplete")
+                alert("The download tools could not be installed.\n\n{@errText}", "Setup incomplete")
                 stop()
             }
             if @errKind == "outdated" {
-                menu "This copy of UMDL is out of date and cannot continue.\n\n{@errText}" {
+                menu "UMDL is out of date.\n\n{@errText}" {
                     item "⬇️ Get the latest version":
                         openURL("https://github.com/TheKfcBandit/UMDL/releases/latest")
                         stop()
@@ -158,21 +193,21 @@ if @shared beginsWith "UMDLCB:" {
                 }
             }
             if @errKind == "nolink" {
-                alert("UMDL needs a web link. Share a post or video to UMDL, or copy its link first.", "No link found")
+                alert("Share a post or video to UMDL, or copy its link first.", "No link")
                 stop()
             }
-            @errHint = "Updating the download tools resolves most failures."
+            @errHint = "Updating the tools fixes most failures."
             if @errKind == "auth" {
-                @errHint = "This post appears to require an account. Sign in to the site, then try again."
+                @errHint = "Sign in to the site, then try again."
             }
             if @errKind == "network" {
-                @errHint = "Check the internet connection, then try again."
+                @errHint = "Check the connection."
             }
             if @errKind == "gone" {
-                @errHint = "The post may be private, removed, or unavailable in your region."
+                @errHint = "The post may be private, removed or region-locked."
             }
             if @errKind == "drm" {
-                @errHint = "This media is copy-protected and cannot be downloaded."
+                @errHint = "Copy-protected media cannot be downloaded."
             }
             if @errKind == "unsupported" {
                 @errHint = "This site may not be supported."
@@ -180,12 +215,12 @@ if @shared beginsWith "UMDLCB:" {
             menu "Download failed\n\n{@errText}\n\n{@errHint}" {
                 item "🔄 Try again":
                     @link = @errLink
-                item "🛠️ Update tools and try again":
+                item "🛠️ Update tools and retry":
                     @link = @errLink
                     @forceUpdate = "1"
-                item "🔑 Sign in to this site":
+                item "🔑 Sign in":
                     @signInTo = @errLink
-                item "📋 Copy error details":
+                item "📋 Copy details":
                     const errLog = rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
                         "command": "tail -n 40 $HOME/Documents/UMDL/last.log",
                         "openWindow": "close",
@@ -194,7 +229,7 @@ if @shared beginsWith "UMDLCB:" {
                     })
                     @errReport = "UMDL {@umdlVersion}\n{@errLink}\n{@errKind}: {@errText}\n\nLog\n{errLog}"
                     setClipboard(@errReport)
-                    showNotification("Error details copied to the clipboard.", "UMDL")
+                    showNotification("Details copied.", "UMDL")
                     stop()
                 item "Cancel":
                     stop()
@@ -208,9 +243,9 @@ if @shared beginsWith "UMDLCB:" {
 
         if @cbType == "status" {
             @statusText = "{cb['msg']}"
-            alert("{@statusText}", "UMDL status")
-            menu "Copy the status and the last log to the clipboard?\n\nUseful when reporting a problem." {
-                item "📋 Copy status and log":
+            alert("{@statusText}", "Status")
+            menu "Copy the status and log?" {
+                item "📋 Copy":
                     const statusLog = rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
                         "command": "tail -n 40 $HOME/Documents/UMDL/last.log",
                         "openWindow": "close",
@@ -219,7 +254,7 @@ if @shared beginsWith "UMDLCB:" {
                     })
                     @statusReport = "{@statusText}\n\nLog\n{statusLog}"
                     setClipboard(@statusReport)
-                    showNotification("Status and log copied to the clipboard.", "UMDL")
+                    showNotification("Status and log copied.", "UMDL")
                     stop()
                 item "Done":
                     stop()
@@ -227,7 +262,7 @@ if @shared beginsWith "UMDLCB:" {
         }
 
         if @cbType == "setup" {
-            alert("Setup is complete.\n\nTo download, share a post or video to UMDL from any app.\n\nTo change settings, open UMDL from the Shortcuts app.", "UMDL is ready")
+            alert("Share a post or video to UMDL to download it.\n\nOpen UMDL in Shortcuts for settings.", "UMDL is ready")
             stop()
         }
     }
@@ -273,8 +308,11 @@ if @haveCfg == "0" {
             const cfg = getDictionary(@cfgJSON)
             @cfgAlbum = "{cfg['album']}"
             @cfgThreshold = "{cfg['threshold']}"
-            @cfgConvert = "{cfg['convert']}"
             @cfgAfter = "{cfg['after']}"
+            @cfgMode = "{cfg['mode']}"
+            @cfgRes = "{cfg['res']}"
+            @cfgFps = "{cfg['fps']}"
+            @cfgConvert = "{cfg['convert']}"
             @haveCfg = "1"
         }
     }
@@ -288,7 +326,8 @@ if @haveCfg == "0" {
     @resumeBlob = "{lastGroup}"
 }
 
-// A setting that is missing falls back to its default.
+// A setting that is missing falls back to its default. Settings saved before
+// 1.3 have no mode, resolution or frame rate, and a yes/no conversion value.
 @probe = "[{@cfgAlbum}]"
 if @probe == "[]" {
     @cfgAlbum = "Recents"
@@ -297,29 +336,44 @@ if @probe == "[]" {
 if @probe == "[]" {
     @cfgThreshold = "10"
 }
-@probe = "[{@cfgConvert}]"
-if @probe == "[]" {
-    @cfgConvert = "1"
-}
 @probe = "[{@cfgAfter}]"
 if @probe == "[]" {
     @cfgAfter = "notify"
 }
+if @cfgMode != "advanced" {
+    @cfgMode = "simple"
+}
+@probe = "[{@cfgRes}]"
+if @probe == "[]" {
+    @cfgRes = "best"
+}
+@probe = "[{@cfgFps}]"
+if @probe == "[]" {
+    @cfgFps = "best"
+}
+if @cfgConvert == "0" {
+    @cfgConvert = "never"
+}
+if @cfgConvert != "never" {
+    if @cfgConvert != "best" {
+        @cfgConvert = "needed"
+    }
+}
 
 /* ------------------------------------------------------------------------
- * 3. First run: the setup wizard
+ * 3. First run
  * ---------------------------------------------------------------------- */
 
 if @haveCfg == "0" {
-    menu "Welcome to UMDL\n\nUMDL saves shared posts and videos to Photos at the best quality your library can play. Downloads run on this device, in the a-Shell app.\n\nQuick setup saves to a new album named UMDL and installs the download tools. It takes about two minutes and needs an internet connection." {
-        item "✅ Quick setup (recommended)":
+    menu "Welcome to UMDL\n\nSaves shared posts and videos to Photos at the best quality, on this device.\n\nSetup takes about two minutes." {
+        item "✅ Quick setup":
             createAlbum("UMDL")
-            @cfgAlbum = "UMDL"
+            @albumMade = "1"
             @saveCfg = "1"
             @firstRun = "1"
         item "⚙️ Custom setup":
-            @askAlbum = "1"
-            @askConvert = "1"
+            @openSettings = "1"
+            @saveCfg = "1"
             @firstRun = "1"
         item "Not now":
             stop()
@@ -340,10 +394,10 @@ if @saveProbe != "[]" {
     @probe = "[]"
 }
 if @probe != "[]" {
-    menu "A download from an earlier run has not been saved to Photos." {
-        item "💾 Save it now":
+    menu "An earlier download was not saved." {
+        item "💾 Save now":
             @saveManifest = @pendingManifest
-        item "🗑️ Discard it":
+        item "🗑️ Discard":
             const discardDir = replaceText("/manifest.json", "", @pendingManifest)
             @discardPath = "{discardDir}"
             if @discardPath contains "/Documents/UMDL/jobs/" {
@@ -381,7 +435,7 @@ if @probe != "[]" {
             "keepGoing": true,
             "ShowWhenRun": false
         })
-        alert("The files of that download are no longer in a-Shell. Download the link again.", "Nothing to save")
+        alert("Those files are no longer in a-Shell. Download the link again.", "Nothing to save")
         stop()
     }
     const manifest = getDictionary(@manifestText)
@@ -427,18 +481,22 @@ if @probe != "[]" {
         @summary = "Saved to {@albumLabel}."
     }
     if @savedCount == 0 {
-        @summary = "No items could be added to Photos."
+        @summary = "Nothing was added to Photos."
+    }
+    @probe = "[{@convertedCount}]"
+    if @probe != "[]" {
+        @summary = "{@summary}\n{@convertedCount} converted ({@convertedHow})."
     }
     if @keptCount != "0" {
-        @summary = "{@summary}\n{@keptCount} kept in Files, under a-Shell, UMDL, Saved."
+        @summary = "{@summary}\n{@keptCount} kept in Files (a-Shell, UMDL, Saved)."
     }
     @probe = "[{@oversizeCount}]"
     if @probe != "[]" {
-        @summary = "{@summary}\n{@oversizeCount} too large to pass to Photos (over 1 GB)."
+        @summary = "{@summary}\n{@oversizeCount} over 1 GB, kept in Files."
     }
     @probe = "[{@failedCount}]"
     if @probe != "[]" {
-        @summary = "{@summary}\n{@failedCount} could not be downloaded."
+        @summary = "{@summary}\n{@failedCount} failed."
     }
     @summaryTitle = "UMDL"
     @probe = "[{@jobTitle}]"
@@ -449,7 +507,7 @@ if @probe != "[]" {
 
     @probe = "[{@updateVersion}]"
     if @probe != "[]" {
-        menu "UMDL {@updateVersion} is available. The installed version is {@umdlVersion}." {
+        menu "UMDL {@updateVersion} is available. Installed: {@umdlVersion}." {
             item "⬇️ Get the update":
                 openURL("{@updateLink}")
                 stop()
@@ -491,12 +549,12 @@ if @needsMenu == "1" {
     const iconInfo = embedFile("assets/icons/info.png")
     const iconStatus = embedFile("assets/icons/status.png")
 
-    @cards = "BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Download from clipboard;;;;\nORG;CHARSET=utf-8:Uses the most recently copied link;\nPHOTO;ENCODING=b:{iconDownload}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Enter a link;;;;\nORG;CHARSET=utf-8:Type or paste a link to a post or video;\nPHOTO;ENCODING=b:{iconPencil}\nEND:VCARD\n"
+    @cards = "BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Download from clipboard;;;;\nORG;CHARSET=utf-8:The link you copied;\nPHOTO;ENCODING=b:{iconDownload}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Enter a link;;;;\nORG;CHARSET=utf-8:Type or paste;\nPHOTO;ENCODING=b:{iconPencil}\nEND:VCARD\n"
     @probe = "[{@resumeBlob}]"
     if @probe != "[]" {
-        @cards = "{@cards}BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Resume last download;;;;\nORG;CHARSET=utf-8:Continues the download that was interrupted;\nPHOTO;ENCODING=b:{iconResume}\nEND:VCARD\n"
+        @cards = "{@cards}BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Resume last download;;;;\nORG;CHARSET=utf-8:Continue where it stopped;\nPHOTO;ENCODING=b:{iconResume}\nEND:VCARD\n"
     }
-    @cards = "{@cards}BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Settings;;;;\nORG;CHARSET=utf-8:Album and download options;\nPHOTO;ENCODING=b:{iconSettings}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Sign in to a site;;;;\nORG;CHARSET=utf-8:Required for private or age-restricted posts;\nPHOTO;ENCODING=b:{iconKey}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Status;;;;\nORG;CHARSET=utf-8:Sign-ins, versions and logs;\nPHOTO;ENCODING=b:{iconStatus}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Update tools;;;;\nORG;CHARSET=utf-8:Installs the latest yt-dlp and gallery-dl;\nPHOTO;ENCODING=b:{iconUpdate}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:About UMDL;;;;\nORG;CHARSET=utf-8:Version {@umdlVersion}. Updates and project page;\nPHOTO;ENCODING=b:{iconInfo}\nEND:VCARD\n"
+    @cards = "{@cards}BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Settings;;;;\nORG;CHARSET=utf-8:Album, quality, mode;\nPHOTO;ENCODING=b:{iconSettings}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Sign in to a site;;;;\nORG;CHARSET=utf-8:For private posts;\nPHOTO;ENCODING=b:{iconKey}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Status;;;;\nORG;CHARSET=utf-8:Sign-ins, versions, log;\nPHOTO;ENCODING=b:{iconStatus}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Update tools;;;;\nORG;CHARSET=utf-8:Latest yt-dlp and gallery-dl;\nPHOTO;ENCODING=b:{iconUpdate}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:About UMDL;;;;\nORG;CHARSET=utf-8:Version {@umdlVersion};\nPHOTO;ENCODING=b:{iconInfo}\nEND:VCARD\n"
 
     // The third argument keeps the name exactly as written, so the text becomes a .vcf file.
     const cardsFile = setName(@cards, "umdl-menu.vcf", true)
@@ -511,21 +569,21 @@ if @needsMenu == "1" {
         @link = "{clipFirst}"
         @probe = "[{@link}]"
         if @probe == "[]" {
-            alert("The clipboard does not contain a link. Copy the link to a post or video, then try again.", "No link found")
+            alert("The clipboard holds no link.", "No link")
             stop()
         }
         @hasLink = "1"
     }
 
     if @choice == "Enter a link" {
-        const typed = prompt("Link to download", "URL")
+        const typed = prompt("Link", "URL")
         @typedText = "{typed}"
         const typedLinks = getURLs(@typedText)
         const typedFirst = getFirstItem(typedLinks)
         @link = "{typedFirst}"
         @probe = "[{@link}]"
         if @probe == "[]" {
-            alert("The text entered is not a web link.", "No link found")
+            alert("That is not a web link.", "No link")
             stop()
         }
         @hasLink = "1"
@@ -543,8 +601,12 @@ if @needsMenu == "1" {
         @toolCmd = "status"
     }
 
+    if @choice == "Settings" {
+        @openSettings = "1"
+    }
+
     if @choice == "Sign in to a site" {
-        menu "Choose a site to sign in to.\n\nThe sign-in is stored on this device, inside a-Shell. Status shows which sites are signed in." {
+        menu "Sign in to" {
             item "Instagram":
                 @signInTo = "https://www.instagram.com/accounts/login/"
             item "X (Twitter)":
@@ -556,14 +618,14 @@ if @needsMenu == "1" {
             item "Facebook":
                 @signInTo = "https://m.facebook.com/login/"
             item "Another site":
-                const siteTyped = prompt("Address of the site's sign-in page", "URL", "https://")
+                const siteTyped = prompt("Sign-in page address", "URL", "https://")
                 @siteText = "{siteTyped}"
                 const siteLinks = getURLs(@siteText)
                 const siteFirst = getFirstItem(siteLinks)
                 @siteLink = "{siteFirst}"
                 @probe = "[{@siteLink}]"
                 if @probe == "[]" {
-                    alert("The text entered is not a web address.", "Sign in")
+                    alert("That is not a web address.", "Sign in")
                     stop()
                 }
                 @signInTo = @siteLink
@@ -571,8 +633,8 @@ if @needsMenu == "1" {
     }
 
     if @choice == "About UMDL" {
-        menu "UMDL {@umdlVersion}\n\nA free, open-source media downloader.\nPowered by yt-dlp, gallery-dl and a-Shell." {
-            item "🔄 Check for a new version":
+        menu "UMDL {@umdlVersion}\n\nFree and open source.\nBuilt on yt-dlp, gallery-dl and a-Shell." {
+            item "🔄 Check for updates":
                 const latestRaw = rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
                     "command": "curl -fsL --max-time 10 https://raw.githubusercontent.com/TheKfcBandit/UMDL/main/version.json",
                     "openWindow": "close",
@@ -581,159 +643,255 @@ if @needsMenu == "1" {
                 })
                 @latestText = "{latestRaw}"
                 if @latestText !contains "\"shortcut\"" {
-                    alert("GitHub could not be reached. Check the internet connection, then try again.", "Update check")
+                    alert("GitHub could not be reached.", "Update check")
                     stop()
                 }
                 const latest = getDictionary(@latestText)
                 @latestVersion = "{latest['shortcut']}"
                 if @latestVersion == @umdlVersion {
-                    alert("Version {@umdlVersion} is the latest version.", "UMDL is up to date")
+                    alert("{@umdlVersion} is the latest version.", "Up to date")
                     stop()
                 }
-                menu "UMDL {@latestVersion} is available. The installed version is {@umdlVersion}.\n\n{latest['notes']}" {
+                menu "UMDL {@latestVersion} is available. Installed: {@umdlVersion}.\n\n{latest['notes']}" {
                     item "⬇️ Get the update":
                         openURL("{latest['url']}")
                     item "Later":
                         @latestVersion = ""
                 }
                 stop()
-            item "🌐 Open the project page":
+            item "🌐 Project page":
                 openURL("https://github.com/TheKfcBandit/UMDL")
                 stop()
             item "Done":
                 stop()
         }
     }
-
-    if @choice == "Settings" {
-        const iconAlbum = embedFile("assets/icons/album.png")
-        const iconStack = embedFile("assets/icons/stack.png")
-        const iconConvert = embedFile("assets/icons/convert.png")
-        const iconFinish = embedFile("assets/icons/finish.png")
-        const iconForget = embedFile("assets/icons/forget.png")
-        const iconReset = embedFile("assets/icons/reset.png")
-
-        // Commas, semicolons and backslashes are separators inside a vCard.
-        const albumShown = replaceText("[\\\\;,]", " ", @cfgAlbum, true, true)
-        @albumDetail = "{albumShown}"
-        if @cfgAlbum == "Recents" {
-            @albumDetail = "Photo library. No album"
-        }
-        @convertShown = "Convert for Photos"
-        if @cfgConvert == "0" {
-            @convertShown = "Keep the original in Files"
-        }
-        @afterShown = "Show a notification"
-        if @cfgAfter == "photos" {
-            @afterShown = "Open Photos"
-        }
-
-        @settingCards = "BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Save to;;;;\nORG;CHARSET=utf-8:{@albumDetail};\nPHOTO;ENCODING=b:{iconAlbum}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Ask before large downloads;;;;\nORG;CHARSET=utf-8:When a link contains more than {@cfgThreshold} items;\nPHOTO;ENCODING=b:{iconStack}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Unsupported video formats;;;;\nORG;CHARSET=utf-8:{@convertShown};\nPHOTO;ENCODING=b:{iconConvert}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:When a download finishes;;;;\nORG;CHARSET=utf-8:{@afterShown};\nPHOTO;ENCODING=b:{iconFinish}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Forget saved sign-ins;;;;\nORG;CHARSET=utf-8:Signs out of every site;\nPHOTO;ENCODING=b:{iconForget}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Reset UMDL;;;;\nORG;CHARSET=utf-8:Removes the helper and all settings;\nPHOTO;ENCODING=b:{iconReset}\nEND:VCARD\n"
-
-        const settingsFile = setName(@settingCards, "umdl-settings.vcf", true)
-        @settingsContacts = settingsFile.contact
-        const settingsPick = chooseFromList(@settingsContacts, "Settings")
-        @setting = "{settingsPick}"
-
-        if @setting == "Save to" {
-            @askAlbum = "1"
-            @settingsChanged = "1"
-        }
-
-        if @setting == "Ask before large downloads" {
-            const thresholdTyped = prompt("Ask first when a link contains more than this many items", "Number", "{@cfgThreshold}")
-            @thresholdText = "{thresholdTyped}"
-            const thresholdMatch = matchText("^[1-9][0-9]?[0-9]?[0-9]?$", @thresholdText)
-            @thresholdValid = "{thresholdMatch}"
-            @probe = "[{@thresholdValid}]"
-            if @probe == "[]" {
-                alert("Enter a whole number from 1 to 9999.", "Not saved")
-                stop()
-            }
-            @cfgThreshold = @thresholdValid
-            @saveCfg = "1"
-            @settingsChanged = "1"
-        }
-
-        if @setting == "Unsupported video formats" {
-            @askConvert = "1"
-            @settingsChanged = "1"
-        }
-
-        if @setting == "When a download finishes" {
-            menu "When a download finishes" {
-                item "🔔 Show a notification":
-                    @cfgAfter = "notify"
-                item "🖼️ Open Photos":
-                    @cfgAfter = "photos"
-            }
-            @saveCfg = "1"
-            @settingsChanged = "1"
-        }
-
-        if @setting == "Forget saved sign-ins" {
-            @toolCmd = "logout"
-        }
-
-        if @setting == "Reset UMDL" {
-            menu "Remove UMDL's helper, settings and working files from a-Shell?\n\nPhotos and the shortcut itself are not affected. Files kept under a-Shell, UMDL, Saved are deleted." {
-                item "🗑️ Reset UMDL":
-                    rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
-                        "command": "rm -rf $HOME/Documents/UMDL",
-                        "openWindow": "close",
-                        "keepGoing": true,
-                        "ShowWhenRun": false
-                    })
-                    alert("UMDL's files have been removed. Run UMDL again to set it up, or delete the shortcut.", "UMDL was reset")
-                    stop()
-                item "Cancel":
-                    stop()
-            }
-        }
-    }
 }
 
 /* ------------------------------------------------------------------------
- * 7. Questions shared by custom setup and Settings
+ * 7. Settings: one list that stays open. Custom setup uses it too.
+ *
+ * Each row shows its value. A row with two values switches when tapped; a
+ * row with more opens one menu. Every change is saved at once.
  * ---------------------------------------------------------------------- */
 
-if @askAlbum == "1" {
-    menu "Where should downloads be saved?" {
-        item "🆕 A new album":
-            const newAlbum = prompt("Name for the new album", nil, "UMDL")
-            @newAlbumName = "{newAlbum}"
-            @probe = "[{@newAlbumName}]"
-            if @probe == "[]" {
-                @newAlbumName = "UMDL"
+if @openSettings == "1" {
+    const iconAlbum = embedFile("assets/icons/album.png")
+    const iconMode = embedFile("assets/icons/mode.png")
+    const iconResolution = embedFile("assets/icons/resolution.png")
+    const iconFps = embedFile("assets/icons/fps.png")
+    const iconConvert = embedFile("assets/icons/convert.png")
+    const iconStack = embedFile("assets/icons/stack.png")
+    const iconFinish = embedFile("assets/icons/finish.png")
+    const iconReset = embedFile("assets/icons/reset.png")
+    const iconDone = embedFile("assets/icons/done.png")
+
+    @settingsOpen = "1"
+    @settingsChanged = "0"
+    repeat settingsRound for 40 {
+        if @settingsOpen == "1" {
+            // Commas, semicolons and backslashes are separators inside a vCard.
+            const albumShown = replaceText("[\\\\;,]", " ", @cfgAlbum, true, true)
+            @albumDetail = "{albumShown}"
+            if @cfgAlbum == "Recents" {
+                @albumDetail = "Library only"
             }
-            createAlbum("{@newAlbumName}")
-            @cfgAlbum = @newAlbumName
-        item "🖼️ An existing album":
-            const oldAlbum = prompt("Enter the album name exactly as Photos shows it", nil, "{@cfgAlbum}")
-            @oldAlbumName = "{oldAlbum}"
-            @probe = "[{@oldAlbumName}]"
-            if @probe == "[]" {
-                @oldAlbumName = "Recents"
+            @modeDetail = "Simple · uses these settings"
+            if @cfgMode == "advanced" {
+                @modeDetail = "Advanced · asks each time"
             }
-            @cfgAlbum = @oldAlbumName
-        item "📚 The photo library, without an album":
-            @cfgAlbum = "Recents"
+            @resDetail = "Up to {@cfgRes}p"
+            if @cfgRes == "best" {
+                @resDetail = "Best available"
+            }
+            @fpsDetail = "Up to {@cfgFps} fps"
+            if @cfgFps == "best" {
+                @fpsDetail = "Best available"
+            }
+            @convertDetail = "Only when needed"
+            if @cfgConvert == "best" {
+                @convertDetail = "For best quality"
+            }
+            if @cfgConvert == "never" {
+                @convertDetail = "Never"
+            }
+            @afterDetail = "Show a notification"
+            if @cfgAfter == "photos" {
+                @afterDetail = "Open Photos"
+            }
+            @doneDetail = "Close settings"
+            if @firstRun == "1" {
+                @doneDetail = "Install and finish"
+            }
+
+            @settingCards = "BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Album;;;;\nORG;CHARSET=utf-8:{@albumDetail};\nPHOTO;ENCODING=b:{iconAlbum}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Mode;;;;\nORG;CHARSET=utf-8:{@modeDetail};\nPHOTO;ENCODING=b:{iconMode}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Resolution;;;;\nORG;CHARSET=utf-8:{@resDetail};\nPHOTO;ENCODING=b:{iconResolution}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Frame rate;;;;\nORG;CHARSET=utf-8:{@fpsDetail};\nPHOTO;ENCODING=b:{iconFps}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Conversion;;;;\nORG;CHARSET=utf-8:{@convertDetail};\nPHOTO;ENCODING=b:{iconConvert}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Large downloads;;;;\nORG;CHARSET=utf-8:Ask above {@cfgThreshold} items;\nPHOTO;ENCODING=b:{iconStack}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:When finished;;;;\nORG;CHARSET=utf-8:{@afterDetail};\nPHOTO;ENCODING=b:{iconFinish}\nEND:VCARD\n"
+            // Nothing to reset before setup has finished.
+            if @firstRun == "0" {
+                @settingCards = "{@settingCards}BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Reset;;;;\nORG;CHARSET=utf-8:Sign out, or remove everything;\nPHOTO;ENCODING=b:{iconReset}\nEND:VCARD\n"
+            }
+            @settingCards = "{@settingCards}BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Done;;;;\nORG;CHARSET=utf-8:{@doneDetail};\nPHOTO;ENCODING=b:{iconDone}\nEND:VCARD\n"
+
+            const settingsFile = setName(@settingCards, "umdl-settings.vcf", true)
+            @settingsContacts = settingsFile.contact
+            const settingsPick = chooseFromList(@settingsContacts, "Settings")
+            @setting = "{settingsPick}"
+            @settingTouched = "0"
+
+            if @setting == "Album" {
+                menu "Save to" {
+                    item "🆕 New album":
+                        const newAlbum = prompt("Album name", nil, "UMDL")
+                        @newAlbumName = "{newAlbum}"
+                        @probe = "[{@newAlbumName}]"
+                        if @probe == "[]" {
+                            @newAlbumName = "UMDL"
+                        }
+                        createAlbum("{@newAlbumName}")
+                        @albumMade = "1"
+                        @cfgAlbum = @newAlbumName
+                    item "🖼️ Existing album":
+                        const oldAlbum = prompt("Album name, as Photos shows it", nil, "{@cfgAlbum}")
+                        @oldAlbumName = "{oldAlbum}"
+                        @probe = "[{@oldAlbumName}]"
+                        if @probe == "[]" {
+                            @oldAlbumName = "Recents"
+                        }
+                        @albumMade = "1"
+                        @cfgAlbum = @oldAlbumName
+                    item "📚 Library only":
+                        @cfgAlbum = "Recents"
+                }
+                @settingTouched = "1"
+            }
+
+            if @setting == "Mode" {
+                if @cfgMode == "advanced" {
+                    @cfgMode = "simple"
+                } else {
+                    @cfgMode = "advanced"
+                }
+                @settingTouched = "1"
+            }
+
+            if @setting == "Resolution" {
+                menu "Highest resolution" {
+                    item "Best available":
+                        @cfgRes = "best"
+                    item "2160p (4K)":
+                        @cfgRes = "2160"
+                    item "1440p":
+                        @cfgRes = "1440"
+                    item "1080p":
+                        @cfgRes = "1080"
+                    item "720p":
+                        @cfgRes = "720"
+                    item "480p":
+                        @cfgRes = "480"
+                }
+                @settingTouched = "1"
+            }
+
+            if @setting == "Frame rate" {
+                menu "Highest frame rate" {
+                    item "Best available":
+                        @cfgFps = "best"
+                    item "60 fps":
+                        @cfgFps = "60"
+                    item "30 fps":
+                        @cfgFps = "30"
+                }
+                @settingTouched = "1"
+            }
+
+            if @setting == "Conversion" {
+                menu "Convert for Photos\n\nOnly when needed: prefers what Photos already plays.\nFor best quality: takes the best version and converts it. Slower.\nNever: unplayable files go to Files." {
+                    item "Only when needed":
+                        @cfgConvert = "needed"
+                    item "For best quality":
+                        @cfgConvert = "best"
+                    item "Never":
+                        @cfgConvert = "never"
+                }
+                @settingTouched = "1"
+            }
+
+            if @setting == "Large downloads" {
+                const thresholdTyped = prompt("Ask before downloading more than", "Number", "{@cfgThreshold}")
+                @thresholdText = "{thresholdTyped}"
+                const thresholdMatch = matchText("^[1-9][0-9]?[0-9]?[0-9]?$", @thresholdText)
+                @thresholdValid = "{thresholdMatch}"
+                @probe = "[{@thresholdValid}]"
+                if @probe == "[]" {
+                    alert("Enter a whole number from 1 to 9999.", "Not saved")
+                } else {
+                    @cfgThreshold = @thresholdValid
+                    @settingTouched = "1"
+                }
+            }
+
+            if @setting == "When finished" {
+                if @cfgAfter == "photos" {
+                    @cfgAfter = "notify"
+                } else {
+                    @cfgAfter = "photos"
+                }
+                @settingTouched = "1"
+            }
+
+            if @setting == "Reset" {
+                menu "Reset\n\nSign out: forgets every site sign-in.\nRemove everything: also removes UMDL's files and the download tools from a-Shell. Photos are not affected." {
+                    item "🔑 Sign out of all sites":
+                        @toolCmd = "logout"
+                        @settingsOpen = "0"
+                    item "🗑️ Remove everything":
+                        @toolCmd = "reset"
+                        @settingsOpen = "0"
+                    item "Cancel":
+                        @probe = "[]"
+                }
+            }
+
+            if @setting == "Done" {
+                @settingsOpen = "0"
+            }
+
+            if @settingTouched == "1" {
+                @settingsChanged = "1"
+                const liveCfg = {"album": "{@cfgAlbum}", "threshold": "{@cfgThreshold}", "after": "{@cfgAfter}", "mode": "{@cfgMode}", "res": "{@cfgRes}", "fps": "{@cfgFps}", "convert": "{@cfgConvert}"}
+                const liveCfgText = text("{liveCfg}")
+                const liveCfgBlob = base64Encode(liveCfgText, "None")
+                rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
+                    "command": "dash -c 'mkdir -p $HOME/Documents/UMDL; echo {liveCfgBlob} > $HOME/Documents/UMDL/config.b64'",
+                    "openWindow": "close",
+                    "keepGoing": true,
+                    "ShowWhenRun": false
+                })
+            }
+        }
     }
-    @saveCfg = "1"
+
+    // Outside setup, closing Settings ends the run unless Reset asked for the helper.
+    if @firstRun == "0" {
+        if @toolCmd == "none" {
+            if @settingsChanged == "1" {
+                showNotification("Settings saved.", "UMDL")
+            }
+            stop()
+        }
+    }
 }
 
-if @askConvert == "1" {
-    menu "UMDL downloads the best quality that Photos can play. When a site only offers a format Photos cannot play, what should happen?" {
-        item "🎞️ Convert it for Photos (slower)":
-            @cfgConvert = "1"
-        item "📁 Keep the original in Files":
-            @cfgConvert = "0"
+// Setup: the album named in the settings has to exist before anything is saved to it.
+if @firstRun == "1" {
+    if @albumMade == "0" {
+        if @cfgAlbum == "UMDL" {
+            createAlbum("UMDL")
+        }
     }
-    @saveCfg = "1"
 }
 
 if @saveCfg == "1" {
-    const cfgOut = {"album": "{@cfgAlbum}", "threshold": "{@cfgThreshold}", "convert": "{@cfgConvert}", "after": "{@cfgAfter}"}
+    const cfgOut = {"album": "{@cfgAlbum}", "threshold": "{@cfgThreshold}", "after": "{@cfgAfter}", "mode": "{@cfgMode}", "res": "{@cfgRes}", "fps": "{@cfgFps}", "convert": "{@cfgConvert}"}
     const cfgOutText = text("{cfgOut}")
     const cfgOutBlob = base64Encode(cfgOutText, "None")
     rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
@@ -744,11 +902,6 @@ if @saveCfg == "1" {
     })
 }
 
-if @settingsChanged == "1" {
-    showNotification("Settings saved.", "UMDL")
-    stop()
-}
-
 /* ------------------------------------------------------------------------
  * 8. Fetch the helper if needed, then hand over to a-Shell
  * ---------------------------------------------------------------------- */
@@ -757,7 +910,7 @@ if @settingsChanged == "1" {
 // and reports back, so there is no doubt about whether it worked.
 @probe = "[{@signInTo}]"
 if @probe != "[]" {
-    alert("a-Shell will open the sign-in page. Sign in as usual.\n\nUMDL returns here and confirms as soon as the sign-in has been saved, usually within a few seconds. If it does not, swipe right from the left edge of the screen to close the page, then check Status in the UMDL menu.", "Sign in")
+    alert("Sign in on the page that opens. UMDL returns here once the sign-in is saved.\n\nIf it does not, swipe in from the left edge and check Status.", "Sign in")
     @toolCmd = "signin"
     @link = @signInTo
 }
@@ -791,7 +944,7 @@ if @needsHelper == "1" {
     }
 }
 
-const payload = {"v": "{@umdlVersion}", "p": "{@protocol}", "name": "UMDL", "url": "{@link}", "mode": "{@runMode}", "limit": "{@runLimit}", "force_update": "{@forceUpdate}", "cfg": {"album": "{@cfgAlbum}", "threshold": "{@cfgThreshold}", "convert": "{@cfgConvert}", "after": "{@cfgAfter}"}}
+const payload = {"v": "{@umdlVersion}", "p": "{@protocol}", "name": "UMDL", "url": "{@link}", "mode": "{@runMode}", "limit": "{@runLimit}", "force_update": "{@forceUpdate}", "pick": "{@pick}", "decision": "{@decision}", "cfg": {"album": "{@cfgAlbum}", "threshold": "{@cfgThreshold}", "after": "{@cfgAfter}", "mode": "{@cfgMode}", "res": "{@cfgRes}", "fps": "{@cfgFps}", "convert": "{@cfgConvert}"}}
 const payloadText = text("{payload}")
 const payloadBlob = base64Encode(payloadText, "None")
 @blob = "{payloadBlob}"

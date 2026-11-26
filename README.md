@@ -4,17 +4,17 @@
 [![Release](https://img.shields.io/github/v/release/TheKfcBandit/UMDL)](https://github.com/TheKfcBandit/UMDL/releases/latest)
 [![Licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
 
-**Universal Media Downloader for iPhone and iPad.** Share a post or a video to UMDL and it is saved to your Photos, at the best quality your library can play. One tap, no menus.
+**Universal Media Downloader for iPhone and iPad.** Share a post or a video to UMDL and it is saved to your Photos at the best quality. One tap, no menus, unless you ask for them.
 
 UMDL is a free and open-source Shortcut. Downloads run on your own device with [yt-dlp](https://github.com/yt-dlp/yt-dlp) and [gallery-dl](https://github.com/mikf/gallery-dl) inside the free [a-Shell](https://apps.apple.com/app/a-shell/id1473805438) app. Nothing you share is sent to a UMDL server, because there isn't one.
 
-> **Status: 1.2.0.** Two rounds of testing on a device have each found a fault, and each is fixed: setup (1.1.0), and a failure after every download on iOS 27.2 (1.2.0). On a device, setup, the menus, downloading and error reporting are confirmed; saving to Photos, the sign-in confirmation and the Status screen are not yet. [docs/BEHAVIOR.md](docs/BEHAVIOR.md) keeps the list. Please [report](https://github.com/TheKfcBandit/UMDL/issues) what you find.
+> **Status: 1.3.0.** On a device, 1.2.0 set up, saved to Photos, signed in, and downloaded private posts from Instagram and X. 1.3.0 adds quality settings, Simple and Advanced modes and a new conversion path, none of which has run on a device yet. Reddit is still refused on the test network. [docs/BEHAVIOR.md](docs/BEHAVIOR.md) keeps the list. Please [report](https://github.com/TheKfcBandit/UMDL/issues) what you find.
 
 ## Install
 
 1. Install [a-Shell](https://apps.apple.com/app/a-shell/id1473805438) from the App Store and open it once.
 2. On your iPhone or iPad, download `UMDL.shortcut` from the [latest release](https://github.com/TheKfcBandit/UMDL/releases/latest) and tap **Add Shortcut**.
-3. Share a post or video to UMDL, or run it from the Shortcuts app, and tap **Quick setup**. UMDL creates an album named UMDL, a-Shell opens and installs the download tools, and the shared post is downloaded. That takes about two minutes. **Custom setup** lets you choose the album first.
+3. Share a post or video to UMDL, or run it from the Shortcuts app, and tap **Quick setup**. UMDL creates an album named UMDL, a-Shell opens and installs the download tools, and the shared post is downloaded. That takes about two minutes. **Custom setup** opens the settings first: album, mode, resolution, frame rate and conversion.
 
 Built for iOS and iPadOS 18 and later. Keep the shortcut's name as **UMDL**, and keep only one copy: a-Shell uses that name to hand results back. When updating, choose **Replace** if Shortcuts asks, or delete the old copy first.
 
@@ -24,7 +24,7 @@ The first few runs show permission prompts from iOS (run a-Shell, save to Photos
 
 In any app, tap **Share**, then **UMDL**. a-Shell opens and shows progress, then sends you back with the media in your album and a notification saying so.
 
-- **Videos** are saved at the highest resolution available in a format Photos plays (H.264 or HEVC).
+- **Videos** are saved at the highest resolution and frame rate available, or up to the limits you set.
 - **Posts with several photos or videos** are saved whole.
 - **Playlists, albums and profiles** with more than 10 items ask first: everything, the first 10, or just the first. You can change the number.
 - **Audio and other files** Photos has no place for are kept in the Files app under *a-Shell › UMDL › Saved*.
@@ -37,21 +37,40 @@ Open UMDL on its own, without sharing anything, for the menu:
 | Download from clipboard | Downloads the link you copied last |
 | Enter a link | Type or paste one |
 | Resume last download | Appears when a download was interrupted |
-| Settings | Album, the ask-first limit, what to do with unsupported video formats, what happens when a download finishes, forget sign-ins, reset |
-| Sign in to a site | For private or age-restricted posts. UMDL confirms when the sign-in is saved |
+| Settings | Album, mode, resolution, frame rate, conversion, the ask-first limit, what happens when a download finishes, reset |
+| Sign in to a site | For private posts. UMDL confirms when the sign-in is saved |
 | Status | Which sites are signed in, tool versions, storage, and a button to copy the log |
 | Update tools | Installs the newest yt-dlp and gallery-dl now |
 | About UMDL | Version, update check, project page |
 
 Every screen, choice and message is described in [docs/BEHAVIOR.md](docs/BEHAVIOR.md).
 
-## What "best quality" means
+## Quality
 
-Photos only imports H.264 and HEVC video. UMDL asks each site for its best stream in one of those, so the result plays everywhere on your devices without conversion.
+Settings has four rows for this. Resolution and frame rate both start at **Best available**.
 
-On most sites that is the best stream there is. YouTube is the exception: above 1080p it mostly offers VP9 and AV1, which Photos cannot import, so YouTube downloads usually top out at 1080p.
+| Setting | Choices |
+|---|---|
+| Mode | **Simple** uses the settings below and asks nothing. **Advanced** asks each time |
+| Resolution | Best available, or up to 2160p, 1440p, 1080p, 720p, 480p |
+| Frame rate | Best available, or up to 60 or 30 fps |
+| Conversion | **Only when needed**, **For best quality**, or **Never** |
 
-When a site offers no playable format at all, UMDL either converts the video on your device (the default, slower) or keeps the original in Files. Settings › *Unsupported video formats* decides.
+**Conversion** matters because Photos only plays H.264 and HEVC video.
+
+- **Only when needed** (the default) asks each site for its best version in one of those, so nothing has to be converted. On most sites that is the best version there is. YouTube is the exception: above 1080p it mostly offers VP9 and AV1, so this setting stops at 1080p there.
+- **For best quality** takes the best version whatever its codec and converts it to HEVC on your device, at the same size and frame rate. This is how 4K from YouTube reaches Photos. It takes longer.
+- **Never** keeps a file Photos cannot play in Files.
+
+Nothing is re-encoded unless it has to be. A playable video in the wrong kind of file is repacked with the picture copied bit for bit. A conversion uses the device's hardware HEVC encoder at a quality level, keeps 10-bit colour, and is named in the notification ("1 converted (VP9 → HEVC)"). [docs/BEHAVIOR.md](docs/BEHAVIOR.md#quality-and-conversion) has the flow chart and every step.
+
+**Advanced mode** shows what the site has before downloading:
+
+> Best video: 2160p60 VP9 · 650 MB
+> Best audio: Opus · 160 kbps
+> Single file: 360p H.264 + AAC
+
+and offers up to three versions, such as **2160p60 · VP9 → HEVC**, **1080p · H.264** and **360p · H.264 · single file**. If a download turns out to be something Photos cannot play, it shows the source and what it would become, and asks whether to convert or keep the original in Files.
 
 ## Signing in
 
@@ -61,26 +80,27 @@ Some posts need an account, and some sites (Reddit and Instagram among them) oft
 
 The sign-in is a cookie kept by a-Shell on your device. yt-dlp and gallery-dl read it from there. UMDL never sees your password and never reads a cookie's value, only which site it belongs to. Some sites, Google among them, do not allow signing in from an app's built-in browser.
 
-**Forget saved sign-ins** in Settings deletes the cookie file the download tools read.
+Settings › *Reset* › **Sign out of all sites** deletes the cookie file the download tools read.
 
 ## If something goes wrong
 
 A failed download returns to Shortcuts with the reason and these choices:
 
 - **Try again**
-- **Update tools and try again.** Sites change often, and a newer yt-dlp fixes most failures.
-- **Sign in to this site**
-- **Copy error details**, for a bug report. This includes the end of the helper's log
+- **Update tools and retry.** Sites change often, and a newer yt-dlp fixes most failures.
+- **Sign in**
+- **Copy details**, for a bug report. This includes the end of the helper's log
 
 Other things worth knowing:
 
 - **"There was a problem running the shortcut."** With UMDL 1.1.0 or earlier on iOS 27.2 this appears after every download: a-Shell's Get File action fails on that iOS version ([a-Shell issue 1138](https://github.com/holzschu/a-shell/issues/1138)). Update UMDL; 1.2.0 uses the mode that still works. The download that failed is not lost: the next run offers to save it.
-- **Is it set up properly?** Open **Status**. It shows the tool versions, whether GitHub can be reached, which sites are signed in, and the result of the last download. **Copy status and log** puts all of it on the clipboard.
+- **Is it set up properly?** Open **Status**. It shows the tool versions, whether GitHub can be reached, which sites are signed in, and the result of the last download. **Copy** puts all of it, and the log, on the clipboard.
 - **You are left in a-Shell.** Keep a-Shell in the foreground while it works. iOS suspends it otherwise. Share the same link again and the download resumes where it stopped.
-- **"A download from an earlier run has not been saved to Photos."** The download finished but saving was interrupted, for example by a permission prompt. Choose **Save it now**.
-- **"Setup incomplete."** The helper script or the download tools could not be downloaded. The message says which, and why. Check the connection and run UMDL again; it continues from where it stopped.
-- **The album was not found.** If you renamed or deleted the album, pick it again under Settings › *Save to*.
-- **Start over.** Settings › *Reset UMDL* removes the helper and settings. Deleting a-Shell removes everything, the download tools included.
+- **"An earlier download was not saved."** The download finished but saving was interrupted, for example by a permission prompt. Choose **Save now**.
+- **A conversion is slow.** Open Status and look at "Converts with". If it does not list `hevc_videotoolbox`, a-Shell's ffmpeg has no hardware encoder and converts in software. Set Conversion to **Only when needed**, or lower the resolution limit.
+- **"Setup incomplete."** The helper or the download tools could not be downloaded. The message says which, and why. Check the connection and run UMDL again; it continues from where it stopped.
+- **The album was not found.** If you renamed or deleted the album, pick it again under Settings › *Album*.
+- **Start over.** Settings › *Reset* › **Remove everything** removes UMDL's files, the download tools and every sign-in from a-Shell. It leaves anything else you keep in a-Shell alone; deleting the a-Shell app removes that too.
 
 ## Privacy and security
 

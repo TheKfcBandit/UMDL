@@ -285,6 +285,17 @@ class World:
     def seen(self, kind):
         return [e for e in self.events if e[0] == kind]
 
+    def recorded_options(self):
+        """The options each yt-dlp session was started with, oldest first."""
+        if not os.path.exists(self.record_path):
+            return []
+        with open(self.record_path) as handle:
+            return [json.loads(line) for line in handle if line.strip()]
+
+    def kept_files(self):
+        saved = os.path.join(self.workspace, "Saved")
+        return sorted(os.listdir(saved)) if os.path.isdir(saved) else []
+
     # -- a-Shell ----------------------------------------------------------
 
     def env(self, **extra):
@@ -544,6 +555,10 @@ class Run:
 
     def pick(self, kind, prompt, options):
         wanted = self.answer(kind, "%r with %r" % (prompt, options))
+        if wanted is None:
+            # Cancel, or a tap outside the sheet: Shortcuts stops the shortcut there.
+            self.world.events.append((kind, prompt, list(options), None))
+            raise Stop()
         for index, option in enumerate(options):
             if option == wanted or (wanted and wanted in option):
                 self.world.events.append((kind, prompt, list(options), option))
@@ -597,6 +612,24 @@ class Run:
                         if index + 1 < len(items):
                             loops[gid][1] = index + 1
                             self.vars["Repeat Item"] = items[index + 1]
+                            pc = group["start"] + 1
+                        else:
+                            pc += 1
+                elif ident == PREFIX + "repeat.count":
+                    gid = params["GroupingIdentifier"]
+                    if mode == 0:
+                        total = int(float(as_text(self.resolve(params.get("WFRepeatCount", 0))) or 0))
+                        if total > 0:
+                            loops[gid] = [total, 1]
+                            self.vars["Repeat Index"] = 1
+                            pc += 1
+                        else:
+                            pc = group["end"] + 1
+                    else:
+                        total, index = loops[gid]
+                        if index < total:
+                            loops[gid][1] = index + 1
+                            self.vars["Repeat Index"] = index + 1
                             pc = group["start"] + 1
                         else:
                             pc += 1

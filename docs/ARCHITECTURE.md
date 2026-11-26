@@ -17,42 +17,57 @@ flowchart TD
 
     C --> E["Read settings and state from a-Shell, in the background"]
     E --> F{"Settings exist?"}
-    F -- no --> G["Welcome: quick setup, or custom setup questions"] --> H["Save settings"]
+    F -- no --> G["Welcome: quick setup, or the settings list"] --> H["Save settings"]
     H --> I{"Helper present, and fetched by this version?"}
     F -- yes --> J{"Unsaved download waiting?"}
     J -- yes --> K["Offer to save or discard it"]
     J -- no --> L{"Have a link?"}
     K --> L
-    L -- no --> M["Menu: clipboard, enter link, settings, sign in, update, about"]
+    L -- no --> M["Menu: clipboard, enter link, settings, sign in, status, update, about"]
     M --> I
     L -- yes --> I
     I -- no --> N["Download the helper, in the background or in a-Shell"]
     N --> O
-    I -- yes --> O["a-Shell: helper 'run' or 'setup' with the payload"]
+    I -- yes --> O["a-Shell: helper 'run' with the payload"]
 
     O --> P["Install missing tools; update them if a day has passed"]
     P --> Q["Pick tool order for this site"]
     Q --> R["Count the items at the link"]
     R --> S{"More than the ask-first limit?"}
     S -- yes --> T["Callback: confirm"]
-    S -- no --> U["Download, best Photos-native format"]
-    U --> V["Make each file Photos-ready, or keep it in Files"]
-    V --> W["Write manifest, callback: done"]
+    S -- no --> MD{"Mode"}
+    MD -- "Simple" --> U["Download the version the settings select"]
+    MD -- "Advanced, version not picked yet" --> PL["List the site's versions within the limits"]
+    PL -- "something to choose" --> CH["Callback: choose"]
+    PL -- "one playable version" --> U
+    MD -- "Advanced, version picked" --> U
+    U --> V{"Every video playable or repackable?"}
+    V -- yes --> W["Repack if needed, write manifest, callback: done"]
+    V -- "no, conversion allowed" --> CV["Convert to HEVC"] --> W
+    V -- "no, conversion off" --> KF["Keep in Files"] --> W
+    V -- "no, Advanced and undecided" --> CQ["Callback: convert"]
     U -- nothing downloaded --> X["Callback: error"]
 
     T --> D
+    CH --> D
+    CQ --> D
     W --> D
     X --> D
 
     D --> Y{"Callback type"}
     Y -- setup --> AE["Say that UMDL is ready"]
-    Y -- confirm --> Z["Menu: everything, first N, first one, cancel"] --> O
+    Y -- confirm --> Z["Menu: all, first N, first only, cancel"] --> O
+    Y -- choose --> ZC["List: the versions on offer"] --> O
+    Y -- convert --> ZV["Menu: convert, or keep in Files"] --> FN["a-Shell: helper 'finish'"]
+    FN --> V
     Y -- error --> AA["Menu: try again, update and retry, sign in, copy details"]
     AA --> O
-    Y -- info --> AB["Show the message"]
+    Y -- "info, status" --> AB["Show the message"]
     Y -- done --> AC["Read manifest, save each file to the album"]
     AC --> AD["Delete working files, notify, offer shortcut update"]
 ```
+
+Version 1.3 added the **Mode** branch and the two callbacks it needs, `choose` and `convert`; everything else in the chart is as it was. The part from "Mode" to "Save to Photos" is drawn on its own in [BEHAVIOR.md](BEHAVIOR.md#quality-and-conversion).
 
 The first-run part of this chart is drawn in full in [BEHAVIOR.md](BEHAVIOR.md#first-run), which also describes every screen.
 
@@ -79,9 +94,11 @@ python umdl.py run <base64 JSON>
 | `mode` | `auto` (ask above the limit), `all`, `limit`, `first` |
 | `limit` | Item count for `mode: limit` |
 | `force_update` | `1` to upgrade the tools before downloading |
-| `cfg` | The settings: `album`, `threshold`, `convert`, `after` |
+| `pick` | Advanced mode: the label of the version chosen. Empty on the first request |
+| `decision` | For `finish`: `convert` or `keep` |
+| `cfg` | The settings: `album`, `threshold`, `after`, `mode` (`simple`, `advanced`), `res` (`best` or a height), `fps` (`best`, `60`, `30`), `convert` (`needed`, `best`, `never`) |
 
-Other commands take the same payload: `setup`, `update`, `status`, `signin` (the page to open travels in `url`), `logout`. `doctor` is kept as an older name for `status`. A command the helper does not know, or a payload with another protocol number, is answered with an `outdated` error.
+Other commands take the same payload: `finish` (the second half of an advanced-mode download), `setup`, `update`, `status`, `signin` (the page to open travels in `url`), `logout`, `reset`. A command the helper does not know, or a payload with another protocol number, is answered with an `outdated` error.
 
 ## The callback (helper to shortcut)
 
@@ -93,8 +110,10 @@ Every callback includes `cfg`, echoed from the payload, so the shortcut does not
 
 | `t` | Other fields | The shortcut then |
 |---|---|---|
-| `done` | `m` manifest path, `np` Photos count, `nk` kept-in-Files count, `nf` failed count, `nb` count kept in Files for being over 1 GB, `title`, and `upv` and `upurl` when a newer release exists | Saves and notifies |
+| `done` | `m` manifest path, `np` Photos count, `nk` kept-in-Files count, `nf` failed count, `nb` count kept in Files for being over 1 GB, `nc` converted count and `conv` what was converted ("VP9 → HEVC"), `title`, and `upv` and `upurl` when a newer release exists | Saves and notifies |
 | `confirm` | `url`, `n` item count or empty when only "more than" is known, `thr`, `title` | Asks how much to download |
+| `choose` | `url`, `info` what the site offers, `opts` the labels to list, `mode` and `limit` carried over from a `confirm` | Lists the versions, then sends `run` again with `pick` |
+| `convert` | `url`, `n`, `info` the source and what it would become | Asks, then sends `finish` with `decision` |
 | `error` | `kind`, `msg`, `url` | Explains and offers fixes |
 | `setup` | `ver` | Says that UMDL is ready |
 | `info` | `title`, `msg` | Shows the message |
@@ -131,6 +150,8 @@ Everything is under `~/Documents/UMDL`, visible in the Files app as *a-Shell ›
 | `jobs/<id>/` | Working folder for one link. `<id>` is derived from the link, so sharing the same link again resumes |
 | `jobs/<id>/out/` | Finished files with plain names (`001.mp4`) |
 | `jobs/<id>/manifest.json` | What to save to Photos and what was kept |
+| `jobs/<id>/plan.json` | Advanced mode: the versions that were offered, so the label that comes back can be matched to a format |
+| `jobs/<id>/job.json` | Advanced mode: the downloaded files waiting for the convert-or-keep answer |
 | `pending` | Path of a manifest that has not been saved to Photos yet |
 | `last.b64` | The payload of a download in progress; left behind only if it was interrupted |
 | `last.log` | Log of the last run |
@@ -138,24 +159,37 @@ Everything is under `~/Documents/UMDL`, visible in the Files app as *a-Shell ›
 
 ## Quality
 
-yt-dlp is given this preference list, first match wins:
+Three settings shape the request to yt-dlp, and one decides what happens afterwards.
 
-1. Best video in H.264 or HEVC, plus best AAC-family audio
-2. Best single file with both
-3. Best H.264 or HEVC video, plus any audio
-4. Best H.264 or HEVC single file
-5. Best MP4 or MOV whose codecs the site does not state
-6. Best of anything, video then audio-only
+**Limits.** Resolution and frame rate become yt-dlp sort fields, `res:1080` and `fps:30`. A sort field with a value means "the largest up to this, and the smallest above it only when nothing fits", which is the behaviour wanted from a limit: a site that only has 4K still downloads. Each is added only when set, so the two are independent.
 
-After download every video is inspected with ffprobe, because what a site says and what it serves can differ:
+**Format preference**, by the conversion setting:
 
-| Found | Action |
-|---|---|
-| H.264 or HEVC, compatible audio, MP4 or MOV | Used as is |
-| Right video codec, wrong container or audio | Rewrapped; video is copied, audio re-encoded only if needed |
-| HEVC tagged `hev1` | Retagged `hvc1`, which Apple players require |
-| Any other video codec | Converted with the hardware H.264 encoder if the setting allows, with a software fallback; otherwise kept in Files |
-| No video stream | Kept in Files |
+| Conversion | Format string | Meaning |
+|---|---|---|
+| Only when needed, Never | `YTDLP_FORMAT`: H.264 or HEVC video plus AAC audio, then a single file with both, then the same with any audio, then MP4 or MOV with unstated codecs, then anything | The best that Photos plays as it is. Another codec only when the site has nothing else |
+| For best quality | `bv*+ba/b/ba` | The best there is, whatever the codec |
+
+**Advanced mode** replaces the format string with the exact formats behind the row that was picked, followed by the string above as a fallback in case the site's list changed between the two requests. The plan is built from yt-dlp's format list by one explicit rule: the largest picture within the limits, then the higher frame rate, then the higher bitrate; and for sound the highest bitrate, staying with AAC when the picture itself needs no conversion. When nothing is within the limits the smallest version is offered, as yt-dlp's own limit does. Each row carries exact format ids, so what is listed is what is fetched. The codec after the arrow is the one this device's ffmpeg will produce.
+
+**After the download** every video is inspected with ffprobe, because what a site says and what it serves can differ:
+
+| Found | Verdict | Action |
+|---|---|---|
+| H.264 or HEVC, compatible audio, MP4 or MOV | ready | Used as is |
+| Right video codec, wrong container or audio | repack | Rewrapped; video is copied, audio re-encoded to AAC 256 kbit/s only if needed |
+| HEVC tagged `hev1` | repack | Retagged `hvc1`, which Apple players require |
+| Any other video codec | convert | Converted if allowed, otherwise kept in Files |
+| No video stream | files | Kept in Files |
+
+A conversion never changes the picture's size or frame rate. `conversion_attempts` returns the ffmpeg arguments to try, in order, limited to the encoders `ffmpeg -encoders` reports:
+
+1. `hevc_videotoolbox -q:v 75 -tag:v hvc1`. The device's hardware encoder in constant-quality mode, so the bitrate follows the picture. `main10` and `p010le` are added for a 10-bit source.
+2. `hevc_videotoolbox -b:v <rate>`. The same encoder by bitrate, for an ffmpeg build without the quality mode. The rate is 1.1 times the source's, with a floor by resolution and a ceiling of 80 Mbit/s.
+3. `h264_videotoolbox -profile:v high -b:v <1.6 × rate>`.
+4. `libx264 -crf 17 -preset veryfast`. Software, slow, visually lossless.
+
+The first that produces a file wins and is named in the log and in the notification. HEVC comes first because it is the only one of these that carries 4K at 60 frames a second and 10-bit colour at a size worth keeping, and every device that runs a-Shell plays it.
 
 ## Which tool goes first
 
@@ -168,7 +202,7 @@ The second tool runs only if the first produced nothing. If both fail, the first
 
 Reddit gets one more attempt. Both tools read a post from `www.reddit.com/…/.json`, and Reddit refuses that to many networks with "You've been blocked by network security", signed in or not; yt-dlp words the same refusal as "Your IP address is unable to access the Reddit API". The block page points to Reddit's API as the alternative, so when gallery-dl is blocked the helper runs it again with `-o api=oauth -o refresh-token=`, which makes it request a public API token and read the post from `oauth.reddit.com`. The empty `refresh-token` matters: without it gallery-dl 1.32.21 stops with an `AttributeError` before making any request.
 
-On the test device that was refused as well, so there is a last route that does not depend on Reddit accepting a download tool at all. a-Shell has a real browser: the web view behind `internalbrowser`, which is also where the sign-in lives. a-Shell's `jsc` command runs JavaScript in that web view. The helper sends the web view to `www.reddit.com/robots.txt` (a page of the site that runs no scripts), runs a short script there that follows the share link and fetches the post's JSON as the signed-in browser, polls for the answer, and sends the web view back with `history.back()`. From the answer it takes only where the media is: a DASH manifest on `v.redd.it` for a video, which goes to yt-dlp; original files on `i.redd.it` for photos and galleries, which go to gallery-dl as direct links; or a link to another site, which goes through the normal tool order. Those hosts are plain file servers and take no part in the block. `jsc` returns only what a script evaluates to at once, so the script stores its answer in the page and a second script reads it. The script itself is tested in Node against canned answers (`tests/test_reddit_js.py`).
+On the test device that was refused as well, so there is a last route that does not depend on Reddit accepting a download tool at all. a-Shell has a real browser: the web view behind `internalbrowser`, which is also where the sign-in lives. a-Shell's `jsc` command runs JavaScript in that web view. The helper sends the web view to `www.reddit.com/robots.txt` (a page of the site that runs no scripts), runs a short script there that follows the share link and fetches the post's JSON as the signed-in browser, polls for the answer, and sends the web view back with `history.back()`. From the answer it takes only where the media is: a DASH manifest on `v.redd.it` for a video, which goes to yt-dlp; original files on `i.redd.it` for photos and galleries, which go to gallery-dl as direct links; or a link to another site, which goes through the normal tool order. Those hosts are plain file servers and take no part in the block. `jsc` does not wait for a script's promises, so the script stores its answer in the page and a second script reads it. On iOS 27.2 `jsc` also refuses to hand back a script's own value ("JavaScript execution returned a result of an unsupported type"), so every script sends its result through the message handler a-Shell gives page scripts for printing, `window.webkit.messageHandlers.aShell.postMessage("print:…")`, and ends in `void 0`. The script itself is tested in Node against canned answers (`tests/test_reddit_js.py`).
 
 ## Staying current
 
@@ -182,7 +216,9 @@ Bump `protocol` only when the payload or callback changes incompatibly. A helper
 ## Things that look odd but are deliberate
 
 - **File names are `001.mp4`, not titles.** a-Shell has no fork/exec, so commands are passed as one string. Names without spaces or symbols cannot be mis-parsed. Titles are restored for files kept in Files.
-- **The shortcut is linear, with flags.** Shortcuts has no functions or loops to speak of. Each section runs if its flag is set, and shared steps (the album question, saving settings, launching a-Shell) appear once near the end.
+- **The shortcut is linear, with flags.** Each section runs if its flag is set, and shared steps (saving settings, launching a-Shell) appear once near the end.
+- **Settings is a counted loop.** Shortcuts has no "repeat until". The list sits in a "Repeat 40 times" whose body is skipped once **Done** is tapped, which is what keeps the list on screen between changes without a second level of menus.
+- **Advanced mode opens a-Shell twice.** Listing a site's versions needs Python, and the question has to be asked in Shortcuts. The first visit lists and returns; the second downloads.
 - **"Open App" then a one-second wait before each foreground command.** Copied from SW-DLT, where it makes the hand-off to a-Shell reliable.
 - **Emptiness is never tested with "has any value".** On a device an empty text counts as a value, so that test is true when it looks like it should be false. The shortcut wraps the text in brackets and compares with `[]`. A test fails the build if a "has any value" condition appears.
 - **Dictionary conversions are guarded.** Shortcuts stops with an error if asked to turn non-JSON text into a dictionary, so anything that came over the network or from disk is checked for an expected key first.

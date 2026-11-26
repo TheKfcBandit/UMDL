@@ -2,7 +2,9 @@
 
 The script is taken from src/umdl.py exactly as the helper would send it. Node
 stands in for the web view: `fetch` is replaced by a recording that answers
-the way Reddit does in each case.
+the way Reddit does in each case, and a-Shell's print channel is replaced by a
+list. As on iOS 27.2, the script must report through that channel and leave
+nothing behind as its own value.
 """
 
 import json
@@ -23,6 +25,8 @@ const fs = require("fs");
 const plan = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
 const calls = [];
 globalThis.window = globalThis;
+const printed = [];
+window.webkit = {messageHandlers: {aShell: {postMessage: function (text) { printed.push(text); }}}};
 globalThis.fetch = async function (link, options) {
   const method = (options && options.method) || "GET";
   calls.push([method, link, (options && options.credentials) || ""]);
@@ -30,9 +34,10 @@ globalThis.fetch = async function (link, options) {
   if (answer === undefined || answer.fail) { throw new TypeError("Load failed"); }
   return {url: answer.url || "", status: answer.status || 200, text: async () => answer.body || ""};
 };
-const started = (0, eval)(fs.readFileSync(process.argv[2], "utf8"));
+const value = (0, eval)(fs.readFileSync(process.argv[2], "utf8"));
 setTimeout(function () {
-  console.log(JSON.stringify({started: started, answer: window.__umdl, calls: calls}));
+  console.log(JSON.stringify({value: typeof value, printed: printed, answer: window.__umdl,
+                              calls: calls}));
 }, 50);
 """
 
@@ -49,8 +54,9 @@ class RedditScript(unittest.TestCase):
     def run_script(self, link, plan):
         with tempfile.TemporaryDirectory() as folder:
             paths = [os.path.join(folder, name) for name in ("harness.js", "script.js", "plan.json")]
-            for path, text in zip(paths, (HARNESS, umdl.REDDIT_JS.replace("__URL__", json.dumps(link)),
-                                          json.dumps(plan))):
+            script = umdl.browser_script('"started"',
+                                         umdl.REDDIT_JS.replace("__URL__", json.dumps(link)))
+            for path, text in zip(paths, (HARNESS, script, json.dumps(plan))):
                 with open(path, "w", encoding="utf-8") as handle:
                     handle.write(text)
             out = subprocess.run(["node"] + paths, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -63,7 +69,8 @@ class RedditScript(unittest.TestCase):
         result = self.run_script("https://www.reddit.com" + share, {
             "HEAD " + share: {"url": CANONICAL},
             "GET " + JSON_PATH: {"body": json.dumps(LISTING)}})
-        self.assertEqual(result["started"], "started")
+        self.assertEqual(result["printed"], ["print:started\n"])   # through a-Shell's channel
+        self.assertEqual(result["value"], "undefined")              # and nothing as its own value
         self.assertEqual(result["calls"], [["HEAD", share, "include"], ["GET", JSON_PATH, "include"]])
         self.assertTrue(result["answer"].startswith("OK "))
         self.assertTrue(result["answer"].isascii())
