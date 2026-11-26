@@ -21,6 +21,7 @@ Changed:
 - HEVC under the `hev1` label is relabelled, not converted.
 - **Resume last download** is no longer forgotten when Status, Settings or Update tools is opened first.
 - Stopping the helper with Control-C says where the download stands.
+- The first download with 1.6 deletes the working files 1.5 and earlier left in a-Shell, including any video they never finished saving.
 - Internally, a download is a job with a state (`fetch`, `save`, `done`) saved after each step; see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#a-download-is-a-job).
 
 Not possible: converting in the background. iOS pauses a-Shell when it leaves the screen.

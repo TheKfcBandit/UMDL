@@ -819,11 +819,14 @@ class EndToEnd(Base):
         os.makedirs(recent)
         long_ago = time.time() - umdl.KEEP_JOBS_FOR - 60
         os.utime(stale, (long_ago, long_ago))
+        before_16 = os.path.join(umdl.WORKSPACE, "jobs", "abc", "out")     # what 1.5 left behind
+        os.makedirs(before_16)
         install_fake_ytdlp({"raw": FakeDownloadError("Unsupported URL")})
         install_fake_gallery(False)
         self.run_helper("run", payload("https://video.test/none"))
         self.assertFalse(os.path.exists(stale))
         self.assertTrue(os.path.exists(recent))
+        self.assertFalse(os.path.exists(os.path.join(umdl.WORKSPACE, "jobs")))
 
     def test_an_interrupted_save_carries_on_without_downloading_again(self):
         clip = self.clip()

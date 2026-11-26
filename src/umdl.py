@@ -2238,7 +2238,10 @@ class Stop(Exception):
 
 
 def clean_jobs(keep):
-    """Drop what other downloads left behind long enough ago."""
+    """Drop what other downloads left behind long enough ago, and the working
+    files of versions before 1.6, which nothing reads any more."""
+    for name in ("jobs", "pending"):
+        remove(os.path.join(WORKSPACE, name))
     try:
         names = os.listdir(JOBS_DIR)
     except Exception:
