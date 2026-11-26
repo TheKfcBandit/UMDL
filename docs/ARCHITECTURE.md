@@ -36,15 +36,16 @@ flowchart TD
     R --> S{"More than the ask-first limit?"}
     S -- yes --> T["Callback: confirm"]
     S -- no --> MD{"Mode"}
-    MD -- "Simple" --> U["Download the version the settings select"]
-    MD -- "Advanced, version not picked yet" --> PL["List the site's versions within the limits"]
-    PL -- "something to choose" --> CH["Callback: choose"]
-    PL -- "one playable version" --> U
+    MD -- "Simple" --> U["Download the best version within the limits"]
+    MD -- "Advanced, nothing picked yet" --> PL["List the site's versions within the limits"]
+    PL -- "several" --> CH["Callback: choose"]
+    PL -- "one" --> U
     MD -- "Advanced, version picked" --> U
     U --> V{"Every video playable or repackable?"}
-    V -- yes --> W["Repack if needed, write manifest, callback: done"]
-    V -- "no, conversion allowed" --> CV["Convert to HEVC"] --> W
-    V -- "no, conversion off" --> KF["Keep in Files"] --> W
+    V -- yes --> W["Repack where needed, write manifest, callback: done"]
+    V -- "no, and decided" --> DC{"Decision"}
+    DC -- "best or small" --> CV["Convert to HEVC"] --> W
+    DC -- "off or keep" --> KF["Keep in Files"] --> W
     V -- "no, Advanced and undecided" --> CQ["Callback: convert"]
     U -- nothing downloaded --> X["Callback: error"]
 
@@ -57,9 +58,11 @@ flowchart TD
     D --> Y{"Callback type"}
     Y -- setup --> AE["Say that UMDL is ready"]
     Y -- confirm --> Z["Menu: all, first N, first only, cancel"] --> O
-    Y -- choose --> ZC["List: the versions on offer"] --> O
-    Y -- convert --> ZV["Menu: convert, or keep in Files"] --> FN["a-Shell: helper 'finish'"]
-    FN --> V
+    Y -- choose --> ZC["List: the versions on offer"]
+    ZC -- "plays in Photos" --> O
+    ZC -- "needs converting" --> ZQ["Menu: best quality, smaller file, keep in Files"] --> O
+    Y -- convert --> ZV["The same menu, with source and result"] --> FN["a-Shell: helper 'finish'"]
+    FN --> DC
     Y -- error --> AA["Menu: try again, update and retry, sign in, copy details"]
     AA --> O
     Y -- "info, status" --> AB["Show the message"]
@@ -67,7 +70,7 @@ flowchart TD
     AC --> AD["Delete working files, notify, offer shortcut update"]
 ```
 
-Version 1.3 added the **Mode** branch and the two callbacks it needs, `choose` and `convert`; everything else in the chart is as it was. The part from "Mode" to "Save to Photos" is drawn on its own in [BEHAVIOR.md](BEHAVIOR.md#quality-and-conversion).
+Version 1.3 added the **Mode** branch and the two callbacks it needs, `choose` and `convert`. Version 1.4 separated the two decisions in it: which version to download depends only on the resolution and frame rate limits, and what to do with a file Photos cannot play is decided afterwards, by the Convert setting in simple mode and by a question in advanced mode. The part from "Mode" to "Save to Photos" is drawn on its own in [BEHAVIOR.md](BEHAVIOR.md#which-version-is-downloaded).
 
 The first-run part of this chart is drawn in full in [BEHAVIOR.md](BEHAVIOR.md#first-run), which also describes every screen.
 
@@ -94,9 +97,9 @@ python umdl.py run <base64 JSON>
 | `mode` | `auto` (ask above the limit), `all`, `limit`, `first` |
 | `limit` | Item count for `mode: limit` |
 | `force_update` | `1` to upgrade the tools before downloading |
-| `pick` | Advanced mode: the label of the version chosen. Empty on the first request |
-| `decision` | For `finish`: `convert` or `keep` |
-| `cfg` | The settings: `album`, `threshold`, `after`, `mode` (`simple`, `advanced`), `res` (`best` or a height), `fps` (`best`, `60`, `30`), `convert` (`needed`, `best`, `never`) |
+| `pick` | Advanced mode: the title of the row chosen. Empty on the first request. The helper compares letters and digits only, so a title survives whatever Shortcuts does to its symbols |
+| `decision` | Advanced mode: `best`, `small` or `keep`. Sent with `pick` when the version chosen needs converting, and with `finish` |
+| `cfg` | The settings: `album`, `threshold`, `after`, `mode` (`simple`, `advanced`), `res` (`best` or a height), `fps` (`best`, `60`, `30`), `convert` (`best`, `small`, `off`; values stored by earlier versions are mapped) |
 
 Other commands take the same payload: `finish` (the second half of an advanced-mode download), `setup`, `update`, `status`, `signin` (the page to open travels in `url`), `logout`, `reset`. A command the helper does not know, or a payload with another protocol number, is answered with an `outdated` error.
 
@@ -112,7 +115,7 @@ Every callback includes `cfg`, echoed from the payload, so the shortcut does not
 |---|---|---|
 | `done` | `m` manifest path, `np` Photos count, `nk` kept-in-Files count, `nf` failed count, `nb` count kept in Files for being over 1 GB, `nc` converted count and `conv` what was converted ("VP9 → HEVC"), `title`, and `upv` and `upurl` when a newer release exists | Saves and notifies |
 | `confirm` | `url`, `n` item count or empty when only "more than" is known, `thr`, `title` | Asks how much to download |
-| `choose` | `url`, `info` what the site offers, `opts` the labels to list, `mode` and `limit` carried over from a `confirm` | Lists the versions, then sends `run` again with `pick` |
+| `choose` | `url`, `info` what the site offers, `cards` the rows to list, `mode` and `limit` carried over from a `confirm` | Lists the versions, asks how to convert if the one chosen needs it, then sends `run` again with `pick` and `decision` |
 | `convert` | `url`, `n`, `info` the source and what it would become | Asks, then sends `finish` with `decision` |
 | `error` | `kind`, `msg`, `url` | Explains and offers fixes |
 | `setup` | `ver` | Says that UMDL is ready |
@@ -159,37 +162,46 @@ Everything is under `~/Documents/UMDL`, visible in the Files app as *a-Shell ›
 
 ## Quality
 
-Three settings shape the request to yt-dlp, and one decides what happens afterwards.
+Two decisions, kept apart: which version to download, and what to do with a file Photos cannot play.
 
-**Limits.** Resolution and frame rate become yt-dlp sort fields, `res:1080` and `fps:30`. A sort field with a value means "the largest up to this, and the smallest above it only when nothing fits", which is the behaviour wanted from a limit: a site that only has 4K still downloads. Each is added only when set, so the two are independent.
+**Which version.** The format string is always `bv*+ba/b/ba`, the best there is. What "best" means is given to yt-dlp as sort fields, `lang, res, fps, vcodec:h265, acodec:aac`:
 
-**Format preference**, by the conversion setting:
+- `res` and `fps` first, so size and smoothness decide before anything else. A resolution limit turns `res` into `res:1080`, which yt-dlp reads as "the largest up to this, and the smallest above it only when nothing fits".
+- `vcodec:h265` and `acodec:aac` after them. These rank H.265, then H.264, above VP9 and AV1, and AAC above Opus, but only between versions already equal in size and frame rate. A version Photos plays is therefore preferred when it costs nothing, and never at the price of a smaller picture.
+- `lang` leads so that the sound stays in the original language whatever its codec.
 
-| Conversion | Format string | Meaning |
-|---|---|---|
-| Only when needed, Never | `YTDLP_FORMAT`: H.264 or HEVC video plus AAC audio, then a single file with both, then the same with any audio, then MP4 or MOV with unstated codecs, then anything | The best that Photos plays as it is. Another codec only when the site has nothing else |
-| For best quality | `bv*+ba/b/ba` | The best there is, whatever the codec |
+A frame rate limit cannot be a sort field: placed after `res` it would never apply where a site's larger versions are all 60 frames a second, and placed before it would prefer 30 frames over 25 before looking at size. It is a filter with a fallback instead: `bv*[fps<=?30]+ba/b[fps<=?30]/bv*+ba/b/ba`.
 
-**Advanced mode** replaces the format string with the exact formats behind the row that was picked, followed by the string above as a fallback in case the site's list changed between the two requests. The plan is built from yt-dlp's format list by one explicit rule: the largest picture within the limits, then the higher frame rate, then the higher bitrate; and for sound the highest bitrate, staying with AAC when the picture itself needs no conversion. When nothing is within the limits the smallest version is offered, as yt-dlp's own limit does. Each row carries exact format ids, so what is listed is what is fetched. The codec after the arrow is the one this device's ffmpeg will produce.
+The conversion setting appears nowhere in this. One other format string exists, `YTDLP_FORMAT`, which admits only what Photos plays unless the site has nothing else; it is used when advanced mode's "Best without converting" is chosen for a link with several videos.
+
+**Advanced mode** replaces the format string with the exact formats behind the row that was picked, followed by the string above as a fallback in case the site's list changed between the two requests. The plan is built from yt-dlp's format list by the same rule, written out in `build_plan`: a frame rate limit first, then the largest picture within the resolution limit, the higher frame rate, a codec Photos plays, the higher bitrate; and for sound AAC if the site has it, otherwise the highest bitrate. Each row carries exact format ids, so what is listed is what is fetched. The codec after the arrow is the one this device's ffmpeg will produce.
+
+The rows travel as vCard text, the format the shortcut's own icon menus use. Where a picture belongs the helper writes a marker, `@UMDL-ICON-GET@` or `@UMDL-ICON-CONVERT@`, and the shortcut puts in the icon it carries. The list is then shown by the same actions as the main menu, which are known to work on a device; the first version of this list was built from a JSON array and was never seen in the one device test it had.
 
 **After the download** every video is inspected with ffprobe, because what a site says and what it serves can differ:
 
 | Found | Verdict | Action |
 |---|---|---|
 | H.264 or HEVC, compatible audio, MP4 or MOV | ready | Used as is |
-| Right video codec, wrong container or audio | repack | Rewrapped; video is copied, audio re-encoded to AAC 256 kbit/s only if needed |
+| Right video codec, wrong container or audio | repack | Rewrapped; video is copied, audio re-encoded to AAC 256 kbit/s only where Photos cannot play it |
 | HEVC tagged `hev1` | repack | Retagged `hvc1`, which Apple players require |
-| Any other video codec | convert | Converted if allowed, otherwise kept in Files |
+| Any other video codec | convert | By the decision: `best`, `small`, or kept in Files |
 | No video stream | files | Kept in Files |
 
-A conversion never changes the picture's size or frame rate. `conversion_attempts` returns the ffmpeg arguments to try, in order, limited to the encoders `ffmpeg -encoders` reports:
+The decision comes from the Convert setting in simple mode. In advanced mode it comes from the question asked with the version, or, when no version was asked about or the file turned out differently, from a `convert` callback after the download.
+
+A conversion never changes the picture's size or frame rate. `conversion_attempts` returns the ffmpeg arguments to try, in order, limited to the encoders `ffmpeg -encoders` reports. For `best`:
 
 1. `hevc_videotoolbox -q:v 75 -tag:v hvc1`. The device's hardware encoder in constant-quality mode, so the bitrate follows the picture. `main10` and `p010le` are added for a 10-bit source.
-2. `hevc_videotoolbox -b:v <rate>`. The same encoder by bitrate, for an ffmpeg build without the quality mode. The rate is 1.1 times the source's, with a floor by resolution and a ceiling of 80 Mbit/s.
+2. `hevc_videotoolbox -b:v <rate>`. The same encoder by bitrate, for an ffmpeg build without the quality mode, which iOS builds may be. The rate is 1.1 times the source's, with a floor by resolution and a ceiling of 80 Mbit/s.
 3. `h264_videotoolbox -profile:v high -b:v <1.6 × rate>`.
 4. `libx264 -crf 17 -preset veryfast`. Software, slow, visually lossless.
 
-The first that produces a file wins and is named in the log and in the notification. HEVC comes first because it is the only one of these that carries 4K at 60 frames a second and 10-bit colour at a size worth keeping, and every device that runs a-Shell plays it.
+For `small` the same four with quality 55, about half the bitrate, and `-crf 23`. The first that produces a file wins and is named in the log and in the notification. HEVC comes first because it is the only one of these that carries 4K at 60 frames a second and 10-bit colour at a size worth keeping, and every device that runs a-Shell plays it.
+
+Progress is read from a file ffmpeg writes (`-progress <file>`), not from its output, because reading the output of a running command is not something a-Shell is known to allow. If ffmpeg fails with that option, the same step is tried once more without it.
+
+HDR is not sought out. Where a site has both, the sort prefers the plain VP9 version to the HDR one of the same size, because whether the colour information survives the hardware encoder has not been checked on a device.
 
 ## Which tool goes first
 

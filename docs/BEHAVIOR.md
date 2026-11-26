@@ -7,7 +7,8 @@ Labels are written exactly as they appear. Tests are in `tests/test_shortcut_flo
 - [How a run starts](#how-a-run-starts)
 - [First run](#first-run)
 - [Sharing a link](#sharing-a-link)
-- [Quality and conversion](#quality-and-conversion)
+- [Which version is downloaded](#which-version-is-downloaded)
+- [Converting for Photos](#converting-for-photos)
 - [Advanced mode](#advanced-mode)
 - [Reddit](#reddit)
 - [Large downloads](#large-downloads)
@@ -48,7 +49,7 @@ flowchart TD
     P --> W{{"Welcome to UMDL"}}
     W -- "Not now" --> X(["Stop. Nothing is changed"])
     W -- "✅ Quick setup" --> QA["Create the album UMDL<br/>Use the default settings"]
-    W -- "⚙️ Custom setup" --> C{{"Settings list<br/>Album · Mode · Resolution · Frame rate<br/>Conversion · Large downloads · When finished"}}
+    W -- "⚙️ Custom setup" --> C{{"Settings list<br/>Album · Mode · Resolution · Frame rate<br/>Convert · Large downloads · When finished"}}
     C -- "tap a row" --> C1["Change that one setting<br/>Saved at once"]
     C1 --> C
     C -- "Done" --> SV
@@ -70,7 +71,7 @@ flowchart TD
 
 > **Welcome to UMDL**
 >
-> Saves shared posts and videos to Photos at the best quality, on this device.
+> Saves shared posts and videos to Photos at the best quality.
 >
 > Setup takes about two minutes.
 
@@ -80,7 +81,7 @@ flowchart TD
 | ⚙️ Custom setup | Opens the [Settings](#settings) list so anything can be changed first, then continues exactly as quick setup does | `Onboarding.test_custom_setup_is_the_settings_list_then_the_same_install` |
 | Not now | Stops. Nothing is created in Photos or a-Shell. The welcome screen appears again next time | `Onboarding.test_declining_setup_changes_nothing` |
 
-The defaults are: album **UMDL**, **Simple** mode, resolution and frame rate **Best available**, conversion **Only when needed**, ask above **10** items, and **Show a notification** when finished.
+The defaults are: album **UMDL**, **Simple** mode, resolution and frame rate **Best available**, convert at **Best quality**, ask above **10** items, and **Show a notification** when finished.
 
 ### Custom setup
 
@@ -109,7 +110,7 @@ Setup never shows the unsaved download prompt (`Onboarding.test_setup_never_repo
 
 ### Updating from an earlier version
 
-Installing a new version of the shortcut over an old one keeps the settings. The first run after the update downloads the matching helper, removes the Python environment 1.0 created, and continues with what was asked (`Onboarding.test_upgrade_from_1_0_refetches_the_helper_and_removes_the_old_environment`). Settings saved before 1.3 have no mode, resolution or frame rate; they are read as **Simple** and **Best available**, and the old conversion answer keeps its meaning (`Settings.test_settings_saved_before_1_3_are_read_and_upgraded`).
+Installing a new version of the shortcut over an old one keeps the settings. The first run after the update downloads the matching helper, removes the Python environment 1.0 created, and continues with what was asked (`Onboarding.test_upgrade_from_1_0_refetches_the_helper_and_removes_the_old_environment`). Settings saved by earlier versions are kept. A missing mode, resolution or frame rate reads as **Simple** and **Best available**. Earlier conversion answers map to the nearest of today's: "convert" and "only when needed" become **Best quality**, "keep" and "never" become **Off** (`Settings.test_settings_saved_by_earlier_versions_are_read_and_upgraded`).
 
 ## Sharing a link
 
@@ -131,7 +132,7 @@ The title is the post's title, or `UMDL` when the site gives none.
 | One item, no album | Saved to Photos. | `OneTap.test_no_album_saves_to_the_library` |
 | Several items | Saved *N* items to the *name* album. | `OneTap.test_gallery_post_saves_every_image` |
 | Nothing could go to Photos | Nothing was added to Photos. | `OneTap.test_audio_is_kept_in_files` |
-| A video was converted | A further line naming the change: 1 converted (VP9 → HEVC). | `AdvancedMode.test_simple_mode_converts_without_asking_and_says_so` |
+| A video was converted | A further line naming the change: 1 converted (VP9 → HEVC). | `Conversion.test_simple_mode_converts_with_the_saved_setting_and_says_so` |
 | Some files were kept in Files | A further line: *N* kept in Files (a-Shell, UMDL, Saved). | `OneTap.test_audio_is_kept_in_files` |
 | A file is over 1 GB | It is kept in Files, with a further line: *N* over 1 GB, kept in Files. | `OneTap.test_file_too_large_to_hand_over_is_kept_in_files` |
 | Some items failed | A further line: *N* failed. | `OneTap.test_partial_download_saves_what_arrived_and_says_what_did_not` |
@@ -140,7 +141,7 @@ The title is the post's title, or `UMDL` when the site gives none.
 
 | Situation | Shown | Test |
 |---|---|---|
-| A newer UMDL has been released | "UMDL 1.4.0 is available. Installed: 1.3.0." with **⬇️ Get the update** (opens the release page) and **Later** | `OneTap.test_newer_release_is_offered_after_the_download`, `OneTap.test_declining_the_update_ends_quietly` |
+| A newer UMDL has been released | "UMDL 1.5.0 is available. Installed: 1.4.0." with **⬇️ Get the update** (opens the release page) and **Later** | `OneTap.test_newer_release_is_offered_after_the_download`, `OneTap.test_declining_the_update_ends_quietly` |
 | The shortcut and the helper are different versions | "UMDL is out of date." and the reason, with **⬇️ Get the latest version** and **Cancel**. Shown in place of the download | `OneTap.test_helper_from_another_version_is_reported_as_out_of_date` |
 
 Three things happen without being shown:
@@ -149,74 +150,110 @@ Three things happen without being shown:
 - A result UMDL cannot read is ignored, and the run continues as if nothing had been shared (`OneTap.test_unreadable_callback_falls_back_to_the_main_menu`).
 - A Reddit link that Reddit refuses is tried by other routes before any error is shown. See [Reddit](#reddit).
 
-## Quality and conversion
+## Which version is downloaded
 
-Four settings decide which version of a video is downloaded and what happens to it afterwards. In **Simple** mode they are applied without a question. In **Advanced** mode they set the limits, and UMDL asks; see [Advanced mode](#advanced-mode).
+Two questions are kept apart. Which version of a video to download is decided by **Resolution** and **Frame rate**. What to do with a file Photos cannot play is decided by **Convert**, described in the [next section](#converting-for-photos), and has no say in the first (`Quality.test_the_conversion_setting_does_not_change_what_is_downloaded`).
 
 ```mermaid
 flowchart TD
     L["Link shared"] --> M{"Mode"}
-    M -- "Simple" --> SF["Pick the version from the settings<br/>Resolution limit · Frame rate limit · Conversion"]
-    M -- "Advanced" --> AL["List what the site offers<br/>within the limits"]
-    AL --> AQ{{"Choose a version<br/>shows best video, best audio, best single file"}}
-    AQ -- "cancel" --> X(["Stop. Nothing is downloaded"])
-    AQ -- "a version" --> DL
-    AL -- "only one version, and Photos plays it" --> DL
+    M -- "Simple" --> SF["Best version within the limits"]
+    M -- "Advanced" --> AL["List the site's versions"]
+    AL -- "one version" --> DL
+    AL -- "several" --> AQ{{"Choose a version"}}
+    AQ -- "dismissed" --> X(["Stop. Nothing is downloaded"])
+    AQ -- "plays in Photos" --> DL
+    AQ -- "needs converting" --> AC{{"Convert it after the download?<br/>Best quality · Smaller file · Keep in Files"}}
+    AC --> DL
     SF --> DL["Download<br/>merge picture and sound if separate"]
     DL --> V{"Can Photos play the file?"}
     V -- "yes" --> PH(["Save to Photos"])
-    V -- "wrong wrapper or sound only" --> RP["Repack<br/>picture untouched, sound copied or made AAC"]
-    RP --> PH
-    V -- "picture codec not supported" --> CQ{"Convert?"}
-    CQ -- "Simple: setting is not Never<br/>Advanced: the version chosen said so" --> CV["Convert the picture to HEVC<br/>same size, same frame rate"]
-    CQ -- "Advanced, not yet decided" --> ASK{{"Photos cannot play this video.<br/>Source: … Converted: …"}}
-    ASK -- "🎞️ Convert" --> CV
-    ASK -- "📁 Keep in Files" --> FL
-    CQ -- "Simple: setting is Never" --> FL(["Keep the original in Files"])
+    V -- "wrong wrapper, or only the sound" --> RP["Repack<br/>picture untouched"] --> PH
+    V -- "no" --> D{"Already decided?"}
+    D -- "Simple: the Convert setting<br/>Advanced: answered above" --> W{"Which?"}
+    D -- "Advanced, not asked yet" --> ASK{{"Photos cannot play this video.<br/>Source … Converts to …"}}
+    ASK --> W
+    W -- "Best quality / Smaller file" --> CV["Convert to HEVC<br/>same size, same frame rate"]
+    W -- "Off / Keep in Files" --> FL(["Keep the original in Files"])
     CV -- "worked" --> PH
     CV -- "every encoder failed" --> FL
 ```
 
-### Which version is downloaded
+"Best" means, in this order:
 
-| Setting | Effect |
-|---|---|
-| Resolution | The largest picture up to the limit. A site with nothing at or under the limit gives its smallest version above it. The limit is the short side, so a tall phone video counts by its width |
-| Frame rate | The same rule, for frames a second. The two limits work independently |
-| Conversion: Only when needed | Prefers a version Photos already plays (H.264 or HEVC with AAC). Only when a site has none is another version downloaded and converted |
-| Conversion: For best quality | Takes the best version the site has, whatever its codec, and converts it. On sites like YouTube this is how anything above 1080p is reached. Slower |
-| Conversion: Never | Prefers a playable version, as above. A file Photos cannot play is kept in Files |
+1. The largest picture, up to the **Resolution** limit. A site with nothing at or under the limit gives its smallest version above it. The limit is the short side, so a tall phone video counts by its width.
+2. The highest frame rate, up to the **Frame rate** limit. Versions above this limit are passed over even when they are larger; if the site has nothing at or under it, the lowest rate is taken.
+3. Between versions equal in both, one Photos plays as it is (H.264 or HEVC, with AAC sound). Converting cannot add quality, so it is avoided when nothing is gained by it.
 
-Tests: `AdvancedMode.test_simple_mode_applies_the_saved_limits_without_asking`, `AdvancedMode.test_best_quality_conversion_asks_the_site_for_its_best_version`, `AdvancedMode.test_simple_mode_set_to_never_convert_keeps_the_original`.
+On most sites every version is H.264 and nothing is ever converted. YouTube is the exception: above 1080p it offers only VP9 and AV1, so its best version is downloaded and then converted.
 
-### How a file is made ready for Photos
+| Situation | Result | Test |
+|---|---|---|
+| Simple mode | The best version is taken. Nothing is asked | `Quality.test_simple_mode_asks_nothing_and_takes_the_best_version` |
+| A limit is set | Each limit is applied on its own | `Quality.test_each_limit_works_on_its_own` |
+| Advanced mode | The versions are listed first; see [Advanced mode](#advanced-mode) | `AdvancedMode.test_lists_the_versions_and_downloads_the_one_picked` |
 
-The helper inspects every downloaded video with ffprobe and does the least that makes it playable.
+## Converting for Photos
+
+Photos plays H.264 and HEVC video. The helper inspects every downloaded video with ffprobe and does the least that makes it playable. A file Photos already plays is never touched and never asked about, in either mode (`Conversion.test_a_file_photos_plays_is_never_asked_about`).
 
 | The file | What is done | Quality |
 |---|---|---|
 | H.264 or HEVC with AAC, in MP4 or MOV | Nothing | Untouched |
 | Playable picture in the wrong wrapper (MKV, WebM), or HEVC tagged `hev1` | Repacked into MP4. The picture is copied bit for bit | Untouched |
 | Playable picture with Opus or Vorbis sound | The same repack; only the sound is re-encoded, to AAC at 256 kbit/s | Picture untouched |
-| VP9, AV1 or another picture codec | Converted, if conversion is allowed | See below |
+| VP9, AV1 or another picture codec | Converted, kept in Files, or asked about: see below | |
 | Sound only, or not media | Kept in Files | Untouched |
 
-A conversion keeps the picture's size and frame rate. The encoders are tried in this order, and the first that succeeds is used:
+For the fourth row:
 
-1. HEVC with the device's hardware encoder, at a constant quality level (75 of 100) and tagged `hvc1`. A 10-bit source stays 10-bit.
-2. The same encoder, at a bitrate no lower than the source's.
-3. H.264 with the hardware encoder, at a higher bitrate.
-4. H.264 in software, at a visually lossless setting. Slow; a last resort.
+| Mode | What decides | Test |
+|---|---|---|
+| Simple | The **Convert** setting. **Best quality** unless changed, and when no setting was ever saved | `Conversion.test_simple_mode_converts_with_the_saved_setting_and_says_so`, `Conversion.test_with_no_setting_saved_the_conversion_is_best_quality` |
+| Simple, Convert **Off** | The original is kept in Files | `Conversion.test_simple_mode_with_conversion_off_keeps_the_original` |
+| Advanced | Asked each time, whatever the setting says | `Conversion.test_advanced_mode_asks_how_and_shows_source_and_result` |
 
-Only encoders that a-Shell's ffmpeg has are tried; Status lists them under "Converts with". When every attempt fails the original is kept in Files and the notification says so. The notification names each conversion, for example "1 converted (VP9 → HEVC)."
+### The two qualities
+
+A conversion never changes the picture's size or frame rate. Sound that Photos plays is copied; other sound becomes AAC at 256 kbit/s.
+
+| | Best quality | Smaller file |
+|---|---|---|
+| 1. HEVC, the device's hardware encoder, by quality level | 75 of 100 | 55 of 100 |
+| 2. The same encoder, by bitrate | No lower than the source's | About half of that |
+| 3. H.264, hardware encoder | A higher bitrate | About half of that |
+| 4. H.264 in software. Slow; a last resort | Visually lossless | Good |
+
+The steps are tried in order and the first that succeeds is used. A 10-bit source stays 10-bit in HEVC. Only encoders that a-Shell's ffmpeg has are tried; Status lists them under "Converts with". When every step fails the original is kept in Files and the notification says so (`Conversion.test_smaller_file_is_a_different_conversion`).
+
+While a conversion runs, a-Shell shows how far it is in per cent. The notification names each conversion, for example "1 converted (VP9 → HEVC).", and the log records the ffmpeg arguments that were used.
+
+### The question in advanced mode
+
+Asked when a downloaded video needs converting and that was not already answered when the version was picked.
+
+> *Title*
+>
+> Photos cannot play this video.
+>
+> Source: 1080p60 VP9 + Opus · 48 MB
+> Converts to: 1080p60 HEVC + AAC
+
+| Choice | Result | Test |
+|---|---|---|
+| 🎞️ Best quality | a-Shell converts as described above, then the file is saved to Photos | `Conversion.test_advanced_mode_asks_how_and_shows_source_and_result` |
+| 🗜️ Smaller file | The same, at the smaller setting | `Conversion.test_smaller_file_is_a_different_conversion` |
+| 📁 Keep in Files | The original is kept under *a-Shell › UMDL › Saved* | `Conversion.test_keeping_the_original_puts_it_in_files` |
+
+With several files the first line reads "Photos cannot play 2 of these 5 files." and the answer applies to all of them. If the files have been removed from a-Shell in the meantime, the alert **Nothing to finish** says so.
 
 ## Advanced mode
 
-Set with the **Mode** row in Settings. A link is then handled in two steps, and each asks only when there is something to decide.
+Set with the **Mode** row in Settings. It asks whenever there is something to choose, and only then.
 
-### Before the download: which version
+### Which version
 
-a-Shell opens briefly, the helper lists what the site offers, and Shortcuts returns with a list:
+a-Shell opens briefly, the helper lists what the site offers, and Shortcuts returns with a list of the same kind as the main menu:
 
 > *Title*
 >
@@ -227,41 +264,26 @@ a-Shell opens briefly, the helper lists what the site offers, and Shortcuts retu
 
 "Best video" and "Best audio" are the best separate streams, which the tools merge. "Single file" is the best version that already holds both. "Your limit" appears only when a resolution or frame rate limit is set.
 
-Up to three versions are offered, best first. Versions that would be identical are listed once.
+Up to three versions are offered, best first, and versions that would be the same download are listed once.
 
-| Row, by example | Meaning |
-|---|---|
-| ⬇️ 2160p60 · VP9 → HEVC | The best there is. Photos cannot play its codec, so it will be converted to the one after the arrow |
-| ⬇️ 1080p · H.264 | The best version Photos plays as it is |
-| ⬇️ 360p · H.264 · single file | The best version the site serves as one file. Nothing is merged |
+| Row, by example | Detail line | Meaning |
+|---|---|---|
+| 2160p60 · VP9 → HEVC | Best available · 653 MB | The best there is. The arrow says Photos cannot play it as it is, and names what it would be converted to |
+| 1080p · H.264 | Best without converting · 83 MB | The best version Photos plays as it is |
+| 360p · H.264 · single file | Nothing to merge · 10 MB | The best version the site serves as one file |
 
 | Situation | Result | Test |
 |---|---|---|
-| A version is chosen | a-Shell downloads exactly that one and the usual save follows | `AdvancedMode.test_shows_what_the_site_has_and_downloads_the_version_picked` |
-| A limit is set | Nothing above it is offered, and the limit is shown | `AdvancedMode.test_the_resolution_limit_is_shown_and_applied` |
-| The site has one version and Photos plays it | No question | `AdvancedMode.test_one_playable_version_asks_nothing` |
-| The link holds several videos | One question for all: "*N* items. One choice applies to all." with **⬇️ Best available · converts if needed** and **⬇️ Best that Photos plays** | `AdvancedMode.test_a_link_with_several_videos_asks_once_for_all` |
+| A version Photos plays is chosen | a-Shell downloads exactly that one and the usual save follows | `AdvancedMode.test_lists_the_versions_and_downloads_the_one_picked` |
+| A version with an arrow is chosen | One more question, straight away: "Photos cannot play this version. Convert it after the download?" with **🎞️ Best quality**, **🗜️ Smaller file** and **📁 Keep in Files**. Both answers go to a-Shell together, so it opens once more, not twice | `AdvancedMode.test_a_version_that_needs_converting_asks_how_before_the_download` |
+| A limit is set | Nothing above it is offered, and the limit is shown | `AdvancedMode.test_the_limits_are_shown_and_applied` |
+| The site has one version | No list. If Photos cannot play it, [the question](#the-question-in-advanced-mode) follows the download | `AdvancedMode.test_one_version_asks_nothing` |
+| The link holds several videos | One list for all: "*N* items. One choice applies to all." with **Best available** (Whatever the format) and **Best without converting** (Only what Photos plays) | `AdvancedMode.test_a_link_with_several_videos_asks_once_for_all` |
 | The list is dismissed | Stops. Nothing is downloaded | `AdvancedMode.test_cancelling_the_choice_downloads_nothing` |
 
 Photo posts, and sites handled by gallery-dl, have one version and are not asked about.
 
-### After the download: a file Photos cannot play
-
-Asked only when a downloaded video needs converting and the version chosen did not already say so.
-
-> *Title*
->
-> Photos cannot play this video.
->
-> Source: 1080p60 VP9 + Opus · 48 MB
-> Converted: 1080p60 HEVC + AAC
-
-| Choice | Result | Test |
-|---|---|---|
-| 🎞️ Convert | a-Shell converts as described [above](#how-a-file-is-made-ready-for-photos), then the file is saved to Photos | `AdvancedMode.test_a_file_photos_cannot_play_asks_before_converting` |
-| 📁 Keep in Files | The original is kept under *a-Shell › UMDL › Saved* | `AdvancedMode.test_keeping_the_original_puts_it_in_files` |
-
-With several files the first line reads "Photos cannot play 2 of these 5 files." and the answer applies to all of them. If the files have been removed from a-Shell in the meantime, the alert **Nothing to finish** says so.
+Each step leaves a line in the helper's log: what was offered, when the helper handed back, when the shortcut received the list, and when a version was chosen. A log copied from Status therefore shows how far a run got (`AdvancedMode.test_each_step_leaves_a_line_in_the_log`).
 
 ## Reddit
 
@@ -379,7 +401,7 @@ Dismissing the menu stops the shortcut.
 
 Choices: **Instagram**, **X (Twitter)**, **Reddit**, **TikTok**, **Facebook**, **Another site**. "Another site" asks for the "Sign-in page address"; text that is not a web address gives the alert **Sign in**, "That is not a web address."
 
-Then the alert **Sign in** says what follows: "Sign in on the page that opens. UMDL returns here once the sign-in is saved. If it does not, swipe in from the left edge and check Status."
+Then the alert **Sign in** says what follows: "Sign in on the page that opens. UMDL returns here once it is saved. If it does not, swipe in from the left edge and check Status."
 
 a-Shell opens the site's sign-in page in its own browser, and the helper watches a-Shell's cookie store. UMDL does not see what is typed, and never reads a cookie's value, only which site it belongs to and its name. yt-dlp and gallery-dl read the same store, so nothing is copied anywhere.
 
@@ -394,14 +416,14 @@ For the five listed sites "signed in" means the site's own session cookie is pre
 
 ### About UMDL
 
-> **UMDL 1.3.0**
+> **UMDL 1.4.0**
 >
 > Free and open source.
 > Built on yt-dlp, gallery-dl and a-Shell.
 
 | Choice | Result | Test |
 |---|---|---|
-| 🔄 Check for updates | Up to date: alert **Up to date**. Newer release: "UMDL 1.4.0 is available. Installed: 1.3.0." and its release notes, with **⬇️ Get the update** and **Later**. No connection: alert **Update check**, "GitHub could not be reached." | `MainMenu.test_check_for_new_version` |
+| 🔄 Check for updates | Up to date: alert **Up to date**. Newer release: "UMDL 1.5.0 is available. Installed: 1.4.0." and its release notes, with **⬇️ Get the update** and **Later**. No connection: alert **Update check**, "GitHub could not be reached." | `MainMenu.test_check_for_new_version` |
 | 🌐 Project page | Opens the repository on GitHub | `MainMenu.test_about_project_page_and_done` |
 | Done | Closes the menu | `MainMenu.test_about_project_page_and_done` |
 
@@ -410,13 +432,13 @@ For the five listed sites "signed in" means the site's own session cookie is pre
 **Status** in the main menu opens a-Shell for a few seconds, then shows the alert **Status**. It answers "is everything in place?" and "am I signed in?" (`MainMenu.test_status_shows_sign_ins_versions_and_storage`).
 
 ```
-UMDL 1.3.0, helper 1.3.0
+UMDL 1.4.0, helper 1.4.0
 a-Shell 2.4.0 (613)
 Python 3.13.1
 yt-dlp 2026.11.23
 gallery-dl 1.32.21
 ffmpeg n7.0
-Converts with: hevc_videotoolbox, h264_videotoolbox, libx264
+Converts with: hevc_videotoolbox, h264_videotoolbox
 Tools last updated: 25 Nov 17:20
 
 Sign-ins
@@ -464,28 +486,19 @@ A row with two values switches when tapped, with no menu in between (`Settings.t
 | Mode | "Simple · uses these settings" or "Advanced · asks each time" | Switches | `Settings.test_two_value_rows_switch_when_tapped` |
 | Resolution | "Best available" or "Up to 1080p" | Menu **Highest resolution**: Best available, 2160p (4K), 1440p, 1080p, 720p, 480p | `Settings.test_resolution_and_frame_rate_choices` |
 | Frame rate | "Best available" or "Up to 30 fps" | Menu **Highest frame rate**: Best available, 60 fps, 30 fps | `Settings.test_resolution_and_frame_rate_choices` |
-| Conversion | "Only when needed", "For best quality" or "Never" | Menu **Convert for Photos**, which explains the three in a line each | `Settings.test_conversion_choices_are_explained_in_one_menu` |
+| Convert | "Best quality", "Smaller file" or "Off" | Menu **When Photos cannot play a video**: Best quality, Smaller file, Off. Advanced mode asks each time instead | `Settings.test_conversion_choices` |
 | Large downloads | Ask above *N* items | Asks "Ask before downloading more than", filled in with the current number. Accepts 1 to 9999. Anything else: alert **Not saved**, "Enter a whole number from 1 to 9999.", and the list returns | `Settings.test_change_threshold`, `Settings.test_a_bad_threshold_is_refused_and_the_list_returns` |
 | When finished | "Show a notification" or "Open Photos" | Switches. A notification is shown either way | `Settings.test_two_value_rows_switch_when_tapped` |
 | Reset | Sign out, or remove everything | See below. Not listed during setup | `Settings.test_reset_sign_out` |
 | Done | "Close settings", or "Install and finish" during setup | Closes the list | `Settings.test_one_list_shows_every_setting_with_its_value` |
 
-What the quality rows do is described under [Quality and conversion](#quality-and-conversion).
-
-The menu for **Conversion** reads:
-
-> **Convert for Photos**
->
-> Only when needed: prefers what Photos already plays.
-> For best quality: takes the best version and converts it. Slower.
-> Never: unplayable files go to Files.
+Resolution and Frame rate are described under [Which version is downloaded](#which-version-is-downloaded), Convert under [Converting for Photos](#converting-for-photos).
 
 ### Reset
 
 > **Reset**
 >
-> Sign out: forgets every site sign-in.
-> Remove everything: also removes UMDL's files and the download tools from a-Shell. Photos are not affected.
+> Remove everything also deletes UMDL's files and tools in a-Shell. Photos are kept.
 
 | Choice | Result | Test |
 |---|---|---|
@@ -552,6 +565,8 @@ Other checks on the shortcut as built: `Hygiene.test_every_action_in_the_shortcu
 Confirmed on a device so far:
 
 - Setup, the download tools installing, and a download running in a-Shell.
+- The Settings list, in Custom setup, returning after each change (1.3.0).
+- a-Shell's ffmpeg has the hardware encoders: Status shows "Converts with: hevc_videotoolbox, h264_videotoolbox".
 - The main menu and the menus under it.
 - The helper's result reaching the shortcut, the failed-download menu, and copying details.
 - Signing in, and private posts downloading with the sign-in (Instagram and X).
@@ -560,7 +575,7 @@ Confirmed on a device so far:
 
 Not yet confirmed on a device, and so the first things to check ([device checklist](BUILDING.md#device-checklist)):
 
-- Which encoders a-Shell's ffmpeg has. Status shows them under "Converts with". If the hardware encoders are missing, conversions fall back to software H.264, which is slow on large videos.
-- How long a 4K conversion takes with the hardware encoder.
-- The Settings list returning after each change, and the two questions of Advanced mode.
+- Any YouTube download, in either mode.
+- A conversion with the hardware encoder: that it runs, which of its two steps is used, and how long 4K takes.
+- The version list of Advanced mode. In the 1.3.0 device test the helper listed the versions and handed back, and the list was never answered; the device ended up in the YouTube app. Nothing in UMDL opens a link, so the cause is not known. 1.4.0 shows the list with the action the main menu uses, which is confirmed on a device, and writes each step to the log.
 - Reddit through a-Shell's browser, now that scripts report through the print channel. Each step is written to the log, so a failure there can be read from Status, **📋 Copy**.

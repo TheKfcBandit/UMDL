@@ -38,9 +38,9 @@ import time
 import traceback
 import urllib.parse
 
-HELPER_VERSION = "1.3.0"
+HELPER_VERSION = "1.4.0"
 # Bumped only when the payload/callback format changes incompatibly.
-PROTOCOL = 3
+PROTOCOL = 4
 
 REPO = "TheKfcBandit/UMDL"
 RAW_BASE = "https://raw.githubusercontent.com/%s/main" % REPO
@@ -128,48 +128,70 @@ YTDLP_FORMAT = "/".join([
 
 RES_CHOICES = ("2160", "1440", "1080", "720", "480")
 FPS_CHOICES = ("60", "30")
+CONVERT_LEVELS = ("best", "small")
 
 
 def settings_from(cfg):
-    """The download settings in one predictable shape, whatever was stored."""
+    """The download settings in one predictable shape, whatever was stored.
+
+    "convert" is what to do with a video Photos cannot play: "best" (convert
+    at the best quality), "small" (convert to a smaller file) or "off" (keep
+    the original in Files). It has no say in which version is downloaded.
+    """
     cfg = cfg if isinstance(cfg, dict) else {}
-    convert = str(cfg.get("convert") or "needed")
-    convert = {"1": "needed", "0": "never"}.get(convert, convert)  # values used before 1.3
+    convert = str(cfg.get("convert") or "best")
+    # Values stored by earlier versions.
+    convert = {"1": "best", "needed": "best", "0": "off", "never": "off"}.get(convert, convert)
     res, fps = str(cfg.get("res") or "best"), str(cfg.get("fps") or "best")
     return {
-        "convert": convert if convert in ("needed", "best", "never") else "needed",
+        "convert": convert if convert in CONVERT_LEVELS + ("off",) else "best",
         "res": res if res in RES_CHOICES else "best",
         "fps": fps if fps in FPS_CHOICES else "best",
         "advanced": str(cfg.get("mode")) == "advanced",
     }
 
 
-def ytdlp_format(policy):
-    """Which formats yt-dlp should prefer.
+def ytdlp_format(policy="best", quality=None):
+    """Which formats yt-dlp should take.
 
-    "native"  the best Photos can play as it is; anything else only as a last resort
-    "best"    the best there is, whatever the codec; converted afterwards if needed
-    "single"  the best file that already holds picture and sound together
+    "best"    the best there is. ytdlp_sort() decides what "best" means.
+    "native"  only what Photos plays as it is, unless the site has nothing else
+
+    A frame rate limit is applied here, as a filter with the unfiltered choice
+    as its fallback: versions above the limit are passed over, whatever their
+    size, unless the site has nothing else.
     """
-    if policy == "best":
-        return "bv*+ba/b/ba"
-    if policy == "single":
-        return "/".join(["b[%s][%s]" % (_NATIVE_V, _NATIVE_A), "b[%s]" % _NATIVE_V, "b",
-                         "bv*+ba", "ba"])
-    return YTDLP_FORMAT
+    chosen = YTDLP_FORMAT if policy == "native" else "bv*+ba/b/ba"
+    fps = (quality or {}).get("fps", "best")
+    if fps == "best":
+        return chosen
+    capped = []
+    for choice in chosen.split("/"):
+        parts = choice.split("+")
+        if parts[0].startswith("ba"):
+            continue  # sound only: nothing to limit
+        parts[0] += "[fps<=?%s]" % fps
+        capped.append("+".join(parts))
+    return "/".join(capped + [chosen])
 
 
 def ytdlp_sort(quality):
-    """Limits on resolution and frame rate, as yt-dlp sort fields. "res:1080"
-    means the largest picture up to 1080p, and the smallest above it only when
-    nothing fits; the same goes for "fps". "res" is the short side, so a tall
-    phone video counts by its width."""
-    fields = []
-    if quality["res"] != "best":
-        fields.append("res:" + quality["res"])
-    if quality["fps"] != "best":
-        fields.append("fps:" + quality["fps"])
-    return fields
+    """What "best" means, as yt-dlp sort fields, most important first.
+
+    The largest picture, up to the resolution limit if one is set ("res:1080"
+    also means: the smallest above it when nothing fits; "res" is the short
+    side, so a tall phone video counts by its width). Then the highest frame
+    rate. Between versions equal in both, one Photos plays as it is:
+    converting cannot add quality, only lose a little. The same goes for the
+    sound.
+    """
+    return [
+        "lang",
+        "res" if quality["res"] == "best" else "res:" + quality["res"],
+        "fps" if quality["fps"] == "best" else "fps:" + quality["fps"],
+        "vcodec:h265",
+        "acodec:aac",
+    ]
 
 
 # ---- describing and choosing formats (advanced mode)
@@ -247,14 +269,40 @@ def format_size(*formats):
     return human_size(total) if total else ""
 
 
+def plain(text):
+    """Letters and digits only, for comparing a label that has been to Shortcuts and back."""
+    return re.sub(r"[^a-z0-9]", "", str(text or "").lower())
+
+
+ICON_GET = "@UMDL-ICON-GET@"
+ICON_CONVERT = "@UMDL-ICON-CONVERT@"
+
+
+def cards_for(options):
+    """The options as the rows of a Shortcuts icon list (vCards).
+
+    The shortcut swaps the two icon markers for pictures it carries and shows
+    the result with the same action as its own menus. A row's title is what
+    comes back as the choice.
+    """
+    rows = []
+    for option in options:
+        rows.append("BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:%s;;;;\nORG;CHARSET=utf-8:%s;\n"
+                    "PHOTO;ENCODING=b:%s\nEND:VCARD\n" % (
+                        re.sub(r"[\\;,\r\n]", " ", option["title"]),
+                        re.sub(r"[\\;,\r\n]", " ", option.get("detail") or ""),
+                        ICON_CONVERT if option.get("convert") else ICON_GET))
+    return "".join(rows)
+
+
 def build_plan(formats, quality, title="", target="HEVC"):
     """The choices advanced mode offers for one video.
 
-    Returns {"info": text for the prompt, "options": [{"label", "format",
-    "convert"}]}: the best there is, the best Photos plays without conversion,
-    and the best single file, leaving out any that would be the same download.
-    Each option names exact format ids, so what is listed is what is fetched.
-    `target` is the codec a conversion on this device produces.
+    Returns {"info": text for the prompt, "options": [{"title", "detail",
+    "format", "convert"}]}: the best there is, the best Photos plays without
+    conversion, and the best single file, leaving out any that would be the
+    same download. Each option names exact format ids, so what is listed is
+    what is fetched. `target` is the codec a conversion on this device makes.
     """
     videos = [f for f in formats or [] if isinstance(f, dict) and has_video(f) and f.get("format_id")]
     audios = [f for f in formats or [] if isinstance(f, dict) and has_audio(f) and not has_video(f)
@@ -265,52 +313,52 @@ def build_plan(formats, quality, title="", target="HEVC"):
     res_cap = to_int(quality["res"], 0) if quality["res"] != "best" else 0
     fps_cap = to_int(quality["fps"], 0) if quality["fps"] != "best" else 0
 
-    def fits(fmt):
-        return ((not res_cap or short_side(fmt) <= res_cap)
-                and (not fps_cap or frame_rate(fmt) <= fps_cap))
-
-    def best_of(pool, prefer_native=False):
+    def best_of(pool):
+        """The same choice ytdlp_format() and ytdlp_sort() lead yt-dlp to."""
         if not pool:
             return None
-        inside = [f for f in pool if fits(f)]
+        smooth = [f for f in pool if not fps_cap or frame_rate(f) <= fps_cap]
+        fps_sign = 1 if smooth else -1   # nothing under the limit: the lowest rate there is
+        pool = smooth or pool
+        inside = [f for f in pool if not res_cap or short_side(f) <= res_cap]
         if not inside:
-            # Nothing within the limits: the smallest there is, as yt-dlp would.
-            least = min((short_side(f), frame_rate(f)) for f in pool)
-            inside = [f for f in pool if (short_side(f), frame_rate(f)) == least]
-        pool = inside
-        return max(pool, key=lambda f: (short_side(f), frame_rate(f),
-                                        1 if (prefer_native and is_native_video(f)) else 0,
-                                        f.get("tbr") or f.get("vbr") or 0))
+            least = min(short_side(f) for f in pool)
+            inside = [f for f in pool if short_side(f) == least]
+        # Size first, then smoothness; between equals, one that needs no conversion.
+        return max(inside, key=lambda f: (short_side(f), fps_sign * frame_rate(f),
+                                          1 if is_native_video(f) else 0,
+                                          f.get("tbr") or f.get("vbr") or 0))
+
+    def loudest(pool):
+        return max(pool, key=lambda f: f.get("abr") or f.get("tbr") or 0) if pool else None
 
     def sound_for(video):
-        if has_audio(video) or not audios:
+        if has_audio(video):
             return None
-        pool = audios
-        if is_native_video(video):
-            # Nothing needs converting if the sound is one Photos plays too.
-            pool = [f for f in audios if is_native_audio(f)] or audios
-        return max(pool, key=lambda f: f.get("abr") or f.get("tbr") or 0)
+        # Sound Photos plays is copied as it is; anything else would be re-encoded.
+        return loudest([f for f in audios if is_native_audio(f)]) or loudest(audios)
 
-    def option(video, note=""):
+    def option(video, detail, note=""):
         audio = sound_for(video)
         convert = not is_native_video(video)
-        label = "⬇️ %s · %s" % (picture(video) or "Video", codec_name(video.get("vcodec")))
+        name = "%s · %s" % (picture(video) or "Video", codec_name(video.get("vcodec")))
         if convert:
-            label += " → " + target
+            name += " → " + target
         if note:
-            label += " · " + note
-        spec = video["format_id"] + ("+" + audio["format_id"] if audio else "")
-        return {"label": label, "format": spec, "convert": convert,
-                "what": describe_format(video, audio), "size": format_size(video, audio)}
+            name += " · " + note
+        size = format_size(video, audio)
+        return {"title": name, "detail": detail + (" · " + size if size else ""),
+                "format": video["format_id"] + ("+" + audio["format_id"] if audio else ""),
+                "convert": convert}
 
     options, seen = [], set()
-    top = best_of(videos, prefer_native=True)
-    native = best_of([f for f in videos if is_native_video(f)])
-    single = best_of([f for f in videos if has_audio(f)], prefer_native=True)
-    for video, note in ((top, ""), (native, ""), (single, "single file")):
+    for video, detail, note in (
+            (best_of(videos), "Best available", ""),
+            (best_of([f for f in videos if is_native_video(f)]), "Best without converting", ""),
+            (best_of([f for f in videos if has_audio(f)]), "Nothing to merge", "single file")):
         if video is None:
             continue
-        made = option(video, note)
+        made = option(video, detail, note)
         if made["format"] in seen:
             continue
         seen.add(made["format"])
@@ -324,10 +372,10 @@ def build_plan(formats, quality, title="", target="HEVC"):
     size = format_size(source)
     lines.append("Best video: " + " ".join(x for x in (picture(source), codec_name(source.get("vcodec"))) if x)
                  + (" · " + size if size else ""))
-    if audios:
-        loudest = max(audios, key=lambda f: f.get("abr") or f.get("tbr") or 0)
-        rate = to_int(loudest.get("abr") or loudest.get("tbr"), 0)
-        lines.append("Best audio: " + codec_name(loudest.get("acodec")) + (" · %d kbps" % rate if rate else ""))
+    top = loudest(audios)
+    if top:
+        rate = to_int(top.get("abr") or top.get("tbr"), 0)
+        lines.append("Best audio: " + codec_name(top.get("acodec")) + (" · %d kbps" % rate if rate else ""))
     merged = max([f for f in videos if has_audio(f)] or [None],
                  key=lambda f: (short_side(f), frame_rate(f)) if f else (0, 0))
     if merged is not None and audios:
@@ -465,10 +513,10 @@ class EngineError(Exception):
 class NeedChoice(Exception):
     """Advanced mode: the user picks what to download before anything is fetched."""
 
-    def __init__(self, info, labels):
+    def __init__(self, info, options):
         Exception.__init__(self, "choice needed")
         self.info = info
-        self.labels = labels
+        self.options = options
 
 
 class NeedConfirm(Exception):
@@ -759,6 +807,7 @@ def callback(payload, data):
     remove(LAST_FILE)
     if data.get("t") != "status":  # the status report would only repeat itself in the log
         log("callback: " + raw[:2000])
+        log("handing back to Shortcuts at " + time.strftime("%H:%M:%S"))
     if IOS:
         subprocess.run("open " + url)
     else:
@@ -1092,7 +1141,7 @@ def ytdlp_engine(ctx):
 
     quality = ctx["quality"]
     opts = {
-        "format": ctx.get("format") or ytdlp_format(ctx["policy"]),
+        "format": ctx.get("format") or ytdlp_format(ctx["policy"], quality),
         "format_sort": ytdlp_sort(quality),
         "merge_output_format": "mp4",
         "outtmpl": os.path.join(ctx["dir"], "%(id).64s.%(ext)s"),
@@ -1163,20 +1212,24 @@ def ytdlp_engine(ctx):
             plan = {"info": "%s\n\n%s items. One choice applies to all." % (
                         title or "Playlist", count if exact else "Several"),
                     "options": [
-                        {"label": "⬇️ Best available · converts if needed", "policy": "best", "convert": True},
-                        {"label": "⬇️ Best that Photos plays", "policy": "native", "convert": False},
+                        {"title": "Best available", "detail": "Whatever the format",
+                         "policy": "best", "convert": False},
+                        {"title": "Best without converting", "detail": "Only what Photos plays",
+                         "policy": "native", "convert": False},
                     ]}
         else:
             try:
-                with yt_dlp.YoutubeDL(dict(opts, format="b/bv*+ba/ba")) as ydl:
+                with yt_dlp.YoutubeDL(dict(opts, format="bv*+ba/b/ba")) as ydl:
                     info = ydl.process_ie_result(copy.deepcopy(raw), download=False)
                 plan = build_plan((info or {}).get("formats"), quality, title, conversion_target())
             except Exception as exc:
                 log("could not list the formats (%s); using the settings" % exc)
-        # One choice that needs no conversion is not a question worth asking.
-        if plan and plan["options"] and (len(plan["options"]) > 1 or plan["options"][0]["convert"]):
+        # Asked whenever there is something to choose between.
+        if plan and len(plan["options"]) > 1:
             write_json(os.path.join(ctx["dir"], "plan.json"), plan)
-            raise NeedChoice(plan["info"], [o["label"] for o in plan["options"]])
+            log("offered: " + " | ".join("%s [%s]" % (o["title"], o.get("format") or o.get("policy"))
+                                         for o in plan["options"]))
+            raise NeedChoice(plan["info"], plan["options"])
 
     ui.start("Starting download")
     try:
@@ -1622,7 +1675,7 @@ def probe_media(path):
     """What a media file holds, via ffprobe: codecs, picture size, frame rate,
     bit depth and bitrates. "ok" is False when the file could not be read."""
     info = {"v": None, "a": None, "tag": "", "bitrate": 0, "vbitrate": 0, "width": 0, "height": 0,
-            "fps": 0, "pix_fmt": "", "ok": False}
+            "fps": 0, "pix_fmt": "", "seconds": 0.0, "ok": False}
     code, out, err = run_cmd(["ffprobe", "-v", "error", "-print_format", "json",
                               "-show_streams", "-show_format", path])
     data = None
@@ -1653,6 +1706,10 @@ def probe_media(path):
             elif kind == "audio" and info["a"] is None:
                 info["a"] = (stream.get("codec_name") or "").lower()
         info["bitrate"] = to_int((data.get("format") or {}).get("bit_rate"), 0)
+        try:
+            info["seconds"] = float((data.get("format") or {}).get("duration") or 0)
+        except (TypeError, ValueError):
+            info["seconds"] = 0.0
         return info
     # No ffprobe: read the stream summary ffmpeg prints for any input.
     code, out, err = run_cmd(["ffmpeg", "-hide_banner", "-i", path])
@@ -1706,9 +1763,9 @@ def conversion_target():
 BITRATE_FLOOR = ((2160, 24000000), (1440, 14000000), (1080, 8000000), (720, 5000000), (0, 2500000))
 
 
-def conversion_attempts(info, have):
+def conversion_attempts(info, have, level="best"):
     """Ways to re-encode a video for Photos, best first. Each is (codec name,
-    ffmpeg arguments).
+    ffmpeg arguments). `level` is "best", or "small" for about half the size.
 
     The picture keeps its size and frame rate. HEVC from the device's own
     encoder comes first: it holds 4K, 60 frames a second and 10-bit colour, and
@@ -1722,25 +1779,61 @@ def conversion_attempts(info, have):
         floor = int(floor * 1.5)
     source = info["vbitrate"] or info["bitrate"]
     rate = int(min(80000000, max(floor, source * 1.1)))
+    small = level == "small"
+    if small:
+        rate = int(max(floor * 0.5, min(rate * 0.5, source * 0.6 or rate)))
     deep = "10" in info["pix_fmt"]
     hevc = ["-c:v", "hevc_videotoolbox", "-tag:v", "hvc1"] + (
         ["-profile:v", "main10", "-pix_fmt", "p010le"] if deep else ["-pix_fmt", "yuv420p"])
     attempts = []
     if not have or "hevc_videotoolbox" in have:
-        attempts.append(("HEVC", hevc + ["-q:v", "75"]))
+        attempts.append(("HEVC", hevc + ["-q:v", "55" if small else "75"]))
         attempts.append(("HEVC", hevc + ["-b:v", str(rate)]))
     if not have or "h264_videotoolbox" in have:
         attempts.append(("H.264", ["-c:v", "h264_videotoolbox", "-profile:v", "high",
                                    "-b:v", str(int(rate * 1.6)), "-pix_fmt", "yuv420p"]))
     if not have or "libx264" in have:
-        attempts.append(("H.264", ["-c:v", "libx264", "-preset", "veryfast", "-crf", "17",
+        attempts.append(("H.264", ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23" if small else "17",
                                    "-pix_fmt", "yuv420p"]))
     return attempts
 
 
-def ffmpeg(args, target):
+def ffmpeg(args, target, seconds=0):
+    """Run ffmpeg. With the length of the video in `seconds`, the step being
+    shown counts up in per cent while it runs."""
+    base = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
     remove(target)
-    code, out, err = run_cmd(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"] + args + [target])
+    notes = target + ".progress"
+    code, out, err = 1, "", ""
+    if seconds > 0:
+        # ffmpeg writes its position to a file, which is read from here. Nothing
+        # depends on reading a running command's output, which a-Shell may not allow.
+        label, stop = ui._label, threading.Event()
+
+        def watch():
+            while not stop.wait(0.5):
+                try:
+                    with open(notes, "rb") as handle:
+                        handle.seek(max(0, os.path.getsize(notes) - 600))
+                        found = re.findall(r"out_time_(?:us|ms)=(\d+)", handle.read().decode("ascii", "replace"))
+                except OSError:
+                    continue
+                if found:
+                    ui._label = "%s  %d%%" % (label, min(99, int(int(found[-1]) / 1e6 / seconds * 100)))
+
+        watcher = threading.Thread(target=watch, daemon=True)
+        watcher.start()
+        try:
+            code, out, err = run_cmd(base + ["-progress", notes, "-nostats"] + args + [target])
+        finally:
+            stop.set()
+            watcher.join(timeout=2)
+            ui._label = label
+            remove(notes)
+    if code != 0 or not os.path.exists(target) or os.path.getsize(target) == 0:
+        if seconds > 0:
+            remove(target)  # once more without the progress file, in case that was the obstacle
+        code, out, err = run_cmd(base + args + [target])
     good = code == 0 and os.path.exists(target) and os.path.getsize(target) > 0
     if not good:
         log("ffmpeg failed (%s): %s" % (code, (err or out)[-800:]))
@@ -1790,7 +1883,8 @@ def make_photos_ready(path, convert, notes=None):
     """Return a path Photos can import, or None to keep the file in Files.
 
     Cheapest fix first: leave alone, then rewrap without re-encoding, then
-    (only if allowed) re-encode. Each conversion is noted as "VP9 → HEVC".
+    re-encode, if `convert` names a level ("best" or "small"; True means
+    "best"). Each conversion is noted as "VP9 → HEVC".
     """
     verdict, info = photos_verdict(path)
     if verdict == "ready":
@@ -1817,8 +1911,9 @@ def make_photos_ready(path, convert, notes=None):
 
     source = describe_media(info)
     ui.start("Converting %s for Photos" % source)
-    for codec, video_args in conversion_attempts(info, encoders()):
-        if ffmpeg(["-i", path] + video_args + audio_args + tail, target):
+    level = convert if convert in CONVERT_LEVELS else "best"
+    for codec, video_args in conversion_attempts(info, encoders(), level):
+        if ffmpeg(["-i", path] + video_args + audio_args + tail, target, info.get("seconds") or 0):
             ui.done(codec)
             log("converted %s to %s with %s" % (source, codec, " ".join(video_args)))
             if notes is not None:
@@ -1850,7 +1945,8 @@ def finalize(ctx, files):
         # Plain sequential names: no spaces or symbols for ffmpeg or Shortcuts to trip on.
         staged = os.path.join(out_dir, "%03d.%s" % (index, ext_of(original) or "bin"))
         os.replace(original, staged)
-        ready = make_photos_ready(staged, ctx["convert"] is True, ctx.setdefault("converted", []))
+        allowed = ctx["convert"] if ctx["convert"] in CONVERT_LEVELS + (True,) else False
+        ready = make_photos_ready(staged, allowed, ctx.setdefault("converted", []))
         if ready:
             try:
                 too_big = os.path.getsize(ready) > MAX_PHOTOS_BYTES
@@ -1939,24 +2035,32 @@ def cmd_run(payload, blob):
         pass
 
     quality = settings_from(cfg)
-    policy = "best" if quality["convert"] == "best" else "native"
-    convert = quality["convert"] != "never"
+    # Which version to download and what to do with one Photos cannot play are
+    # separate questions. Simple mode answers both from the settings.
+    policy = "best"
+    convert = quality["convert"] if quality["convert"] in CONVERT_LEVELS else False
     chosen, picked = "", False
     if quality["advanced"]:
-        # Nothing is converted without a yes: either the choice made before the
-        # download said so, or the question is asked once the file is here.
+        # Advanced mode asks both. Nothing is converted without an answer:
+        # given with the version picked, or asked for once the file is here.
         convert = "ask"
-        pick = str(payload.get("pick") or "")
+        pick = plain(payload.get("pick"))
         for option in (read_json(os.path.join(job_dir, "plan.json"), {}).get("options") or []):
-            if pick and option.get("label") == pick:
+            if pick and plain(option.get("title")) == pick:
                 picked = True
-                policy = option.get("policy") or ("best" if option.get("convert") else "native")
+                policy = option.get("policy") or "best"
                 if option.get("format"):
-                    chosen = "%s/%s" % (option["format"], ytdlp_format(policy))
-                convert = True if option.get("convert") else ("ask" if option.get("format") else False)
+                    chosen = "%s/%s" % (option["format"], ytdlp_format(policy, quality))
+        decision = str(payload.get("decision") or "")
+        if decision in CONVERT_LEVELS:
+            convert = decision
+        elif decision == "keep":
+            convert = False
+        if pick and not picked:
+            log("the choice %r matches nothing that was offered" % payload.get("pick"))
     log("settings: %s  policy=%s  convert=%s%s" % (
         " ".join("%s=%s" % item for item in sorted(quality.items())), policy, convert,
-        "  picked=%s" % chosen if picked else ""))
+        "  picked=%s" % (chosen or policy) if picked else ""))
 
     ctx = {
         "url": url, "dir": job_dir, "mode": mode, "limit": limit,
@@ -1982,7 +2086,7 @@ def cmd_run(payload, blob):
             })
         except NeedChoice as ask:
             return callback(payload, {
-                "t": "choose", "url": url, "info": ask.info, "opts": ask.labels,
+                "t": "choose", "url": url, "info": ask.info, "cards": cards_for(ask.options),
                 "mode": mode, "limit": str(limit) if mode == "limit" else "",
             })
         except EngineError as exc:
@@ -2054,7 +2158,7 @@ def conversion_question(title, waiting, total):
         lines.append("Photos cannot play this video.")
     else:
         lines.append("Photos cannot play %d of these %d files." % (len(waiting), total))
-    lines += ["", "Source: %s%s" % (describe_media(info), size), "Converted: " + result]
+    lines += ["", "Source: %s%s" % (describe_media(info), size), "Converts to: " + result]
     return "\n".join(lines)
 
 
@@ -2086,8 +2190,9 @@ def deliver(payload, ctx, files, manifest, latest=None):
 
 
 def cmd_finish(payload):
-    """Advanced mode, second half: the files are already here and the user has
-    said whether to convert the ones Photos cannot play."""
+    """Advanced mode, last step: the files are already here and the user has
+    said how to convert the ones Photos cannot play ("best", "small"), or to
+    keep them as they are ("keep")."""
     url = clean_url(str(payload.get("url") or ""))
     job_dir = os.path.join(JOBS_DIR, job_id_for(url))
     job = read_json(os.path.join(job_dir, "job.json"), {})
@@ -2096,10 +2201,11 @@ def cmd_finish(payload):
         return callback(payload, {"t": "info", "title": "Nothing to finish",
                                   "msg": "That download is no longer in a-Shell. Download it again."})
     cfg = payload.get("cfg") or {}
+    decision = str(payload.get("decision") or "")
     ui.header(hostname(url) or "download")
-    log("finishing %s  decision=%s" % (url, payload.get("decision")))
+    log("finishing %s  decision=%s" % (url, decision))
     ctx = {
-        "url": url, "dir": job_dir, "convert": str(payload.get("decision")) == "convert",
+        "url": url, "dir": job_dir, "convert": decision if decision in CONVERT_LEVELS else False,
         "quality": settings_from(cfg), "titles": job.get("titles") or {},
         "title": job.get("title") or "", "failed": to_int(job.get("failed"), 0),
     }
@@ -2153,7 +2259,7 @@ def folder_size(path):
 def human_size(size):
     for unit in ("bytes", "KB", "MB", "GB"):
         if size < 1000 or unit == "GB":
-            return ("%d %s" if unit == "bytes" or size >= 100 else "%.1f %s") % (size, unit)
+            return ("%d %s" if unit == "bytes" or size >= 10 else "%.1f %s") % (size, unit)
         size /= 1000.0
 
 

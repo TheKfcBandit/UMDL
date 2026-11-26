@@ -13,6 +13,7 @@ the simulator does and does not prove.
 import base64
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -36,7 +37,7 @@ def find_plist():
 PLIST = find_plist()
 HAVE_DASH = shutil.which("dash") is not None
 CONFIG = {"album": "Clips", "threshold": "10", "after": "notify", "mode": "simple",
-          "res": "best", "fps": "best", "convert": "needed"}
+          "res": "best", "fps": "best", "convert": "best"}
 DEFAULTS = dict(CONFIG, album="UMDL")
 ADVANCED = dict(CONFIG, mode="advanced")
 VIDEO = "https://video.test/watch/abc"
@@ -46,7 +47,7 @@ TOOLS = ["yt-dlp", "gallery-dl", "yt-dlp-ejs", "yt-dlp-apple-webkit-jsi"]
 FIRST_RUN_PIP = ["yt-dlp gallery-dl", " ".join(TOOLS)]
 MAIN_MENU = ["Download from clipboard", "Enter a link", "Settings", "Sign in to a site",
              "Status", "Update tools", "About UMDL"]
-SETTINGS_MENU = ["Album", "Mode", "Resolution", "Frame rate", "Conversion", "Large downloads",
+SETTINGS_MENU = ["Album", "Mode", "Resolution", "Frame rate", "Convert", "Large downloads",
                  "When finished", "Reset", "Done"]
 
 with open(os.path.join(ROOT, "version.json")) as _handle:
@@ -299,7 +300,7 @@ class OneTap(Flow):
         self.assertEqual(self.foreground_commands(w)[0].split("\n")[0], "cd $HOME/Documents/UMDL")
         with open(w.record_path) as handle:
             opts = [json.loads(line) for line in handle]
-        self.assertTrue(all("avc" in o["format"].split("/")[0] for o in opts))
+        self.assertTrue(all(o["format"] == "bv*+ba/b/ba" for o in opts))     # the best there is
 
     def test_link_is_pulled_out_of_shared_text(self):
         w = self.world
@@ -588,64 +589,124 @@ class RedditThroughTheBrowser(Flow):
         self.assertEqual(w.browser_visits(), [])
 
 
-class AdvancedMode(Flow):
-    """docs/BEHAVIOR.md, "Advanced mode"."""
+MANY = [
+    {"format_id": "18", "vcodec": "avc1.42001E", "acodec": "mp4a.40.2", "width": 640,
+     "height": 360, "fps": 30, "tbr": 500, "filesize": 10_000_000},
+    {"format_id": "137", "vcodec": "avc1.640028", "acodec": "none", "width": 1920,
+     "height": 1080, "fps": 30, "tbr": 4000, "filesize": 80_000_000},
+    {"format_id": "315", "vcodec": "vp09.00.51.08", "acodec": "none", "width": 3840,
+     "height": 2160, "fps": 60, "tbr": 26000, "filesize": 650_000_000},
+    {"format_id": "140", "vcodec": "none", "acodec": "mp4a.40.2", "abr": 129, "filesize": 3_000_000},
+    {"format_id": "251", "vcodec": "none", "acodec": "opus", "abr": 160},
+]
+# The conversion named is the one this machine's ffmpeg would do; a device names HEVC.
+TARGET = "H.264" if shutil.which("ffmpeg") and "hevc_videotoolbox" not in subprocess.run(
+    ["ffmpeg", "-hide_banner", "-encoders"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+    universal_newlines=True).stdout else "HEVC"
+CONVERT_MENU = ["🎞️ Best quality", "🗜️ Smaller file", "📁 Keep in Files"]
 
-    FORMATS = [
-        {"format_id": "18", "vcodec": "avc1.42001E", "acodec": "mp4a.40.2", "width": 640,
-         "height": 360, "fps": 30, "tbr": 500, "filesize": 10_000_000},
-        {"format_id": "137", "vcodec": "avc1.640028", "acodec": "none", "width": 1920,
-         "height": 1080, "fps": 30, "tbr": 4000, "filesize": 80_000_000},
-        {"format_id": "315", "vcodec": "vp09.00.51.08", "acodec": "none", "width": 3840,
-         "height": 2160, "fps": 60, "tbr": 26000, "filesize": 650_000_000},
-        {"format_id": "140", "vcodec": "none", "acodec": "mp4a.40.2", "abr": 129},
-        {"format_id": "251", "vcodec": "none", "acodec": "opus", "abr": 160},
-    ]
-    # The conversion named is the one this machine's ffmpeg would do; a device names HEVC.
-    TARGET = "H.264" if shutil.which("ffmpeg") and "hevc_videotoolbox" not in subprocess.run(
-        ["ffmpeg", "-hide_banner", "-encoders"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-        universal_newlines=True).stdout else "HEVC"
-    OPTIONS = ["⬇️ 2160p60 · VP9 → " + TARGET, "⬇️ 1080p · H.264", "⬇️ 360p · H.264 · single file"]
 
+class WithVersions(Flow):
     def many_versions(self, **more):
         scenario = self.one_video()
-        scenario["ytdlp"]["formats"] = self.FORMATS
+        scenario["ytdlp"]["formats"] = MANY
         scenario["ytdlp"].update(more)
         return scenario
 
-    def test_shows_what_the_site_has_and_downloads_the_version_picked(self):
+    def old_clip(self):
+        """A site whose only version is one Photos cannot play."""
+        return {"ytdlp": {"raw": {"_type": "video", "id": "abc", "title": "Old clip"},
+                          "files": [["abc.webm", self.webm, "Old clip"]]}}
+
+    @staticmethod
+    def log_of(world):
+        with open(os.path.join(world.workspace, "last.log"), encoding="utf-8") as handle:
+            return handle.read()
+
+
+class Quality(WithVersions):
+    """docs/BEHAVIOR.md, "Which version is downloaded"."""
+
+    def test_simple_mode_asks_nothing_and_takes_the_best_version(self):
+        w = self.world
+        w.install(CONFIG)
+        w.set_scenario(self.many_versions())
+        w.share(VIDEO)
+        self.assertEqual(w.seen("list") + w.seen("menu"), [])
+        asked = w.recorded_options()[-1]
+        self.assertEqual(asked["format"], "bv*+ba/b/ba")
+        self.assertEqual(asked["format_sort"], ["lang", "res", "fps", "vcodec:h265", "acodec:aac"])
+        self.assertEqual(len(w.photos), 1)
+
+    def test_each_limit_works_on_its_own(self):
+        expected = {
+            ("1080", "best"): ("bv*+ba/b/ba", "res:1080", "fps"),
+            ("best", "30"): ("bv*[fps<=?30]+ba/b[fps<=?30]/bv*+ba/b/ba", "res", "fps:30"),
+            ("720", "60"): ("bv*[fps<=?60]+ba/b[fps<=?60]/bv*+ba/b/ba", "res:720", "fps:60"),
+        }
+        for (res, fps), (fmt, res_field, fps_field) in expected.items():
+            w = self.new_world()
+            w.install(dict(CONFIG, res=res, fps=fps))
+            w.set_scenario(self.many_versions())
+            w.share(VIDEO)
+            asked = w.recorded_options()[-1]
+            self.assertEqual(asked["format"], fmt, (res, fps))
+            self.assertEqual(asked["format_sort"][1:3], [res_field, fps_field], (res, fps))
+            self.assertEqual(w.seen("list") + w.seen("menu"), [], (res, fps))
+
+    def test_the_conversion_setting_does_not_change_what_is_downloaded(self):
+        asked = []
+        for convert in ("best", "small", "off"):
+            w = self.new_world()
+            w.install(dict(CONFIG, convert=convert))
+            w.set_scenario(self.many_versions())
+            w.share(VIDEO)
+            last = w.recorded_options()[-1]
+            asked.append((last["format"], last["format_sort"]))
+        self.assertEqual(asked[0], asked[1])
+        self.assertEqual(asked[0], asked[2])
+
+
+class AdvancedMode(WithVersions):
+    """docs/BEHAVIOR.md, "Advanced mode"."""
+
+    ROWS = ["2160p60 · VP9 → " + TARGET, "1080p · H.264", "360p · H.264 · single file"]
+
+    def test_lists_the_versions_and_downloads_the_one_picked(self):
         w = self.world
         w.install(ADVANCED)
         w.set_scenario(self.many_versions())
         w.script(("list", "1080p"))
         w.share(VIDEO)
-        _, prompt, options, picked = w.seen("list")[0][:4]
+        _, prompt, rows, picked, details = w.seen("list")[0]
         self.assertEqual(prompt, "My clip\n\nBest video: 2160p60 VP9 · 650 MB\n"
                                  "Best audio: Opus · 160 kbps\nSingle file: 360p H.264 + AAC")
-        self.assertEqual(options, self.OPTIONS)
+        self.assertEqual(rows, self.ROWS)
+        self.assertEqual(details, ["Best available · 653 MB", "Best without converting · 83 MB",
+                                   "Nothing to merge · 10 MB"])
+        self.assertEqual(w.seen("menu"), [])                 # this version plays as it is
         self.assertEqual(self.helper_commands(w), ["run", "run"])
-        self.assertEqual(w.helper_runs[1][1]["pick"], "⬇️ 1080p · H.264")
+        self.assertEqual(w.helper_runs[1][1]["pick"], "1080p · H.264")
         self.assertTrue(w.recorded_options()[-1]["format"].startswith("137+140/"))
         self.assertEqual(len(w.photos), 1)
         self.assertEqual(self.notifications(w), [("My clip", "Saved to the Clips album.")])
 
-    def test_the_resolution_limit_is_shown_and_applied(self):
+    def test_the_limits_are_shown_and_applied(self):
         w = self.world
         w.install(dict(ADVANCED, res="1080", fps="30"))
         w.set_scenario(self.many_versions())
         w.script(("list", "1080p"))
         w.share(VIDEO)
-        _, prompt, options = w.seen("list")[0][:3]
+        _, prompt, rows = w.seen("list")[0][:3]
         self.assertTrue(prompt.endswith("Your limit: 1080p 30 fps"))
-        self.assertEqual(options, self.OPTIONS[1:])          # nothing above the limit is offered
-        self.assertEqual(w.recorded_options()[-1]["format_sort"], ["res:1080", "fps:30"])
+        self.assertEqual(rows, self.ROWS[1:])                # nothing above the limit is offered
 
-    def test_one_playable_version_asks_nothing(self):
+    def test_one_version_asks_nothing(self):
         w = self.world
         w.install(ADVANCED)
-        w.set_scenario(self.many_versions(formats=[self.FORMATS[0]]))
+        w.set_scenario(self.many_versions(formats=[MANY[0]]))
         w.share(VIDEO)
-        self.assertEqual(w.seen("list"), [])
+        self.assertEqual(w.seen("list") + w.seen("menu"), [])
         self.assertEqual(self.helper_commands(w), ["run"])
         self.assertEqual(len(w.photos), 1)
 
@@ -655,11 +716,12 @@ class AdvancedMode(Flow):
         w.set_scenario({"ytdlp": {"raw": {"_type": "playlist", "title": "Set", "entries": [
             {"id": "a", "title": "One"}, {"id": "b", "title": "Two"}]},
             "files": [["a.mp4", self.clip, "One"], ["b.mp4", self.clip, "Two"]]}})
-        w.script(("list", "Best that Photos plays"))
+        w.script(("list", "Best without converting"))
         w.share(VIDEO)
-        _, prompt, options = w.seen("list")[0][:3]
+        _, prompt, rows, _, details = w.seen("list")[0]
         self.assertEqual(prompt, "Set\n\n2 items. One choice applies to all.")
-        self.assertEqual(options, ["⬇️ Best available · converts if needed", "⬇️ Best that Photos plays"])
+        self.assertEqual(rows, ["Best available", "Best without converting"])
+        self.assertEqual(details, ["Whatever the format", "Only what Photos plays"])
         self.assertEqual(len(w.photos), 2)
 
     def test_cancelling_the_choice_downloads_nothing(self):
@@ -672,33 +734,95 @@ class AdvancedMode(Flow):
         self.assertEqual(w.photos, [])
 
     @unittest.skipUnless(shutil.which("ffmpeg"), "needs ffmpeg")
-    def test_a_file_photos_cannot_play_asks_before_converting(self):
+    def test_a_version_that_needs_converting_asks_how_before_the_download(self):
         w = self.world
         w.install(ADVANCED)
-        w.set_scenario({"ytdlp": {"raw": {"_type": "video", "id": "abc", "title": "Old clip"},
-                                  "files": [["abc.webm", self.webm, "Old clip"]]}})
-        w.script(("menu", "Convert"))
+        w.set_scenario(self.many_versions(files=[["abc.webm", self.webm, "My clip"]]))
+        w.script(("list", "2160p60"), ("menu", "Best quality"))
+        w.share(VIDEO)
+        prompt, items = w.seen("menu")[0][1:3]
+        self.assertEqual(prompt, self.ROWS[0] + "\n\nPhotos cannot play this version. "
+                                 "Convert it after the download?")
+        self.assertEqual(items, CONVERT_MENU)
+        self.assertEqual(self.helper_commands(w), ["run", "run"])    # both answers travel together
+        sent = w.helper_runs[1][1]
+        self.assertEqual((sent["pick"], sent["decision"]), (self.ROWS[0], "best"))
+        self.assertTrue(w.recorded_options()[-1]["format"].startswith("315+140/"))
+        self.assertEqual([p[0] for p in w.photos], ["001.mp4"])
+        self.assertRegex(self.notifications(w)[0][1], r"\n1 converted \(VP[89] → ")
+
+    def test_each_step_leaves_a_line_in_the_log(self):
+        w = self.world
+        w.install(ADVANCED)
+        w.set_scenario(self.many_versions())
+        w.script(("list", None))
+        w.share(VIDEO)
+        log = self.log_of(w)
+        self.assertIn("offered: " + self.ROWS[0] + " [315+140] | 1080p · H.264 [137+140]", log)
+        self.assertIn("handing back to Shortcuts at ", log)
+        self.assertTrue(log.rstrip().endswith("shortcut: version list received"))   # and no further
+
+        w = self.new_world()
+        w.install(ADVANCED)
+        w.set_scenario(self.many_versions())
+        w.script(("list", "1080p"))
+        w.share(VIDEO)
+        self.assertIn("picked=137+140/", self.log_of(w))
+
+
+class Conversion(WithVersions):
+    """docs/BEHAVIOR.md, "Converting for Photos"."""
+
+    def test_a_file_photos_plays_is_never_asked_about(self):
+        for config in (CONFIG, ADVANCED, dict(ADVANCED, convert="off")):
+            w = self.new_world()
+            w.install(config)
+            w.set_scenario(self.one_video())
+            w.share(VIDEO)
+            self.assertEqual(w.seen("menu") + w.seen("list"), [], config)
+            self.assertEqual(len(w.photos), 1, config)
+            self.assertEqual(self.notifications(w), [("My clip", "Saved to the Clips album.")], config)
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "needs ffmpeg")
+    def test_advanced_mode_asks_how_and_shows_source_and_result(self):
+        w = self.world
+        w.install(ADVANCED)
+        w.set_scenario(self.old_clip())
+        w.script(("menu", "Best quality"))
         w.share(VIDEO)
         prompt, items = w.seen("menu")[0][1:3]
         lines = prompt.split("\n")
         self.assertEqual(lines[:4], ["Old clip", "", "Photos cannot play this video.", ""])
         self.assertRegex(lines[4], r"^Source: 120p VP[89] · [0-9.]+ (KB|bytes)$")
-        self.assertRegex(lines[5], r"^Converted: 120p (HEVC|H\.264)$")
+        self.assertRegex(lines[5], r"^Converts to: 120p (HEVC|H\.264)$")
         self.assertEqual(len(lines), 6)
-        self.assertEqual(items, ["🎞️ Convert", "📁 Keep in Files"])
+        self.assertEqual(items, CONVERT_MENU)
         self.assertEqual(self.helper_commands(w), ["run", "finish"])
-        self.assertEqual(w.helper_runs[1][1]["decision"], "convert")
+        self.assertEqual(w.helper_runs[1][1]["decision"], "best")
         self.assertEqual([p[0] for p in w.photos], ["001.mp4"])
         title, text = self.notifications(w)[0]
         self.assertEqual(title, "Old clip")
         self.assertRegex(text, r"^Saved to the Clips album\.\n1 converted \(VP[89] → (HEVC|H\.264)\)\.$")
 
     @unittest.skipUnless(shutil.which("ffmpeg"), "needs ffmpeg")
+    def test_smaller_file_is_a_different_conversion(self):
+        used = {}
+        for answer in ("Best quality", "Smaller file"):
+            w = self.new_world()
+            w.install(ADVANCED)
+            w.set_scenario(self.old_clip())
+            w.script(("menu", answer))
+            w.share(VIDEO)
+            self.assertEqual(len(w.photos), 1, answer)
+            used[answer] = re.search(r"converted .* with (.*)", self.log_of(w)).group(1)
+        self.assertNotEqual(used["Best quality"], used["Smaller file"])
+        self.assertEqual(w.helper_runs[1][1]["decision"], "small")
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "needs ffmpeg")
     def test_keeping_the_original_puts_it_in_files(self):
         w = self.world
         w.install(ADVANCED)
-        w.set_scenario({"ytdlp": {"raw": {"_type": "video", "id": "abc", "title": "Old clip"},
-                                  "files": [["abc.webm", self.webm, "Old clip"]]}})
+        w.set_scenario(self.old_clip())
         w.script(("menu", "Keep in Files"))
         w.share(VIDEO)
         self.assertEqual(w.helper_runs[1][1]["decision"], "keep")
@@ -708,42 +832,45 @@ class AdvancedMode(Flow):
                                                   "1 kept in Files (a-Shell, UMDL, Saved).")])
 
     @unittest.skipUnless(shutil.which("ffmpeg"), "needs ffmpeg")
-    def test_simple_mode_converts_without_asking_and_says_so(self):
-        w = self.world
-        w.install(CONFIG)
-        w.set_scenario({"ytdlp": {"raw": {"_type": "video", "id": "abc", "title": "Old clip"},
-                                  "files": [["abc.webm", self.webm, "Old clip"]]}})
-        w.share(VIDEO)
-        self.assertEqual(w.seen("menu"), [])
-        self.assertEqual(self.helper_commands(w), ["run"])
-        self.assertEqual([p[0] for p in w.photos], ["001.mp4"])
-        self.assertIn("1 converted (VP", self.notifications(w)[0][1])
+    def test_simple_mode_converts_with_the_saved_setting_and_says_so(self):
+        used = {}
+        for convert in ("best", "small"):
+            w = self.new_world()
+            w.install(dict(CONFIG, convert=convert))
+            w.set_scenario(self.old_clip())
+            w.share(VIDEO)
+            self.assertEqual(w.seen("menu"), [], convert)
+            self.assertEqual(self.helper_commands(w), ["run"], convert)
+            self.assertEqual([p[0] for p in w.photos], ["001.mp4"], convert)
+            self.assertIn("1 converted (VP", self.notifications(w)[0][1], convert)
+            used[convert] = re.search(r"converted .* with (.*)", self.log_of(w)).group(1)
+        self.assertNotEqual(used["best"], used["small"])
 
     @unittest.skipUnless(shutil.which("ffmpeg"), "needs ffmpeg")
-    def test_simple_mode_set_to_never_convert_keeps_the_original(self):
+    def test_simple_mode_with_conversion_off_keeps_the_original(self):
         w = self.world
-        w.install(dict(CONFIG, convert="never"))
-        w.set_scenario({"ytdlp": {"raw": {"_type": "video", "id": "abc", "title": "Old clip"},
-                                  "files": [["abc.webm", self.webm, "Old clip"]]}})
+        w.install(dict(CONFIG, convert="off"))
+        w.set_scenario(self.old_clip())
         w.share(VIDEO)
+        self.assertEqual(w.seen("menu"), [])
         self.assertEqual(w.photos, [])
         self.assertEqual(len(w.kept_files()), 1)
 
-    def test_simple_mode_applies_the_saved_limits_without_asking(self):
+    @unittest.skipUnless(shutil.which("ffmpeg"), "needs ffmpeg")
+    def test_with_no_setting_saved_the_conversion_is_best_quality(self):
+        unset = {k: v for k, v in CONFIG.items() if k != "convert"}
         w = self.world
-        w.install(dict(CONFIG, res="720", fps="30"))
-        w.set_scenario(self.many_versions())
+        w.install(unset)
+        w.set_scenario(self.old_clip())
         w.share(VIDEO)
-        self.assertEqual(w.seen("list"), [])
-        self.assertEqual(w.recorded_options()[-1]["format_sort"], ["res:720", "fps:30"])
         self.assertEqual(len(w.photos), 1)
-
-    def test_best_quality_conversion_asks_the_site_for_its_best_version(self):
-        w = self.world
+        self.assertEqual(w.helper_runs[0][1]["cfg"]["convert"], "best")
+        best = re.search(r"converted .* with (.*)", self.log_of(w)).group(1)
+        w = self.new_world()
         w.install(dict(CONFIG, convert="best"))
-        w.set_scenario(self.many_versions())
+        w.set_scenario(self.old_clip())
         w.share(VIDEO)
-        self.assertEqual(w.recorded_options()[-1]["format"], "bv*+ba/b/ba")
+        self.assertEqual(re.search(r"converted .* with (.*)", self.log_of(w)).group(1), best)
 
 
 class LargeDownloads(Flow):
@@ -1055,7 +1182,7 @@ class MainMenu(Flow):
         self.assertEqual(w.seen("browser"), [("browser", "https://www.reddit.com/login/")])
         first, second = self.alerts(w)
         self.assertEqual(first[0], "Sign in")
-        self.assertIn("UMDL returns here once the sign-in is saved", first[1])
+        self.assertIn("UMDL returns here once it is saved", first[1])
         self.assertEqual(second, ("Signed in to Reddit",
                                   "UMDL will use this sign-in for Reddit links."))
 
@@ -1190,13 +1317,13 @@ class Settings(Flow):
 
     def test_one_list_shows_every_setting_with_its_value(self):
         w = self.world
-        w.install(dict(CONFIG, album="Recents", convert="never", after="photos", threshold="25",
+        w.install(dict(CONFIG, album="Recents", convert="off", after="photos", threshold="25",
                        mode="advanced", res="1080", fps="30"))
         self.open_settings(w, ("list", "Done"))
         _, prompt, names, _, details = w.seen("list")[1]
         self.assertEqual((prompt, names), ("Settings", SETTINGS_MENU))
         self.assertEqual(details, ["Library only", "Advanced · asks each time", "Up to 1080p",
-                                   "Up to 30 fps", "Never", "Ask above 25 items", "Open Photos",
+                                   "Up to 30 fps", "Off", "Ask above 25 items", "Open Photos",
                                    "Sign out, or remove everything", "Close settings"])
         self.assertEqual(self.notifications(w), [])          # nothing changed, nothing to announce
         self.assertEqual(w.helper_runs, [])
@@ -1207,18 +1334,18 @@ class Settings(Flow):
         self.open_settings(w, ("list", "Done"))
         self.assertEqual(w.seen("list")[1][4][:7], [
             "Clips", "Simple · uses these settings", "Best available", "Best available",
-            "Only when needed", "Ask above 10 items", "Show a notification"])
+            "Best quality", "Ask above 10 items", "Show a notification"])
 
     def test_the_list_stays_open_and_each_change_is_saved_at_once(self):
         w = self.world
         w.install(CONFIG)
         self.open_settings(w, ("list", "Resolution"), ("menu", "1440p"),
                            ("list", "Frame rate"), ("menu", "60 fps"),
-                           ("list", "Conversion"), ("menu", "For best quality"),
+                           ("list", "Convert"), ("menu", "Smaller file"),
                            ("list", "Done"))
-        self.assertEqual(w.read_config(), dict(CONFIG, res="1440", fps="60", convert="best"))
+        self.assertEqual(w.read_config(), dict(CONFIG, res="1440", fps="60", convert="small"))
         self.assertEqual(len(w.seen("list")), 5)             # main menu, then the list four times
-        self.assertEqual(w.seen("list")[4][4][2:5], ["Up to 1440p", "Up to 60 fps", "For best quality"])
+        self.assertEqual(w.seen("list")[4][4][2:5], ["Up to 1440p", "Up to 60 fps", "Smaller file"])
         self.assertEqual(self.notifications(w), [("UMDL", "Settings saved.")])
         self.assertEqual(w.helper_runs, [])                  # settings never open a-Shell
 
@@ -1242,14 +1369,13 @@ class Settings(Flow):
         self.open_settings(w, ("list", "Mode"), ("list", "When finished"), ("list", "Done"))
         self.assertEqual(w.read_config(), CONFIG)
 
-    def test_conversion_choices_are_explained_in_one_menu(self):
+    def test_conversion_choices(self):
         w = self.world
         w.install(CONFIG)
-        self.open_settings(w, ("list", "Conversion"), ("menu", "Never"), ("list", "Done"))
-        prompt, items = w.seen("menu")[0][1:3]
-        self.assertTrue(prompt.startswith("Convert for Photos\n\nOnly when needed:"))
-        self.assertEqual(items, ["Only when needed", "For best quality", "Never"])
-        self.assertEqual(w.read_config(), dict(CONFIG, convert="never"))
+        self.open_settings(w, ("list", "Convert"), ("menu", "Off"), ("list", "Done"))
+        self.assertEqual(w.seen("menu")[0][1:3], ("When Photos cannot play a video",
+                                                  ["Best quality", "Smaller file", "Off"]))
+        self.assertEqual(w.read_config(), dict(CONFIG, convert="off"))
 
     def test_change_album(self):
         w = self.world
@@ -1276,16 +1402,22 @@ class Settings(Flow):
             self.assertEqual(self.alerts(w)[0], ("Not saved", "Enter a whole number from 1 to 9999."), bad)
             self.assertEqual(len(w.seen("list")), 3, bad)    # back in the list after the alert
 
-    def test_settings_saved_before_1_3_are_read_and_upgraded(self):
+    def test_settings_saved_by_earlier_versions_are_read_and_upgraded(self):
         w = self.world
-        w.install({"album": "Old", "threshold": "7", "convert": "0", "after": "photos"})
+        w.install({"album": "Old", "threshold": "7", "convert": "0", "after": "photos"})      # 1.2
         self.open_settings(w, ("list", "Mode"), ("list", "Done"))
         self.assertEqual(w.seen("list")[1][4][:7], [
-            "Old", "Simple · uses these settings", "Best available", "Best available", "Never",
+            "Old", "Simple · uses these settings", "Best available", "Best available", "Off",
             "Ask above 7 items", "Open Photos"])
         self.assertEqual(w.read_config(), {"album": "Old", "threshold": "7", "after": "photos",
                                            "mode": "advanced", "res": "best", "fps": "best",
-                                           "convert": "never"})
+                                           "convert": "off"})
+        for old, shown in (("needed", "Best quality"), ("best", "Best quality"), ("never", "Off"),
+                           ("1", "Best quality")):                                            # 1.3
+            w = self.new_world()
+            w.install(dict(CONFIG, convert=old))
+            self.open_settings(w, ("list", "Done"))
+            self.assertEqual(w.seen("list")[1][4][4], shown, old)
 
     def test_reset_sign_out(self):
         w = self.world
@@ -1293,7 +1425,7 @@ class Settings(Flow):
         w.set_cookies([(".instagram.com", "sessionid")])
         self.open_settings(w, ("list", "Reset"), ("menu", "Sign out of all sites"))
         prompt, items = w.seen("menu")[0][1:3]
-        self.assertTrue(prompt.startswith("Reset\n\nSign out:"))
+        self.assertTrue(prompt.startswith("Reset\n\nRemove everything also deletes"))
         self.assertEqual(items, ["🔑 Sign out of all sites", "🗑️ Remove everything", "Cancel"])
         self.assertEqual(self.helper_commands(w), ["logout"])
         self.assertFalse(os.path.exists(w.cookie_store))

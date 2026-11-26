@@ -41,8 +41,8 @@
 
 // Keep in step with version.json. The protocol number only changes when the
 // payload or callback format does.
-@umdlVersion = "1.3.0"
-@protocol = "3"
+@umdlVersion = "1.4.0"
+@protocol = "4"
 
 @shared = "{ShortcutInput}"
 @link = ""
@@ -69,7 +69,7 @@
 @cfgMode = "simple"
 @cfgRes = "best"
 @cfgFps = "best"
-@cfgConvert = "needed"
+@cfgConvert = "best"
 @haveCfg = "0"
 @needsHelper = "0"
 @saveCfg = "0"
@@ -153,14 +153,44 @@ if @shared beginsWith "UMDLCB:" {
             }
         }
 
-        // Advanced mode, before the download: which version to get.
+        // Advanced mode, before the download: which version to get. The helper sends
+        // the rows; the two pictures are put in here. Each step leaves a line in
+        // the helper's log, so a log shows how far a run got.
         if @cbType == "choose" {
             @link = "{cb['url']}"
             @runMode = "{cb['mode']}"
             @runLimit = "{cb['limit']}"
-            const chooseOptions = getValue(cb, "opts")
-            const chooseAnswer = chooseFromList(chooseOptions, "{cb['info']}")
+            rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
+                "command": "dash -c 'echo \"shortcut: version list received\" >> $HOME/Documents/UMDL/last.log'",
+                "openWindow": "close",
+                "keepGoing": true,
+                "ShowWhenRun": false
+            })
+            const iconGet = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEUKhP/9/v8AfP9KpP/A3/9vt/+SyP80mP+42//G4v9grv8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA9PvMMAAAAMHRSTlP//////////////wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACG2DDAAAABIklEQVR42u2Y2xKDIAxEMcjF/v8HVwUEUasDSWec2fPYhxwt2t1UKQAAAACAE4hIdLwz1gka6DPMWDmDG1a0lIFMEHgxgQ2CSUygpe8gCkYIIIAAgv8LtpQ8CFjys0jJSsCTn2VK7gVM+RlT0lAtIJ78TCm5GkpBmt+bPiklV0Mh2Ob35mcetBiSoPqY6RbmUTpddJ4/sXWV5TzjXJ/nW8Y2tEyOV53ns7zThaGCq0ReGfhK6rmBswSfGXhL9tHAXeJrA/+SsDdILCGlQWbJyQapJSoZ5Ja0YLD03jVWfhF/518T9/Sdqb6h59RDtbqn+bl1w0May9d1VNY0lq+isdzQWL7o8VfUWr6e3sLUsdJ478ffeG+k3zP8OAEAAABAKfUFuW8IProbi9oAAAAASUVORK5CYII="
+            const iconChange = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEVdW+X9/f5gXuaHhuzV1PhmZed2dOnn5vupqPG6ufSVlO5OTOSAfuvHxvbg3/oAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADeEmLFAAAAMHRSTlP///////////////////8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABd9rBbAAABNElEQVR42u2X4W7DIAyEY4MhJO3e/3ELiKbqVhaE40mT7pP61xeMfVeWBQAAAAAAgH8P25aXYPz9QqvtIYTIi6VCFqDoDA9RBIiSToHrjz/RBMgHlYLIyQkym+IQayTf5SlAiecUeFlpjBh2xTUOsbKxwF2mWnQfrb/NzpAfKq+Z1Jvrc/TfaJu5TZDOLbjL0yrYzIxEu8Vn4SVqH3qrH4Jh4OQqjtz3YiUyL6uf6KfAcmF7yr45o2nJVbc6j0YCecoTNQH5vA+s61WIzRDcPpF65+15RU7sJlucM+v6baN+7efqb+OBc5u6hzQuMDdj+3HDp6nPyhk9/VexsG7LSm79Em6KTGg+Ua5xt3mKHLvQ2+S6zUozCl+GZlclJJkKdALnYolg/OQzfrECAAAAAADwFzwAOmkHhGpYdQIAAAAASUVORK5CYII="
+            const chooseRows = replaceText("@UMDL-ICON-GET@", "{iconGet}", "{cb['cards']}")
+            const chooseCards = replaceText("@UMDL-ICON-CONVERT@", "{iconChange}", "{chooseRows}")
+            const chooseFile = setName(chooseCards, "umdl-versions.vcf", true)
+            @chooseContacts = chooseFile.contact
+            const chooseAnswer = chooseFromList(@chooseContacts, "{cb['info']}")
             @pick = "{chooseAnswer}"
+            rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
+                "command": "dash -c 'echo \"shortcut: version chosen\" >> $HOME/Documents/UMDL/last.log'",
+                "openWindow": "close",
+                "keepGoing": true,
+                "ShowWhenRun": false
+            })
+            // An arrow in the name means Photos cannot play that version as it is.
+            if @pick contains "→" {
+                menu "{@pick}\n\nPhotos cannot play this version. Convert it after the download?" {
+                    item "🎞️ Best quality":
+                        @decision = "best"
+                    item "🗜️ Smaller file":
+                        @decision = "small"
+                    item "📁 Keep in Files":
+                        @decision = "keep"
+                }
+            }
         }
 
         // Advanced mode, after the download: Photos cannot play what arrived.
@@ -168,8 +198,10 @@ if @shared beginsWith "UMDLCB:" {
             @link = "{cb['url']}"
             @toolCmd = "finish"
             menu "{cb['info']}" {
-                item "🎞️ Convert":
-                    @decision = "convert"
+                item "🎞️ Best quality":
+                    @decision = "best"
+                item "🗜️ Smaller file":
+                    @decision = "small"
                 item "📁 Keep in Files":
                     @decision = "keep"
             }
@@ -326,8 +358,8 @@ if @haveCfg == "0" {
     @resumeBlob = "{lastGroup}"
 }
 
-// A setting that is missing falls back to its default. Settings saved before
-// 1.3 have no mode, resolution or frame rate, and a yes/no conversion value.
+// A setting that is missing falls back to its default. Settings saved by
+// earlier versions have other words for the conversion setting, or none.
 @probe = "[{@cfgAlbum}]"
 if @probe == "[]" {
     @cfgAlbum = "Recents"
@@ -352,11 +384,14 @@ if @probe == "[]" {
     @cfgFps = "best"
 }
 if @cfgConvert == "0" {
-    @cfgConvert = "never"
+    @cfgConvert = "off"
 }
-if @cfgConvert != "never" {
-    if @cfgConvert != "best" {
-        @cfgConvert = "needed"
+if @cfgConvert == "never" {
+    @cfgConvert = "off"
+}
+if @cfgConvert != "off" {
+    if @cfgConvert != "small" {
+        @cfgConvert = "best"
     }
 }
 
@@ -365,7 +400,7 @@ if @cfgConvert != "never" {
  * ---------------------------------------------------------------------- */
 
 if @haveCfg == "0" {
-    menu "Welcome to UMDL\n\nSaves shared posts and videos to Photos at the best quality, on this device.\n\nSetup takes about two minutes." {
+    menu "Welcome to UMDL\n\nSaves shared posts and videos to Photos at the best quality.\n\nSetup takes about two minutes." {
         item "✅ Quick setup":
             createAlbum("UMDL")
             @albumMade = "1"
@@ -673,6 +708,10 @@ if @needsMenu == "1" {
  *
  * Each row shows its value. A row with two values switches when tapped; a
  * row with more opens one menu. Every change is saved at once.
+ *
+ * Resolution and frame rate decide which version is downloaded. Convert only
+ * decides what happens to a video Photos cannot play; in advanced mode that is
+ * asked each time instead.
  * ---------------------------------------------------------------------- */
 
 if @openSettings == "1" {
@@ -708,12 +747,12 @@ if @openSettings == "1" {
             if @cfgFps == "best" {
                 @fpsDetail = "Best available"
             }
-            @convertDetail = "Only when needed"
-            if @cfgConvert == "best" {
-                @convertDetail = "For best quality"
+            @convertDetail = "Best quality"
+            if @cfgConvert == "small" {
+                @convertDetail = "Smaller file"
             }
-            if @cfgConvert == "never" {
-                @convertDetail = "Never"
+            if @cfgConvert == "off" {
+                @convertDetail = "Off"
             }
             @afterDetail = "Show a notification"
             if @cfgAfter == "photos" {
@@ -724,7 +763,7 @@ if @openSettings == "1" {
                 @doneDetail = "Install and finish"
             }
 
-            @settingCards = "BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Album;;;;\nORG;CHARSET=utf-8:{@albumDetail};\nPHOTO;ENCODING=b:{iconAlbum}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Mode;;;;\nORG;CHARSET=utf-8:{@modeDetail};\nPHOTO;ENCODING=b:{iconMode}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Resolution;;;;\nORG;CHARSET=utf-8:{@resDetail};\nPHOTO;ENCODING=b:{iconResolution}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Frame rate;;;;\nORG;CHARSET=utf-8:{@fpsDetail};\nPHOTO;ENCODING=b:{iconFps}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Conversion;;;;\nORG;CHARSET=utf-8:{@convertDetail};\nPHOTO;ENCODING=b:{iconConvert}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Large downloads;;;;\nORG;CHARSET=utf-8:Ask above {@cfgThreshold} items;\nPHOTO;ENCODING=b:{iconStack}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:When finished;;;;\nORG;CHARSET=utf-8:{@afterDetail};\nPHOTO;ENCODING=b:{iconFinish}\nEND:VCARD\n"
+            @settingCards = "BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Album;;;;\nORG;CHARSET=utf-8:{@albumDetail};\nPHOTO;ENCODING=b:{iconAlbum}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Mode;;;;\nORG;CHARSET=utf-8:{@modeDetail};\nPHOTO;ENCODING=b:{iconMode}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Resolution;;;;\nORG;CHARSET=utf-8:{@resDetail};\nPHOTO;ENCODING=b:{iconResolution}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Frame rate;;;;\nORG;CHARSET=utf-8:{@fpsDetail};\nPHOTO;ENCODING=b:{iconFps}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Convert;;;;\nORG;CHARSET=utf-8:{@convertDetail};\nPHOTO;ENCODING=b:{iconConvert}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Large downloads;;;;\nORG;CHARSET=utf-8:Ask above {@cfgThreshold} items;\nPHOTO;ENCODING=b:{iconStack}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:When finished;;;;\nORG;CHARSET=utf-8:{@afterDetail};\nPHOTO;ENCODING=b:{iconFinish}\nEND:VCARD\n"
             // Nothing to reset before setup has finished.
             if @firstRun == "0" {
                 @settingCards = "{@settingCards}BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Reset;;;;\nORG;CHARSET=utf-8:Sign out, or remove everything;\nPHOTO;ENCODING=b:{iconReset}\nEND:VCARD\n"
@@ -803,14 +842,14 @@ if @openSettings == "1" {
                 @settingTouched = "1"
             }
 
-            if @setting == "Conversion" {
-                menu "Convert for Photos\n\nOnly when needed: prefers what Photos already plays.\nFor best quality: takes the best version and converts it. Slower.\nNever: unplayable files go to Files." {
-                    item "Only when needed":
-                        @cfgConvert = "needed"
-                    item "For best quality":
+            if @setting == "Convert" {
+                menu "When Photos cannot play a video" {
+                    item "Best quality":
                         @cfgConvert = "best"
-                    item "Never":
-                        @cfgConvert = "never"
+                    item "Smaller file":
+                        @cfgConvert = "small"
+                    item "Off":
+                        @cfgConvert = "off"
                 }
                 @settingTouched = "1"
             }
@@ -839,7 +878,7 @@ if @openSettings == "1" {
             }
 
             if @setting == "Reset" {
-                menu "Reset\n\nSign out: forgets every site sign-in.\nRemove everything: also removes UMDL's files and the download tools from a-Shell. Photos are not affected." {
+                menu "Reset\n\nRemove everything also deletes UMDL's files and tools in a-Shell. Photos are kept." {
                     item "🔑 Sign out of all sites":
                         @toolCmd = "logout"
                         @settingsOpen = "0"
@@ -910,7 +949,7 @@ if @saveCfg == "1" {
 // and reports back, so there is no doubt about whether it worked.
 @probe = "[{@signInTo}]"
 if @probe != "[]" {
-    alert("Sign in on the page that opens. UMDL returns here once the sign-in is saved.\n\nIf it does not, swipe in from the left edge and check Status.", "Sign in")
+    alert("Sign in on the page that opens. UMDL returns here once it is saved.\n\nIf it does not, swipe in from the left edge and check Status.", "Sign in")
     @toolCmd = "signin"
     @link = @signInTo
 }

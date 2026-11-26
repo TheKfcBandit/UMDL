@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.4.0
+
+Which version to download and what to do with a file Photos cannot play are now two separate things. Install the new shortcut; it brings its helper with it.
+
+Changed:
+
+- **The best version is always downloaded**, within the Resolution and Frame rate limits. 1.3.0 preferred versions Photos already plays, which stopped YouTube at 1080p. Between versions of the same size and frame rate, one Photos plays is still taken, since converting gains nothing there.
+- **Convert** replaces Conversion and is a quality: **Best quality** (the default, also when nothing was ever set), **Smaller file**, or **Off**. It has no say in which version is downloaded. Earlier settings are mapped: "Only when needed" and "For best quality" become Best quality, "Never" becomes Off.
+- **Advanced mode asks whenever there is a choice**, and only then. The versions are now shown as an icon list like the main menu, each with a line of detail and its size. Choosing a version Photos cannot play asks, straight away, how to convert it, so a-Shell opens once more and not twice. A file that turns out unplayable after the download is asked about then.
+- A frame rate limit is now kept even when a larger version exists above it. In 1.3.0 it gave way to resolution, so on YouTube it never applied.
+- Sound Photos plays is preferred when a site offers it, so it is copied and not re-encoded.
+- Shorter text in the welcome screen, the Convert and Reset menus and the sign-in notice. Sizes read "83 MB", not "83.0 MB".
+
+Added:
+
+- **Smaller file**, a second conversion quality at about half the size.
+- A conversion shows its progress in per cent.
+- The log records what advanced mode offered, when the helper handed back to Shortcuts, when the shortcut received the list and when a version was chosen.
+
+Not fixed, because the cause is not known: in the one device test of 1.3.0's advanced mode, a YouTube link ended in the YouTube app showing "video unavailable" after the helper had listed the versions. Nothing in UMDL opens a link. The list is now built from actions already confirmed on a device, and the new log lines will show where a run stops.
+
+
 ## 1.3.0
 
 Quality settings, two modes, a better conversion, and shorter wording throughout. Install the new shortcut; the helper follows by itself.

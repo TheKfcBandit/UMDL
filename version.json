@@ -1,7 +1,7 @@
 {
-  "shortcut": "1.3.0",
-  "helper": "1.3.0",
-  "protocol": 3,
+  "shortcut": "1.4.0",
+  "helper": "1.4.0",
+  "protocol": 4,
   "url": "https://github.com/TheKfcBandit/UMDL/releases/latest",
-  "notes": "Quality settings (resolution and frame rate), Simple and Advanced modes, better conversion for Photos, one Settings screen, and Reset."
+  "notes": "Always downloads the best version; conversion is its own setting with two quality levels. Advanced mode lists versions with icons."
 }

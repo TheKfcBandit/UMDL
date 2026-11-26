@@ -11,9 +11,9 @@ What UMDL sets out to do, how each point is met, and how it is checked.
 | R1 | One tap from the share sheet, no questions | The shortcut accepts URLs and text, pulls out the first link and hands it to the helper. No menu appears on this path. | Flow test `test_download_asks_nothing` fails if any question is asked |
 | R2 | Works without the share sheet | Opened on its own, UMDL shows its main menu at once: clipboard, typed link, resume, settings, sign in, update, about | Flow tests for each menu item; `test_opening_from_the_app_goes_straight_to_the_main_menu` |
 | R3 | Universal site support | yt-dlp and gallery-dl, each tried in the order that suits the site, the other as fallback | Routing checked against the real extractor lists; fallback in helper tests |
-| R4 | The best quality by default, with limits the user can set | Resolution and frame rate default to **Best available** and can each be capped on their own. The version is chosen by yt-dlp from those limits and the conversion setting | Flow tests in `AdvancedMode`; helper tests in `Quality`; format strings and sort fields checked against real yt-dlp |
-| R19 | Two modes | **Simple** applies the saved settings and asks nothing. **Advanced** shows what the site offers (best video, best audio, best single file) and lets the version be chosen, and asks before converting a file Photos cannot play, showing the source and the result | Flow tests in `AdvancedMode` |
-| R20 | Conversion keeps as much quality as possible, and is visible | Nothing is re-encoded unless the picture codec itself is unplayable. Then: hardware HEVC at a quality level, same size and frame rate, 10-bit kept, with three fallbacks. Status lists the encoders; the log and the notification name each conversion | Helper tests in `ConversionOrder` and `PhotosReady`, with real ffmpeg; the hardware encoders only exist on device |
+| R4 | The best quality by default, with limits the user can set | The best version a site has is downloaded, whatever its format. Resolution and frame rate default to **Best available** and can each be capped on their own. Nothing else affects the choice | Flow tests in `Quality`; helper tests in `Quality`; the format string, filter and sort fields run against real yt-dlp on a test video with five versions |
+| R19 | Two modes | **Simple** applies the saved settings and asks nothing. **Advanced** asks whenever there is something to choose: which version, from a list showing the best video, best audio and best single file; and how to convert a file Photos cannot play, showing the source and the result | Flow tests in `AdvancedMode` and `Conversion` |
+| R20 | Conversion is its own step, keeps as much quality as possible, and is visible | A file Photos plays is never converted and never asked about. One it cannot play is converted at **Best quality** or as a **Smaller file**, or kept in Files: by the Convert setting in simple mode (best quality when unset), by a question in advanced mode. Hardware HEVC, same size and frame rate, 10-bit kept, with three fallbacks. Status lists the encoders; the log and the notification name each conversion | Flow tests in `Conversion`; helper tests in `ConversionOrder` and `PhotosReady`, with real ffmpeg; the hardware encoders only exist on device |
 | R5 | Saved straight to a chosen Photos album | "Save to Photo Album" with the album from settings; no album means the library | Flow tests, including album names with quotes, commas and non-Latin text |
 | R6 | Media Photos cannot take is not lost | Repacked without re-encoding when possible; converted when allowed; otherwise kept in Files | Helper tests with real H.264, HEVC, VP9 and audio files |
 | R7 | First-run setup, possible in one tap | **Quick setup** creates the album, saves the defaults, downloads the helper, installs the tools and downloads the shared link with no further input. **Custom setup** opens the settings list first, so the album, mode, resolution, frame rate and conversion can be set before anything is installed | Flow tests in `Onboarding`, including declined setup, no connection, and tools that will not install |
@@ -45,11 +45,13 @@ Made during the build:
 - **No Cherri functions.** They re-run the shortcut and read its input, which is the channel the helper's callback uses.
 - **Licence**: MIT, matching SW-DLT.
 
-Changed in 1.3.0, at the owner's request:
+Changed in 1.3.0 and 1.4.0, at the owner's request:
 
 - **Quality is configurable.** Resolution and frame rate limits, each on its own, both defaulting to best.
-- **Simple and Advanced modes.**
-- **Conversion defaults to "Only when needed".** A version Photos already plays is preferred, and anything else is converted only when a site has nothing else. "For best quality" is one tap away and is what reaches 4K on YouTube. It is not the default because how fast a-Shell converts 4K on a phone, and whether its ffmpeg has the hardware encoders at all, has not been measured on a device yet.
+- **Simple and Advanced modes.** Advanced asks whenever there is a choice, and only then.
+- **The best version is always downloaded (1.4.0).** 1.3.0 preferred versions Photos already plays unless told otherwise, which stopped YouTube at 1080p. The device test showed a-Shell's ffmpeg has the hardware encoders, so that caution was dropped. A version Photos plays is still preferred between versions of the same size and frame rate.
+- **Conversion is a separate step (1.4.0).** It no longer influences which version is downloaded. Its setting is a quality, **Best quality**, **Smaller file** or **Off**, and best quality applies when nothing was set.
+- **A frame rate limit is strict.** Versions above it are passed over even when they are larger. On YouTube a 60 fps video has 30 fps versions only at 480p and below, so "Up to 30 fps" gives 480p there. The alternative, a limit that gives way to resolution, would never apply on the site where it matters most.
 - **Reset removes what UMDL installed, not the user's other files in a-Shell.** A shortcut cannot reset another app, and a-Shell is a general-purpose terminal that may hold unrelated work. Deleting the app is the complete wipe.
 
 Changed after the first device test (1.1.0):
@@ -60,9 +62,10 @@ Changed after the first device test (1.1.0):
 
 ## Known limits
 
-- YouTube above 1080p is usually VP9 or AV1 only. With conversion set to "Only when needed" YouTube downloads therefore stop at 1080p; "For best quality", or Advanced mode, downloads the larger version and converts it.
-- Conversion speed depends on a-Shell's ffmpeg having the hardware encoders. Status shows whether it does.
+- YouTube above 1080p is VP9 or AV1 only, so those downloads are converted, which takes time and battery. Set Resolution to 1080p to avoid it. With Convert off, such a video is kept in Files, not Photos.
+- HDR versions are not sought out; the plain version of the same size is taken.
 - Advanced mode opens a-Shell twice for a video with more than one version: once to list them, once to download.
+- A YouTube link has not yet downloaded on the test device. In its one attempt, with 1.3.0 in advanced mode, the helper listed the versions and handed back to Shortcuts, and the device ended up in the YouTube app showing "video unavailable". The cause is not known.
 - The shortcut must keep the name "UMDL".
 - Shortcuts has no custom animation. Progress is shown as a live bar in a-Shell and a notification at the end.
 - Live streams are skipped while they are live.
@@ -79,7 +82,7 @@ Changed after the first device test (1.1.0):
 | Helper against real yt-dlp and gallery-dl | Run by hand during development against a local test site: single video, multi-video page, image, audio, VP9 conversion, dead link |
 | Shortcut logic and the shortcut-helper protocol | Automated flow tests in a simulator |
 | Shortcut compiles | CI, every push |
-| Behaviour on a real iPhone or iPad | 1.0.0 failed in setup. 1.1.0 set up, downloaded and reported errors correctly, then failed when saving. 1.2.0 saved to Photos, signed in, and downloaded private posts from Instagram and X; Reddit was refused. 1.3.0 is **not yet confirmed** |
+| Behaviour on a real iPhone or iPad | 1.0.0 failed in setup. 1.1.0 set up, downloaded and reported errors correctly, then failed when saving. 1.2.0 saved to Photos, signed in, and downloaded private posts from Instagram and X; Reddit was refused. 1.3.0 confirmed the Settings list and the hardware encoders, and failed on its first YouTube link in advanced mode (see Known limits). 1.4.0 is **not yet confirmed** |
 
 The simulator models each Shortcuts action as UMDL uses it. Where iOS behaves differently from that model, only a device will show it. The 1.0.0 device test showed one such difference: **an empty text counts as having a value in an If action.** The simulator assumed the opposite, which hid three faults: a false "unsaved download" prompt, no main menu, and a misleading "no link" message. The simulator now matches the device and the shortcut no longer uses that test.
 

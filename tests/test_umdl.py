@@ -302,38 +302,59 @@ class Quality(unittest.TestCase):
         return umdl.build_plan(self.FORMATS, settings, "A video")
 
     def test_settings_have_safe_defaults(self):
-        best = {"convert": "needed", "res": "best", "fps": "best", "advanced": False}
+        best = {"convert": "best", "res": "best", "fps": "best", "advanced": False}
         self.assertEqual(umdl.settings_from({}), best)
         self.assertEqual(umdl.settings_from(None), best)
         self.assertEqual(umdl.settings_from({"res": "999", "fps": "24", "convert": "sometimes"}), best)
-        self.assertEqual(umdl.settings_from({"res": "1080", "fps": "30", "convert": "best",
+        self.assertEqual(umdl.settings_from({"res": "1080", "fps": "30", "convert": "small",
                                              "mode": "advanced"}),
-                         {"convert": "best", "res": "1080", "fps": "30", "advanced": True})
+                         {"convert": "small", "res": "1080", "fps": "30", "advanced": True})
 
-    def test_settings_saved_before_1_3_still_mean_the_same(self):
-        self.assertEqual(umdl.settings_from({"convert": "1"})["convert"], "needed")
-        self.assertEqual(umdl.settings_from({"convert": "0"})["convert"], "never")
+    def test_settings_saved_by_earlier_versions_still_mean_the_same(self):
+        for old, new in (("1", "best"), ("0", "off"), ("needed", "best"), ("never", "off"),
+                         ("best", "best"), ("off", "off")):
+            self.assertEqual(umdl.settings_from({"convert": old})["convert"], new, old)
 
-    def test_limits_become_sort_fields_each_on_its_own(self):
+    def test_best_means_size_then_smoothness_then_what_photos_plays(self):
         sort = lambda **q: umdl.ytdlp_sort(umdl.settings_from(q))  # noqa: E731
-        self.assertEqual(sort(), [])
-        self.assertEqual(sort(res="1080"), ["res:1080"])
-        self.assertEqual(sort(fps="30"), ["fps:30"])
-        self.assertEqual(sort(res="720", fps="60"), ["res:720", "fps:60"])
+        self.assertEqual(sort(), ["lang", "res", "fps", "vcodec:h265", "acodec:aac"])
+        self.assertEqual(sort(res="1080")[1:3], ["res:1080", "fps"])
+        self.assertEqual(sort(fps="30")[1:3], ["res", "fps:30"])
+        self.assertEqual(sort(res="720", fps="60")[1:3], ["res:720", "fps:60"])
 
-    def test_format_by_policy(self):
-        self.assertEqual(umdl.ytdlp_format("best"), "bv*+ba/b/ba")
+    def test_the_conversion_setting_has_no_say_in_the_version(self):
+        asked = {(umdl.ytdlp_format("best", q), tuple(umdl.ytdlp_sort(q)))
+                 for q in (umdl.settings_from({"convert": c}) for c in ("best", "small", "off"))}
+        self.assertEqual(asked, {("bv*+ba/b/ba", ("lang", "res", "fps", "vcodec:h265", "acodec:aac"))})
+
+    def test_a_frame_rate_limit_filters_with_a_fallback(self):
+        capped = umdl.ytdlp_format("best", umdl.settings_from({"fps": "30"}))
+        self.assertEqual(capped, "bv*[fps<=?30]+ba/b[fps<=?30]/bv*+ba/b/ba")
+        native = umdl.ytdlp_format("native", umdl.settings_from({"fps": "60"}))
+        self.assertTrue(native.endswith("/" + umdl.YTDLP_FORMAT))
+        self.assertEqual(native.count("[fps<=?60]"), umdl.YTDLP_FORMAT.count("/"))   # every choice but "ba"
         self.assertEqual(umdl.ytdlp_format("native"), umdl.YTDLP_FORMAT)
-        self.assertTrue(umdl.ytdlp_format("single").startswith("b["))
 
     def test_plan_names_the_best_of_each_kind(self):
         plan = self.plan()
         self.assertEqual(plan["info"], "A video\n\nBest video: 2160p60 VP9 · 650 MB\n"
                                        "Best audio: Opus · 160 kbps\nSingle file: 720p H.264 + AAC")
-        self.assertEqual([(o["label"], o["format"], o["convert"]) for o in plan["options"]], [
-            ("⬇️ 2160p60 · VP9 → HEVC", "315+251", True),
-            ("⬇️ 1080p60 · H.264", "299+140", False),
-            ("⬇️ 720p · H.264 · single file", "22", False)])
+        self.assertEqual([(o["title"], o["detail"], o["format"], o["convert"]) for o in plan["options"]], [
+            ("2160p60 · VP9 → HEVC", "Best available", "315+140", True),
+            ("1080p60 · H.264", "Best without converting", "299+140", False),
+            ("720p · H.264 · single file", "Nothing to merge", "22", False)])
+
+    def test_sound_photos_plays_is_preferred_so_it_can_be_copied(self):
+        self.assertTrue(all(o["format"].endswith("+140") for o in self.plan()["options"][:2]))
+        only_opus = [f for f in self.FORMATS if f["format_id"] != "140"]
+        plan = umdl.build_plan(only_opus, umdl.settings_from({}), "")
+        self.assertEqual(plan["options"][0]["format"], "315+251")
+
+    def test_between_equals_the_one_photos_plays_wins(self):
+        twin = dict(self.FORMATS[4], format_id="401", vcodec="hev1.2.4.L153", tbr=20000)
+        plan = umdl.build_plan(self.FORMATS + [twin], umdl.settings_from({}), "")
+        self.assertEqual((plan["options"][0]["title"], plan["options"][0]["format"]),
+                         ("2160p60 · HEVC", "401+140"))
 
     def test_plan_respects_the_limits_and_says_so(self):
         plan = self.plan(res="1080", fps="30")
@@ -342,23 +363,38 @@ class Quality(unittest.TestCase):
         plan = self.plan(res="480")
         self.assertEqual([o["format"] for o in plan["options"]], ["18"])
 
+    def test_a_frame_rate_limit_is_kept_even_at_a_smaller_size(self):
+        sixty = [f for f in self.FORMATS if f["format_id"] in ("18", "299", "315", "140")]
+        plan = umdl.build_plan(sixty, umdl.settings_from({"fps": "30"}), "")
+        self.assertEqual([o["format"] for o in plan["options"]], ["18"])
+
     def test_nothing_within_the_limit_offers_the_smallest_there_is(self):
         tall = [f for f in self.FORMATS if f["format_id"] in ("137", "299", "315", "140")]
         plan = umdl.build_plan(tall, umdl.settings_from({"res": "720"}), "")
-        self.assertEqual([o["format"] for o in plan["options"]], ["137+140"])
+        self.assertEqual([o["format"] for o in plan["options"]], ["299+140"])
 
     def test_the_conversion_named_is_the_one_this_device_does(self):
         plan = umdl.build_plan(self.FORMATS, umdl.settings_from({}), "", target="H.264")
-        self.assertEqual(plan["options"][0]["label"], "⬇️ 2160p60 · VP9 → H.264")
+        self.assertEqual(plan["options"][0]["title"], "2160p60 · VP9 → H.264")
 
     def test_plan_for_a_site_with_one_file(self):
         plan = umdl.build_plan(self.FORMATS[:1], umdl.settings_from({}), "")
         self.assertEqual([(o["format"], o["convert"]) for o in plan["options"]], [("18", False)])
 
-    def test_labels_are_unique_so_a_pick_is_unambiguous(self):
+    def test_titles_are_unique_even_after_a_trip_through_shortcuts(self):
         for quality in ({}, {"res": "1080"}, {"res": "720", "fps": "30"}, {"res": "480"}):
-            labels = [o["label"] for o in self.plan(**quality)["options"]]
-            self.assertEqual(len(labels), len(set(labels)), quality)
+            names = [umdl.plain(o["title"]) for o in self.plan(**quality)["options"]]
+            self.assertEqual(len(names), len(set(names)), quality)
+        self.assertEqual(umdl.plain("2160p60 · VP9 → HEVC"), umdl.plain(" 2160p60  VP9 -> hevc"))
+
+    def test_rows_are_cards_with_an_icon_marker_each(self):
+        cards = umdl.cards_for(self.plan()["options"])
+        self.assertEqual(cards.count("BEGIN:VCARD"), 3)
+        self.assertEqual(cards.count(umdl.ICON_CONVERT), 1)      # only the version that needs converting
+        self.assertEqual(cards.count(umdl.ICON_GET), 2)
+        self.assertIn("\nN;CHARSET=utf-8:1080p60 · H.264;;;;\nORG;CHARSET=utf-8:Best without converting", cards)
+        odd = umdl.cards_for([{"title": "a;b,c\\d\ne", "detail": "x;y"}])
+        self.assertIn("N;CHARSET=utf-8:a b c d e;;;;\nORG;CHARSET=utf-8:x y;", odd)
 
 
 class ConversionOrder(unittest.TestCase):
@@ -391,6 +427,17 @@ class ConversionOrder(unittest.TestCase):
         attempts = umdl.conversion_attempts(self.INFO, {"libx264"})
         self.assertEqual([args[1] for _, args in attempts], ["libx264"])
         self.assertIn("17", attempts[0][1])                 # visually lossless, not a fixed bitrate
+
+    def test_smaller_file_asks_for_less_at_every_step(self):
+        have = {"hevc_videotoolbox", "h264_videotoolbox", "libx264"}
+        best = umdl.conversion_attempts(self.INFO, have)
+        small = umdl.conversion_attempts(self.INFO, have, "small")
+        self.assertEqual([c for c, _ in small], [c for c, _ in best])        # same encoders, same order
+        self.assertEqual((best[0][1][-1], small[0][1][-1]), ("75", "55"))
+        self.assertLess(int(small[1][1][-1]), int(best[1][1][-1]))
+        self.assertEqual((best[3][1][5], small[3][1][5]), ("17", "23"))
+        self.assertNotIn("-vf", small[0][1])                                # still the same size
+        self.assertNotIn("-r", small[0][1])
 
     def test_a_low_bitrate_source_gets_a_sensible_floor(self):
         thin = dict(self.INFO, width=1280, height=720, fps=30.0, vbitrate=300_000, bitrate=350_000)
@@ -527,7 +574,7 @@ class EndToEnd(Base):
             self.assertEqual(handle.read(), data["m"])
         self.assertFalse(os.path.exists(umdl.LAST_FILE))
         opts = fake["opts"][-1]
-        self.assertEqual(opts["format"], umdl.YTDLP_FORMAT)
+        self.assertEqual(opts["format"], "bv*+ba/b/ba")
         self.assertTrue(opts["noplaylist"])
         self.assertNotIn("cookiesfrombrowser", opts)
 
