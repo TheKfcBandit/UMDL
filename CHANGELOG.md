@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.7.0
+
+A choice where there is one, Files as a destination, and what the first run of 1.6 on a device showed. Install the new shortcut; it brings its helper with it.
+
+Added:
+
+- **Save to › Files.** Every download goes to the Files app under *a-Shell › UMDL › Saved*, exactly as downloaded. Nothing is repacked or converted, so nothing waits on a conversion.
+- **Higher quality available.** When the best version would have to be converted for Photos and a smaller one would not, UMDL asks which you want and names both: "2160p60, converted" or "1080p60, as it is". The link is read once; the answer carries on from there.
+- **Settings › Conversion** answers that question for good: ask each time, always convert for the best quality, or never and take what Photos plays.
+- **When finished** can open the Files app at the folder, when that is where the download went.
+
+Fixed, from the 1.6 device log:
+
+- **A YouTube video was named by its id**, `njX2bu-_Vw4.mp4`, not its title. Video and sound arrive as two files with names of their own, and the title was filed under those.
+- **A converted video landed outside the album.** Photos refuses an AV1 file with the same error it gives for a bad album, and the helper dropped the album for the rest of the run.
+- **Every conversion began with an attempt that could not work**, run twice. On iOS, ffmpeg refuses to ask the hardware encoder for a quality level. The attempt is gone, and a failed attempt is no longer repeated.
+- **1.6 would have taken VP9 after Photos refused AV1.** Photos refuses both; AV1 is the one the chip reads, and it converted a two-minute 4K60 HDR video in two minutes. AV1 is now taken because it converts faster.
+- "WARNING: Unknown codec" no longer prints into the progress line. It goes to the log.
+
+Changed:
+
+- A conversion passes the source's colour information on, so HDR stays HDR, and gives the encoder more room: 1.6 times the source's bitrate from AV1, 1.3 times from VP9.
+- "Converting…" and the question say "HDR" where it applies.
+- Settings › *Album* is now *Save to*.
+
+Looked into: hardware decoding of VP9. iPhones have it, but iOS gives it only to apps holding an entitlement Apple grants (YouTube's has it). a-Shell does not, and nothing in UMDL can change that. AV1 needs no entitlement on an iPhone 15 Pro or later.
+
+
 ## 1.6.0
 
 One route, and a download that survives being interrupted. Install the new shortcut; it brings its helper with it.

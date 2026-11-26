@@ -5,12 +5,14 @@ Behaviour comes from the JSON file named in UMDL_FAKE_SCENARIO:
                "files": [["name.mp4", "/source/file", "Title"]],
                "download_error": "message",
                "formats": [{"format_id": "137", "vcodec": "avc1", "acodec": "none", ...}],
+               "stray_warning": "text yt-dlp writes straight to the terminal",
                "urls": {"part of a link": {...the same keys, for links containing it...}}}}
 """
 
 import json
 import os
 import shutil
+import sys
 import types
 
 
@@ -59,6 +61,9 @@ class YoutubeDL:
                 # Remembered for the download, which is given the result, not the link.
                 _chosen[0] = special
                 self.scenario = special
+        if self.scenario.get("stray_warning"):
+            # As yt-dlp's parse_codecs does: past the logger, past "no_warnings".
+            sys.stderr.write("WARNING: %s\n" % self.scenario["stray_warning"])
         if self.scenario.get("error"):
             self.opts["logger"].error("ERROR: " + self.scenario["error"])
             raise DownloadError(self.scenario["error"])
@@ -70,14 +75,23 @@ class YoutubeDL:
         items = self.opts.get("playlist_items")
         if items:
             files = files[:int(items.split("-")[-1])]
+        # Video and sound that are fetched apart are reported under their own
+        # names ("abc.f401.mp4", "abc.f140.m4a"), never under the joined file's.
+        parts = self.opts["format"].split("/")[0].split("+")
         for name, source, title in files:
             target = os.path.join(folder, name)
             shutil.copy(source, target)
+            stem, ext = os.path.splitext(target)
+            reported = ["%s.f%s%s" % (stem, part, ext) for part in parts] if len(parts) > 1 else [target]
             for hook in self.opts["progress_hooks"]:
-                hook({"status": "finished", "filename": target, "info_dict": {"title": title}})
+                for filename in reported:
+                    hook({"status": "finished", "filename": filename, "info_dict": {"title": title}})
         if self.scenario.get("download_error"):
             self.opts["logger"].error("ERROR: " + self.scenario["download_error"])
             raise DownloadError(self.scenario["download_error"])
+
+    def sanitize_info(self, info):
+        return json.loads(json.dumps(info, default=repr))
 
     def process_ie_result(self, raw, download=True):
         if not download:

@@ -1,7 +1,7 @@
 {
-  "shortcut": "1.6.0",
-  "helper": "1.6.0",
-  "protocol": 6,
+  "shortcut": "1.7.0",
+  "helper": "1.7.0",
+  "protocol": 7,
   "url": "https://github.com/TheKfcBandit/UMDL/releases/latest",
-  "notes": "One route only: a-Shell saves to Photos, or the file stays in Files. Interrupted downloads carry on. Faster conversion, AV1 where the device reads it."
+  "notes": "Save straight to Files. A choice when the best version would have to be converted. Titles as names again, and faster conversion."
 }

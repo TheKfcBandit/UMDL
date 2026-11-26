@@ -34,23 +34,28 @@ flowchart TD
         P --> Q["Pick tool order for this site"]
         Q --> R["Count the items at the link"]
         R --> S{"More than the ask-first limit?"}
-        S -- no --> U["Download the best version within the limits"]
+        S -- no --> PL["One video: plan its versions<br/>(best, needs converting?, best that does not)"]
+        PL --> CH{"Saving to Photos, the best needs converting,<br/>a smaller one does not, and no preference is set?"}
+        CH -- no --> U["Download the version the plan and the settings name"]
     end
     S -- yes --> T["Callback: confirm"]
+    CH -- yes --> T2["Keep what was read; callback: choose"]
     U -- nothing downloaded --> X["Callback: error"]
     U --> SAVE
     subgraph SAVE["state: save"]
-        PH["Offer each waiting file to Photos;<br/>convert only on a refusal;<br/>what Photos cannot hold goes to Files"]
+        PH["Save to Files: move each file there, as it is.<br/>Save to Photos: offer each waiting file;<br/>convert only on a refusal;<br/>what Photos cannot hold goes to Files"]
     end
     SAVE --> W["state: done. Callback: done, with the sentence to show"]
 
     T --> D
+    T2 --> D
     W --> D
     X --> D
 
     D --> Y{"Callback type"}
     Y -- setup --> AE["Say that UMDL is ready"]
     Y -- confirm --> Z["Menu: all, first N, first only, cancel"] --> O
+    Y -- choose --> ZC["Menu: Higher quality available.<br/>Converted, as it is, cancel"] --> O
     Y -- error --> AA["Menu: try again, update and retry, sign in, copy details"]
     AA --> O
     Y -- "info, status" --> AB["Show the message"]
@@ -73,8 +78,8 @@ There is one route. Version 1.5 removed the mode branch of 1.3 and 1.4 and moved
 
 | State | Function | Does | Next |
 |---|---|---|---|
-| `fetch` | `state_fetch` | Runs the tools in order until one delivers; stages the files under plain names in `out/` | `save` |
-| `save` | `state_save` | Opens Photos once; for each waiting item, `place()`; moves what is kept to `Saved/` | `done` |
+| `fetch` | `state_fetch` | Runs the tools in order until one delivers; stages the files under plain names in `out/`. A tool may stop here with a question (`confirm`, `choose`); the answer arrives as a new run of the same job | `save` |
+| `save` | `state_save` | With **Save to** Files: moves each item to `Saved/`. Otherwise opens Photos once; for each waiting item, `place()`; moves what is kept to `Saved/` | `done` |
 | `done` | | The folder is removed and the callback sent | |
 
 `<id>` is derived from the link, so the same link finds the same folder. `load_job` returns the saved job when it is in `save` and its waiting files are still there, and a new one otherwise; that is the whole of resuming. An item's path is saved again whenever a repack or a conversion replaces the file, so a second run offers Photos the newest file it has. An interrupted `fetch` is not a saved state: the tools are simply run again in the same folder, where yt-dlp continues a partly downloaded file by itself.
@@ -103,8 +108,9 @@ python umdl.py run <base64 JSON>
 | `url` | The link (or the shared text containing it) |
 | `mode` | `auto` (ask above the limit), `all`, `limit`, `first` |
 | `limit` | Item count for `mode: limit` |
+| `convert` | The answer to "Higher quality available": `yes`, `no`, or empty when it was not asked |
 | `force_update` | `1` to upgrade the tools before downloading |
-| `cfg` | The settings: `album`, `threshold`, `after`, `res` (`best` or a height), `fps` (`best`, `60`, `30`) |
+| `cfg` | The settings: `album`, `dest` (`photos`, `files`), `convert` (`ask`, `yes`, `no`), `threshold`, `after`, `res` (`best` or a height), `fps` (`best`, `60`, `30`). `SETTINGS` in the helper lists what each may hold; anything else counts as the first value |
 
 Other commands take the same payload: `setup`, `update`, `status`, `signin` (the page to open travels in `url`), `logout`, `reset`. A command the helper does not know, or a payload with another protocol number, is answered with an `outdated` error.
 
@@ -118,8 +124,9 @@ Every callback includes `cfg`, echoed from the payload, so the shortcut does not
 
 | `t` | Other fields | The shortcut then |
 |---|---|---|
-| `done` | `title`; `msg`, the sentence to show; `upv` and `upurl` when a newer release exists | Notifies |
+| `done` | `title`; `msg`, the sentence to show; `open`, the link that shows where the download went (Photos, or the folder in Files); `upv` and `upurl` when a newer release exists | Notifies, and opens `open` if the setting says so |
 | `confirm` | `url`, `n` item count or empty when only "more than" is known, `thr`, `title` | Asks how much to download |
+| `choose` | `url`, `title`, `best` and `native`, the two sizes as text ("2160p60 HDR", "1080p60") | Asks **Higher quality available**, then runs the helper again with `convert` |
 | `error` | `kind`, `msg`, `url` | Explains and offers fixes |
 | `setup` | `ver` | Says that UMDL is ready |
 | `info` | `title`, `msg` | Shows the message |
@@ -147,6 +154,8 @@ Files is the only other place a file can end. Versions before 1.6 could also han
 
 a-Shell reports a background action as failed when the last command exits with an error, unless `keepGoing` is set, and Shortcuts then stops without naming a reason. Every background command UMDL sends sets `keepGoing`, and reads the output to decide what happened.
 
+`Library.add` is shared by the real library and the tests' stand-in. When a file is refused and an album is set, it tries once more without the album: if that also fails, the file was the problem and the album is kept for the next one; if it works, the album was, and the library is used for the rest of the run. Photos gives the same error (3302) for both, which is why it has to be tried.
+
 ## Sign-ins
 
 a-Shell's `internalbrowser` is a web view inside the app. Its cookies are stored in `~/Library/Cookies/Cookies.binarycookies`, which is where yt-dlp and gallery-dl look when told to use Safari's cookies, so a sign-in made there is available to both tools with nothing copied.
@@ -162,9 +171,10 @@ Everything is under `~/Documents/UMDL`, visible in the Files app as *a-Shell ›
 | `umdl.py` | The helper |
 | `helper.for` | The shortcut version that downloaded the helper. A different version downloads it again |
 | `config.b64` | Settings, as base64 JSON |
-| `state.json` | When the tools and the version file were last checked, any extra folder pip installs to, and what was learned about Photos on this device (`photos_off`, `av1_refused`) |
+| `state.json` | When the tools and the version file were last checked, any extra folder pip installs to, and what was learned about Photos on this device (`photos_off`) |
 | `Working/<id>/` | Working folder for one link, removed when the download is done. `<id>` is derived from the link, so the same link carries on |
 | `Working/<id>/job.json` | The job: its state and its files. See [A download is a job](#a-download-is-a-job) |
+| `Working/<id>/info.json` | What yt-dlp read from the link, kept while a question is being asked so the answer's run reads nothing twice. Used once, within half an hour |
 | `Working/<id>/out/` | Downloaded files under plain names (`001-My-clip.mp4`) |
 | `photos.step` | The step of saving to Photos that is under way. Left behind only if a-Shell stopped during it |
 | `last.b64` | The payload of a download in progress; left behind only if it was interrupted |
@@ -173,26 +183,31 @@ Everything is under `~/Documents/UMDL`, visible in the Files app as *a-Shell ›
 
 ## Quality
 
-The format string is always `bv*+ba/b/ba`, the best there is. What "best" means is given to yt-dlp as sort fields, `lang, res, fps, vcodec:h265, acodec:aac`:
+`ytdlp_format` builds the format string from alternatives, first match wins:
+
+1. `bv*[vcodec~='^(avc|h264|hev|hvc|h265)']+ba/b[…]`, only when **Conversion** is "Never": the best version Photos takes as it is.
+2. `bv*[fps<=?30]+ba/b[fps<=?30]`, only with a frame rate limit. It cannot be a sort field: placed after `res` it would never apply where a site's larger versions are all 60 frames a second.
+3. `bv*+ba/b/ba`, the best there is.
+
+What "best" means is given to yt-dlp as sort fields, `lang, res, fps, vcodec:h265, acodec:aac`:
 
 - `res` and `fps` first, so size and smoothness decide before anything else. A resolution limit turns `res` into `res:1080`, which yt-dlp reads as "the largest up to this, and the smallest above it only when nothing fits".
 - `vcodec:h265` and `acodec:aac` after them. These rank H.265, then H.264, above VP9 and AV1, and AAC above Opus, but only between versions already equal in size and frame rate.
 - `lang` leads so that the sound stays in the original language whatever its codec.
 
-A frame rate limit cannot be a sort field: placed after `res` it would never apply where a site's larger versions are all 60 frames a second. It is a filter with a fallback instead: `bv*[fps<=?30]+ba/b[fps<=?30]/bv*+ba/b/ba`.
+For a single video the helper then looks at the list itself. `plan_versions` returns the best version (`take`), whether Photos will need it converted (`converts`), and, when it will and a smaller version would not, that one (`native`). Among versions equal to yt-dlp's best in size and frame rate, H.264 and HEVC rank first, AV1 next where `av1_verdict()` allows, VP9 after. The ids chosen go in front of the format string, `401+140/bv*+ba/b/ba`, so anything unexpected falls through to yt-dlp's own choice. With `native` in the plan, **Save to** Photos and no preference, the engine raises `Stop` with a `choose` reply.
 
-yt-dlp's choice is then adjusted once, by `choose_formats`, for what the file costs after the download. Among the versions equal to yt-dlp's best in size and frame rate, H.264 and HEVC rank first, AV1 next where `av1_verdict()` allows it, VP9 after. The verdict needs three things: `VTIsHardwareDecodeSupported('av01')` says the chip reads AV1, so Photos may take the file as it is; this ffmpeg has a software AV1 decoder (`libdav1d` or `libaom-av1`), so a refusal can still be converted; and `state.json` records no earlier refusal. The chosen ids go in front of the format string, `401+140/bv*+ba/b/ba`, so anything unexpected falls through to yt-dlp's own choice.
-
-VP9 is the costly one because iOS gives apps no hardware reader for it: `VTIsHardwareDecodeSupported` is reported to answer no for VP9 on iPhones, and the call that registers the extra decoder exists on macOS only. ffmpeg therefore reads VP9 in software, and at 4K that is slow. ffmpeg's hardware reader for AV1 arrived after 7.0, the version a-Shell 2.4 ships, so there AV1 is also read in software when it has to be converted.
+Why AV1 before VP9: Photos takes neither (error 3302 for AV1, seen on a device), so the order is about conversion time. `VTIsHardwareDecodeSupported('av01')` is true on an iPhone 15 Pro and later, with no entitlement needed. VP9's hardware decoder is behind `com.apple.developer.coremedia.allow-alternate-video-decoder-selection`, which Apple grants to few apps (YouTube's has it) and a-Shell does not have, so ffmpeg reads VP9 in software. The verdict also needs an ffmpeg that can read AV1: `libdav1d` or `libaom-av1`, or its own `av1` decoder together with VideoToolbox. a-Shell 2.4's build (`n7.0-2875-g991ecfec60`) converted a 4K60 HDR AV1 video of 127 seconds in 121.
 
 A conversion, when Photos refuses a file, never changes the picture's size or frame rate. `conversion_attempts` returns the ffmpeg arguments to try, in order, limited to the encoders `ffmpeg -encoders` reports:
 
-1. `hevc_videotoolbox -q:v 75 -tag:v hvc1`, with `main10` and `p010le` for a 10-bit source.
-2. `hevc_videotoolbox -b:v <rate>`, for an ffmpeg build without the quality mode, which iOS builds may be.
-3. `h264_videotoolbox -profile:v high -b:v <1.6 × rate>`.
-4. `libx264 -crf 17 -preset veryfast`.
+1. `hevc_videotoolbox -tag:v hvc1 -b:v <rate>`, with `main10` and `p010le` for a 10-bit source. The rate is the source's times `HEADROOM` (1.6 for AV1, 1.3 for VP9, 1.1 otherwise), at least the floor for the size, at most 80 Mbit/s. A quality level (`-q:v`) is not asked for: on iOS ffmpeg refuses it for this encoder.
+2. `h264_videotoolbox -profile:v high -b:v <1.6 × rate>`.
+3. `libx264 -crf 17 -preset veryfast`.
 
-Each attempt is made with `-hwaccel videotoolbox` in front of the input when `ffmpeg -hwaccels` lists it, and once more without if every encoder fails that way. Progress is read from a file ffmpeg writes (`-progress <file>`), not from its output. The log line for a conversion gives the arguments used and the seconds it took.
+The source's colour information (`-color_primaries`, `-color_trc`, `-colorspace`, as ffprobe reports them) is added to each, so HDR stays HDR.
+
+Each attempt is made with `-hwaccel videotoolbox` in front of the input when `ffmpeg -hwaccels` lists it, and once more without if every encoder fails that way. A failed attempt is not repeated. Progress is read from a file ffmpeg writes (`-progress <file>`), not from its output. The log line for a conversion gives the arguments used and the seconds it took.
 
 The size in "Converting 2160p60 VP9 + Opus" comes from `tier()`, which names a picture after the 16:9 frame it fills: 3840×1920 is 2160p.
 

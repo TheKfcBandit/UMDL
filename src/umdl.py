@@ -37,9 +37,9 @@ import time
 import traceback
 import urllib.parse
 
-HELPER_VERSION = "1.6.0"
+HELPER_VERSION = "1.7.0"
 # Bumped only when the payload/callback format changes incompatibly.
-PROTOCOL = 6
+PROTOCOL = 7
 
 REPO = "TheKfcBandit/UMDL"
 RAW_BASE = "https://raw.githubusercontent.com/%s/main" % REPO
@@ -110,26 +110,52 @@ RES_CHOICES = ("2160", "1440", "1080", "720", "480")
 FPS_CHOICES = ("60", "30")
 
 
-def settings_from(cfg):
-    """The two limits on which version is downloaded, whatever was stored."""
+# What a setting may hold. The first value is the one used when nothing, or
+# anything else, is stored.
+SETTINGS = {
+    "res": ("best",) + tuple(c for c in RES_CHOICES if c != "best"),
+    "fps": ("best",) + tuple(c for c in FPS_CHOICES if c != "best"),
+    "dest": ("photos", "files"),        # where downloads end
+    "convert": ("ask", "yes", "no"),    # when the best version has to be converted for Photos
+}
+
+
+def settings_from(cfg, answer=""):
+    """The settings a download runs under, whatever was stored. `answer` is
+    the reply to "Higher quality available", which outranks the stored one."""
     cfg = cfg if isinstance(cfg, dict) else {}
-    res, fps = str(cfg.get("res") or "best"), str(cfg.get("fps") or "best")
-    return {"res": res if res in RES_CHOICES else "best",
-            "fps": fps if fps in FPS_CHOICES else "best"}
+    found = {}
+    for name, allowed in SETTINGS.items():
+        value = str(cfg.get(name) or "")
+        found[name] = value if value in allowed else allowed[0]
+    if answer in ("yes", "no"):
+        found["convert"] = answer
+    return found
 
 
-def ytdlp_format(quality):
+# Video Photos takes as it is, as a yt-dlp filter and as a test on a codec name.
+NATIVE_FILTER = "[vcodec~='^(avc|h264|hev|hvc|h265)']"
+NATIVE_CODEC = re.compile(r"avc|h264|hev|hvc|h265")
+
+
+def ytdlp_format(quality, native_first=False):
     """Which formats yt-dlp should take: the best there is. ytdlp_sort() says
-    what "best" means.
+    what "best" means. The string is built from alternatives, first match wins:
 
-    A frame rate limit is applied here, as a filter with the unfiltered choice
-    as its fallback: versions above the limit are passed over, whatever their
-    size, unless the site has nothing else.
+    1. With `native_first`, the best version Photos takes as it is.
+    2. With a frame rate limit, the best version at or under it. A limit is a
+       filter here, not a sort field: versions above it are passed over,
+       whatever their size, unless the site has nothing else.
+    3. The best version.
     """
     best = "bv*+ba/b/ba"
-    if quality["fps"] == "best":
-        return best
-    return "bv*[fps<=?%(fps)s]+ba/b[fps<=?%(fps)s]/" % quality + best
+    rate = "" if quality["fps"] == "best" else "[fps<=?%s]" % quality["fps"]
+    parts = []
+    if native_first:
+        parts.append("bv*%s%s+ba/b%s%s" % (NATIVE_FILTER, rate, NATIVE_FILTER, rate))
+    if rate:
+        parts.append("bv*%s+ba/b%s" % (rate, rate))
+    return "/".join(parts + [best])
 
 
 def hardware_decodes(fourcc):
@@ -151,58 +177,71 @@ def hardware_decodes(fourcc):
 
 
 def av1_verdict():
-    """(whether AV1 is the version to take, why) on this device.
+    """(whether AV1 is taken over VP9, why) on this device.
 
-    It is, when the chip reads AV1, so Photos may take the file as it is; when
-    this ffmpeg can read it too, so a refusal still ends in Photos; and when
-    Photos has not already turned an AV1 file down here."""
+    Photos takes neither, so either has to be converted. Reading AV1 is done
+    by the chip where it has an AV1 decoder; reading VP9 never is, because iOS
+    keeps its VP9 decoder for apps Apple has granted it to. On the device this
+    was measured on, 4K60 AV1 converted in about the video's own length."""
     if not hardware_decodes("av01"):
         return False, "not taken, the chip does not read it"
-    if not {"libdav1d", "libaom-av1"} & ffmpeg_has("-decoders"):
-        return False, "not taken, this ffmpeg could not convert it"
-    if read_json(STATE_FILE, {}).get("av1_refused"):
-        return False, "not taken, Photos turned it down"
-    return True, "taken where a site has it"
+    readers = {"libdav1d", "libaom-av1"} | ({"av1"} if decode_args() else set())
+    if not readers & ffmpeg_has("-decoders"):
+        return False, "not taken, this ffmpeg cannot read it"
+    return True, "taken over VP9, it converts faster"
 
 
-def av1_goes_in():
-    return av1_verdict()[0]
+def size_name(fmt):
+    """"2160p60" for one of yt-dlp's formats."""
+    name = tier(fmt.get("width"), fmt.get("height")) or ("%sp" % fmt["height"] if fmt.get("height") else "")
+    name += "%d" % round(fmt["fps"]) if name and (fmt.get("fps") or 0) > 40 else ""
+    return name + (" HDR" if name and str(fmt.get("dynamic_range") or "SDR") != "SDR" else "")
 
 
-def choose_formats(formats, quality, av1_in_hardware):
-    """Among the versions yt-dlp ranks best in size and frame rate, pick the
-    codec that costs least afterwards. `formats` is yt-dlp's list, worst first.
+def plan_versions(formats, quality, av1_fast):
+    """What to download, from yt-dlp's list of formats (worst first).
 
-    H.264 and HEVC go into Photos as they are. AV1 does too on a device whose
-    chip reads it, and converts quickly there if not. VP9 is always read in
-    software, which is slow at 4K. Returns "video+audio" format ids, or "".
+    Returns {"take": ids of the best version, "converts": whether Photos will
+    need it converted, "name": "2160p60"}, and, when the best version has to
+    be converted but a smaller one does not, "native" and "native_name" for
+    that one. Returns {} when the list says nothing.
+
+    "Best" is yt-dlp's: size, then frame rate. Among versions equal in both,
+    the one that costs least afterwards is taken: H.264 or HEVC, which Photos
+    takes as they are; then AV1 where `av1_fast`; then VP9.
     """
     def rank(fmt):
         code = str(fmt.get("vcodec") or "").lower()
-        if re.match(r"avc|h264|hev|hvc|h265", code):
+        if NATIVE_CODEC.match(code):
             return 3
         if re.match(r"av0?1", code):
-            return 2 if av1_in_hardware else 0
+            return 2 if av1_fast else 0
         return 1 if re.match(r"vp0?9", code) else 0
 
-    def size(fmt):
-        return min(fmt.get("width") or 0, fmt.get("height") or 0) or fmt.get("height") or 0
+    def measure(fmt):
+        side = min(fmt.get("width") or 0, fmt.get("height") or 0) or fmt.get("height") or 0
+        return side, round(fmt.get("fps") or 0)
 
     formats = [f for f in formats or [] if isinstance(f, dict) and f.get("format_id") and not f.get("has_drm")]
     videos = [f for f in formats if str(f.get("vcodec") or "none") != "none"]
     if not videos:
-        return ""
+        return {}
     if quality["fps"] != "best":
         videos = [f for f in videos if (f.get("fps") or 0) <= int(quality["fps"])] or videos
-    best = videos[-1]
-    equals = [(rank(f), index, f) for index, f in enumerate(videos)
-              if size(f) == size(best) and round(f.get("fps") or 0) == round(best.get("fps") or 0)]
-    video = max(equals, key=lambda entry: entry[:2])[2]
-    if str(video.get("acodec") or "none") != "none":
-        return video["format_id"]
     sounds = [f for f in formats if str(f.get("vcodec") or "none") == "none"
               and str(f.get("acodec") or "none") != "none"]
-    return video["format_id"] + ("+" + sounds[-1]["format_id"] if sounds else "")
+
+    def ids(video):
+        alone = str(video.get("acodec") or "none") != "none" or not sounds
+        return video["format_id"] + ("" if alone else "+" + sounds[-1]["format_id"])
+
+    equals = [(rank(f), index, f) for index, f in enumerate(videos) if measure(f) == measure(videos[-1])]
+    best = max(equals, key=lambda entry: entry[:2])[2]
+    plan = {"take": ids(best), "converts": rank(best) < 3, "name": size_name(best)}
+    natives = [f for f in videos if rank(f) == 3]
+    if plan["converts"] and natives:
+        plan["native"], plan["native_name"] = ids(natives[-1]), size_name(natives[-1])
+    return plan
 
 
 def ytdlp_sort(quality):
@@ -651,7 +690,7 @@ def callback(payload, data):
         urllib.parse.quote(name, safe=""),
         urllib.parse.quote(CALLBACK_PREFIX + blob, safe=""),
     )
-    if data.get("t") in ("done", "error", "confirm"):
+    if data.get("t") in ("done", "error", "confirm", "choose"):
         remove(LAST_FILE)  # that download has had its answer; nothing is left to resume
     if data.get("t") != "status":  # the status report would only repeat itself in the log
         log("callback: " + raw[:2000])
@@ -877,6 +916,26 @@ def tool_versions():
 
 # ------------------------------------------------------------ engine: yt-dlp
 
+class ToLog:
+    """Stands in for the screen while yt-dlp runs. Some of its warnings are
+    written straight to the terminal, past every option, and land in the
+    middle of the progress line."""
+
+    def write(self, text):
+        if str(text).strip():
+            log("yt-dlp: " + strip_ansi(str(text)).strip()[:300])
+        return len(text)
+
+    def flush(self):
+        pass
+
+
+def title_key(name):
+    """What a download's parts and the finished file have in common:
+    "abc" for abc.f701.mp4, abc.f258.m4a and abc.mp4."""
+    return re.sub(r"\.f[\w-]+$", "", os.path.splitext(os.path.basename(name))[0])
+
+
 class YtLogger:
     def __init__(self):
         self.errors = []
@@ -995,6 +1054,12 @@ def count_entries(entries, cap):
 
 
 def ytdlp_engine(ctx):
+    import contextlib
+    with contextlib.redirect_stderr(ToLog()):
+        return ytdlp_download(ctx)
+
+
+def ytdlp_download(ctx):
     try:
         import yt_dlp
     except Exception as exc:
@@ -1018,7 +1083,8 @@ def ytdlp_engine(ctx):
         elif d.get("status") == "finished":
             name = d.get("filename") or ""
             if info.get("title"):
-                titles[os.path.basename(name)] = info["title"]
+                # Video and sound arrive as two files and are joined into a third.
+                titles[title_key(name)] = info["title"]
                 ctx["title"] = ctx.get("title") or info["title"]
 
     def on_post(d):
@@ -1034,8 +1100,10 @@ def ytdlp_engine(ctx):
         return None
 
     quality = ctx["quality"]
+    to_photos = quality["dest"] == "photos"
     opts = {
-        "format": ytdlp_format(quality),
+        # "Never convert" is a rule for every item, so it is part of the format.
+        "format": ytdlp_format(quality, native_first=to_photos and quality["convert"] == "no"),
         "format_sort": ytdlp_sort(quality),
         "merge_output_format": "mp4",
         "outtmpl": os.path.join(ctx["dir"], "%(id).64s.%(ext)s"),
@@ -1070,11 +1138,18 @@ def ytdlp_engine(ctx):
     # Look before downloading: how many items does this link hold?
     ui.start("Reading link")
     probe_opts = dict(opts, extract_flat="in_playlist")
-    raw = None
+    remembered = os.path.join(ctx["dir"], "info.json")
+    raw = read_json(remembered, None)
+    remove(remembered)
+    if not (isinstance(raw, dict) and raw.get("umdl_url") == url and time.time() - raw.get("umdl_at", 0) < 1800):
+        raw = None  # read before a question was asked; the answer is back, nothing is read twice
     try:
         with yt_dlp.YoutubeDL(probe_opts) as ydl:
-            raw = ydl.extract_info(url, download=False, process=False)
             hops = 0
+            if raw is None:
+                raw = ydl.extract_info(url, download=False, process=False)
+            else:
+                log("reading: kept from before the question")
             while raw and raw.get("_type") in ("url", "url_transparent") and hops < 3:
                 raw = ydl.extract_info(raw["url"], download=False, process=False,
                                        ie_key=raw.get("ie_key"))
@@ -1100,16 +1175,32 @@ def ytdlp_engine(ctx):
     if is_playlist and ctx["mode"] == "auto" and count > ctx["threshold"]:
         raise NeedConfirm(count if exact else None, title)
 
+    # One video: look at its versions. A list of many is not looked through;
+    # each item there follows the format string.
     if not is_playlist:
+        plan, ask = {}, False
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 listed = ydl.process_ie_result(copy.deepcopy(raw), download=False)
-            chosen = choose_formats((listed or {}).get("formats"), quality, av1_goes_in())
-            if chosen:
-                log("version: %s" % chosen)
-                opts["format"] = chosen + "/" + opts["format"]
+                plan = plan_versions((listed or {}).get("formats"), quality, av1_verdict()[0])
+                ask = bool(to_photos and quality["convert"] == "ask" and plan.get("native"))
+                if ask:
+                    # Kept for the run that brings the answer, so the link is read once.
+                    write_json(remembered, dict(ydl.sanitize_info(raw), umdl_url=url, umdl_at=time.time()))
         except Exception as exc:
-            log("could not list the versions (%s); leaving the choice to yt-dlp" % exc)
+            log("versions: %s: %s" % (type(exc).__name__, exc))
+        if ask:
+            log("asking: %s converted, or %s as it is" % (plan["name"], plan["native_name"]))
+            raise Stop({"t": "choose", "url": url, "title": safe_title(title, "")[:60],
+                        "best": plan["name"], "native": plan["native_name"]})
+        chosen = plan.get("take")
+        if to_photos and quality["convert"] == "no":
+            chosen = plan.get("native") or chosen
+        if chosen:
+            log("version: %s (%s%s)" % (chosen, plan["name"] if chosen == plan["take"] else plan["native_name"],
+                                        ", to convert" if plan["converts"] and chosen == plan["take"] and to_photos
+                                        else ""))
+            opts["format"] = chosen + "/" + opts["format"]
 
     ui.start("Starting download")
     try:
@@ -1578,7 +1669,7 @@ def media_files(folder, ytdlp=False):
         path = os.path.join(folder, name)
         if not os.path.isfile(path) or name.startswith("."):
             continue
-        if name in ("urls.txt", "job.json"):
+        if name in ("urls.txt", "job.json", "info.json"):
             continue
         if ext_of(name) in JUNK_EXTS or ".part" in name:
             continue
@@ -1595,11 +1686,21 @@ def media_files(folder, ytdlp=False):
     return found
 
 
+# How an HDR picture's colours are to be read: the field as ffprobe reports
+# it, the option that tells ffmpeg, and the values passed on. Carried across a
+# conversion, or an HDR video comes out washed out. Only these values: ffprobe
+# and ffmpeg do not share a name for every other one ("gbr" is one such).
+COLOUR_TAGS = (("color_primaries", "-color_primaries", ("bt2020",)),
+               ("color_transfer", "-color_trc", ("smpte2084", "arib-std-b67")),
+               ("color_space", "-colorspace", ("bt2020nc", "bt2020c")))
+HDR_TRANSFERS = COLOUR_TAGS[1][2]
+
+
 def probe_media(path):
     """What a media file holds, via ffprobe: codecs, picture size, frame rate,
     bit depth and bitrates. "ok" is False when the file could not be read."""
     info = {"v": None, "a": None, "tag": "", "bitrate": 0, "vbitrate": 0, "width": 0, "height": 0,
-            "fps": 0, "pix_fmt": "", "seconds": 0.0, "ok": False}
+            "fps": 0, "pix_fmt": "", "seconds": 0.0, "colour": [], "hdr": False, "ok": False}
     code, out, err = run_cmd(["ffprobe", "-v", "error", "-print_format", "json",
                               "-show_streams", "-show_format", path])
     data = None
@@ -1621,6 +1722,10 @@ def probe_media(path):
                     info["height"] = to_int(stream.get("height"), 0)
                     info["pix_fmt"] = str(stream.get("pix_fmt") or "")
                     info["vbitrate"] = to_int(stream.get("bit_rate"), 0)
+                    for field, option, passed_on in COLOUR_TAGS:
+                        if stream.get(field) in passed_on:
+                            info["colour"] += [option, stream[field]]
+                    info["hdr"] = str(stream.get("color_transfer")) in HDR_TRANSFERS
                     rate = str(stream.get("avg_frame_rate") or stream.get("r_frame_rate") or "")
                     top, _, bottom = rate.partition("/")
                     try:
@@ -1670,11 +1775,11 @@ def tier(width, height):
 
 
 def describe_media(info):
-    """"2160p60 VP9 + Opus" for a file that has been probed."""
+    """"2160p60 HDR VP9 + Opus" for a file that has been probed."""
     size = tier(info["width"], info["height"])
     if size and info["fps"] > 40:
         size += "%d" % round(info["fps"])
-    text = " ".join(x for x in (size, codec_name(info["v"])) if x)
+    text = " ".join(x for x in (size, "HDR" if info.get("hdr") else "", codec_name(info["v"])) if x)
     return text + (" + " + codec_name(info["a"]) if info["a"] else "")
 
 
@@ -1708,29 +1813,34 @@ def decode_args():
 BITRATE_FLOOR = ((2160, 24000000), (1440, 14000000), (1080, 8000000), (720, 5000000), (0, 2500000))
 
 
+# A hardware encoder needs more bits than the encoder a site used to keep the
+# same picture: how many more, by the codec being converted from.
+HEADROOM = {"av1": 1.6, "vp9": 1.3}
+
+
 def conversion_attempts(info, have):
     """Ways to re-encode a video for Photos, best first. Each is (codec name,
     ffmpeg arguments).
 
     The picture keeps its size and frame rate. HEVC from the device's own
     encoder comes first: it holds 4K, 60 frames a second and 10-bit colour, and
-    Photos plays it everywhere. It is asked for a quality level, not a bitrate,
-    so detail is kept wherever the picture needs it. H.264 and the software
-    encoder follow for an ffmpeg built without the first choice.
+    Photos plays it everywhere. It is given a bitrate well above the source's,
+    because on iOS that encoder cannot be asked for a quality level (ffmpeg
+    refuses "-q:v" there; seen on a device). H.264 and the software encoder
+    follow for an ffmpeg built without the first choice.
     """
     side = min(info["width"], info["height"]) or info["height"] or info["width"]
     floor = next(rate for height, rate in BITRATE_FLOOR if side >= height)
     if info["fps"] > 40:
         floor = int(floor * 1.5)
     source = info["vbitrate"] or info["bitrate"]
-    rate = int(min(80000000, max(floor, source * 1.1)))
+    rate = int(min(80000000, max(floor, source * HEADROOM.get(info["v"], 1.1))))
     deep = "10" in info["pix_fmt"]
-    hevc = ["-c:v", "hevc_videotoolbox", "-tag:v", "hvc1"] + (
-        ["-profile:v", "main10", "-pix_fmt", "p010le"] if deep else ["-pix_fmt", "yuv420p"])
     attempts = []
     if not have or "hevc_videotoolbox" in have:
-        attempts.append(("HEVC", hevc + ["-q:v", "75"]))
-        attempts.append(("HEVC", hevc + ["-b:v", str(rate)]))
+        attempts.append(("HEVC", ["-c:v", "hevc_videotoolbox", "-tag:v", "hvc1"] + (
+            ["-profile:v", "main10", "-pix_fmt", "p010le"] if deep else ["-pix_fmt", "yuv420p"])
+            + ["-b:v", str(rate)]))
     if not have or "h264_videotoolbox" in have:
         attempts.append(("H.264", ["-c:v", "h264_videotoolbox", "-profile:v", "high",
                                    "-b:v", str(int(rate * 1.6)), "-pix_fmt", "yuv420p"]))
@@ -1772,9 +1882,7 @@ def ffmpeg(args, target, seconds=0):
             watcher.join(timeout=2)
             ui._label = label
             remove(notes)
-    if code != 0 or not os.path.exists(target) or os.path.getsize(target) == 0:
-        if seconds > 0:
-            remove(target)  # once more without the progress file, in case that was the obstacle
+    else:
         code, out, err = run_cmd(base + args + [target])
     good = code == 0 and os.path.exists(target) and os.path.getsize(target) > 0
     if not good:
@@ -1838,6 +1946,7 @@ def convert(path, info, notes):
     readers = [decode_args(), []] if decode_args() else [[]]
     for reader in readers:
         for codec, video_args in conversion_attempts(info, encoders()):
+            video_args = video_args + info.get("colour", [])
             if ffmpeg(reader + ["-i", path] + video_args + tail, target, info.get("seconds") or 0):
                 ui.done(codec)
                 log("converted %s to %s in %d s with %s"
@@ -1869,7 +1978,36 @@ class Refused(Exception):
     """Photos would not take the file."""
 
 
-class PhotosLibrary:
+class Library:
+    """What saving needs from Photos. `add_once` is the part that differs."""
+
+    album = ""
+
+    def where(self):
+        return self.album
+
+    def add(self, path, name):
+        """Add one photo or video under `name`, dated now. Raises Refused."""
+        guard("add " + name[:60])
+        try:
+            try:
+                self.add_once(path, name)
+            except Refused as no:
+                if not self.where():
+                    raise
+                # Was it the file that was refused, or the album?
+                album, self.album = self.album, ""
+                try:
+                    self.add_once(path, name)
+                except Refused:
+                    self.album = album  # the file: the album is still good for the next one
+                    raise no
+                log("photos: the album was refused (%s); saving to the library" % no)
+        finally:
+            guard(None)
+
+
+class PhotosLibrary(Library):
     ADD_ONLY, READ_WRITE = 1, 2
 
     def __init__(self, album):
@@ -1975,22 +2113,6 @@ class PhotosLibrary:
 
     # -- adding a file
 
-    def add(self, path, name):
-        """Add one photo or video under `name`, dated now. Raises Refused."""
-        guard("add " + name[:60])
-        try:
-            try:
-                self.add_once(path, name)
-            except Refused as no:
-                if not self.where():
-                    raise
-                # It may be the album that was refused, not the file.
-                log("photos: %s; trying without the album" % no)
-                self.album = ""
-                self.add_once(path, name)
-        finally:
-            guard(None)
-
     def add_once(self, path, name):
         c = self.c
         pool = self.objc.objc_autoreleasePoolPush()
@@ -2043,7 +2165,7 @@ class PhotosLibrary:
             self.objc.objc_autoreleasePoolPop(pool)
 
 
-class TestLibrary:
+class TestLibrary(Library):
     """Stands in for Photos in the tests: a folder, and a list of what it "plays"."""
 
     def __init__(self, folder, album):
@@ -2051,10 +2173,7 @@ class TestLibrary:
         self.album = album if album and album != "Recents" else ""
         self.plays = set((os.environ.get("UMDL_TEST_PHOTOS_PLAYS") or "h264,hevc").split(","))
 
-    def where(self):
-        return self.album
-
-    def add(self, path, name):
+    def add_once(self, path, name):
         if ext_of(path) not in IMAGE_EXTS:
             info = probe_media(path)
             if ext_of(path) not in PHOTOS_CONTAINERS or info["v"] not in self.plays:
@@ -2147,7 +2266,8 @@ def stage(ctx, files):
     items, used = [], set()
     for index, original in enumerate(files, 1):
         base = os.path.basename(original)
-        title = safe_title(ctx["titles"].get(base) or "", os.path.splitext(base)[0])
+        title = safe_title(ctx["titles"].get(base) or ctx["titles"].get(title_key(base)) or "",
+                           os.path.splitext(base)[0])
         stem, copy_number = title, 1
         while stem.lower() in used:
             copy_number += 1
@@ -2186,9 +2306,6 @@ def place(ctx, item, library):
         return "saved"
     except Refused as no:
         log("Photos would not take %s as it is: %s" % (named(path), no))
-        if kind == "video" and info["v"] == "av1":
-            # Learned once: the next download takes a version that needs no converting.
-            write_json(STATE_FILE, dict(read_json(STATE_FILE, {}), av1_refused=True))
     if kind == "video":
         converted = convert(path, info, ctx["converted"])
         if converted:
@@ -2201,16 +2318,23 @@ def place(ctx, item, library):
     return "kept"
 
 
-def summary(saved, album, converted, kept, failed, reason=""):
+FILES_PLACE = "Files (a-Shell, UMDL, Saved)"
+
+
+def summary(saved, album, converted, kept, failed, reason="", dest="photos"):
     """The notification."""
-    where = "the %s album" % album if album else "Photos"
-    lines = ["Nothing was added to Photos." if not saved
-             else "Saved to %s." % where if saved == 1
-             else "Saved %d items to %s." % (saved, where)]
+    if dest == "files":
+        lines = ["Saved to %s." % FILES_PLACE if kept == 1 else "Saved %d items to %s." % (kept, FILES_PLACE)]
+        kept = 0
+    else:
+        where = "the %s album" % album if album else "Photos"
+        lines = ["Nothing was added to Photos." if not saved
+                 else "Saved to %s." % where if saved == 1
+                 else "Saved %d items to %s." % (saved, where)]
     if converted:
         lines.append("%d converted (%s)." % (len(converted), converted[0]))
     if kept:
-        lines.append("%d kept in Files (a-Shell, UMDL, Saved)." % kept)
+        lines.append("%d kept in %s." % (kept, FILES_PLACE))
     if failed:
         lines.append("%d failed." % failed)
     if reason:
@@ -2284,6 +2408,8 @@ def state_fetch(job, ctx):
             raise Stop({"t": "confirm", "url": url, "thr": str(ctx["threshold"]),
                         "n": str(ask.count) if ask.count else "",
                         "title": safe_title(ask.title, "")[:60]})
+        except Stop:
+            raise  # a tool has a question; the answer comes back as a new run
         except EngineError as exc:
             errors.append(str(exc))
             blocked = blocked or bool(BLOCKED.search(str(exc)))
@@ -2314,16 +2440,17 @@ def state_fetch(job, ctx):
 
 def state_save(job, ctx):
     """Put each file where it belongs: Photos, or Files. Next: done."""
-    library, reason = open_library(ctx["album"])
+    to_files = ctx["quality"]["dest"] == "files"
+    library, reason = (None, "") if to_files else open_library(ctx["album"])
     if reason:
         log("photos: " + reason)
     else:
-        ui.start("Saving to Photos")
+        ui.start("Saving to Files" if to_files else "Saving to Photos")
     for item in job["items"]:
         if item["state"] != "waiting":
             continue
         try:
-            outcome = place(ctx, item, library)
+            outcome = "kept" if to_files else place(ctx, item, library)
         except Exception as exc:
             # Whatever went wrong in there, this file is not lost.
             log("photos: %s: %s" % (type(exc).__name__, exc))
@@ -2335,9 +2462,10 @@ def state_save(job, ctx):
         item["state"] = outcome
         ctx["checkpoint"]()
     saved = len([i for i in job["items"] if i["state"] == "saved"])
-    if library:
-        ui._label = "Saving to Photos"
-        ui.done("%d item%s" % (saved, "" if saved == 1 else "s"))
+    if library or to_files:
+        ui._label = "Saving to Files" if to_files else "Saving to Photos"
+        count = len(job["items"]) if to_files else saved
+        ui.done("%d item%s" % (count, "" if count == 1 else "s"))
     job["album"] = library.where() if library else ""
     job["reason"] = reason if len(job["items"]) > saved else ""
     return "done"
@@ -2387,8 +2515,8 @@ def cmd_run(payload, blob):
         log("carrying on: %d file%s already downloaded" % (len(job["items"]), "" if len(job["items"]) == 1 else "s"))
         ui.write("  Carrying on from the last run.\n")
 
-    quality = settings_from(cfg)
-    log("limits: resolution %s, frame rate %s" % (quality["res"], quality["fps"]))
+    quality = settings_from(cfg, str(payload.get("convert") or ""))
+    log("settings: " + ", ".join("%s %s" % pair for pair in sorted(quality.items())))
     ctx = {
         "url": url, "dir": folder, "mode": mode, "limit": limit, "threshold": threshold,
         "quality": quality, "album": str(cfg.get("album") or "Recents"),
@@ -2414,9 +2542,11 @@ def cmd_run(payload, blob):
     state = read_json(STATE_FILE, {})
     state["last_run"] = {"at": time.time(), "result": "saved %d, kept %d" % (saved, kept)}
     write_json(STATE_FILE, state)
-    result = {"t": "done", "title": safe_title(job["title"], "")[:60],
+    # What "When finished: open it" opens: Photos, or the folder in the Files app.
+    shown = "photos-redirect://" if saved else "shareddocuments://" + urllib.parse.quote(SAVED_DIR)
+    result = {"t": "done", "title": safe_title(job["title"], "")[:60], "open": shown,
               "msg": summary(saved, job.get("album") or "", job["converted"], kept, job["failed"],
-                             job.get("reason") or "")}
+                             job.get("reason") or "", quality["dest"])}
     if latest:
         result["upv"] = latest["v"]
         result["upurl"] = latest["url"]
@@ -2450,7 +2580,7 @@ def cmd_update(payload):
         return callback(payload, {"t": "error", "kind": "install", "msg": str(exc), "url": ""})
     check_project_updates(state, str(payload.get("v") or "0"), force=True)
     state.pop("photos_off", None)  # an update is also the way to try saving from a-Shell again
-    state.pop("av1_refused", None)
+    state.pop("av1_refused", None)  # written by 1.6 only
     write_json(STATE_FILE, state)
     versions = tool_versions()
     # This helper keeps running to the end of the update. What will run next

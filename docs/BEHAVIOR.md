@@ -8,7 +8,9 @@ Labels are written exactly as they appear. Tests are in `tests/test_shortcut_flo
 - [First run](#first-run)
 - [Sharing a link](#sharing-a-link)
 - [Which version is downloaded](#which-version-is-downloaded)
+- [Higher quality available](#higher-quality-available)
 - [Saving](#saving)
+- [Saving to Files](#saving-to-files)
 - [When a file stays in Files](#when-a-file-stays-in-files)
 - [Reddit](#reddit)
 - [Large downloads](#large-downloads)
@@ -112,10 +114,10 @@ Installing a new version of the shortcut over an old one keeps the settings. The
 
 ## Sharing a link
 
-The path UMDL exists for. Once setup is done it asks nothing (`OneTap.test_download_asks_nothing`).
+The path UMDL exists for. Once setup is done it asks nothing (`OneTap.test_download_asks_nothing`), with one exception that a setting removes: [Higher quality available](#higher-quality-available).
 
 1. The first link in the shared item is used, wherever it sits in the text (`OneTap.test_link_is_pulled_out_of_shared_text`).
-2. a-Shell opens, downloads, and saves to Photos. See [Saving](#saving).
+2. a-Shell opens, downloads, and saves to Photos, or to Files if **Save to** says so. See [Saving](#saving) and [Saving to Files](#saving-to-files).
 3. Shortcuts returns to the front with a notification.
 4. If the setting says so, Photos opens (`OneTap.test_open_photos_when_finished`).
 
@@ -131,6 +133,7 @@ The title is the post's title, or `UMDL` when the site gives none.
 | Nothing could go to Photos | Nothing was added to Photos. | `OneTap.test_audio_is_kept_in_files` |
 | A video was converted | A further line naming the change: 1 converted (VP9 → HEVC). | `Saving.test_a_file_photos_refuses_is_converted_and_saved` |
 | Some files were kept in Files | A further line: *N* kept in Files (a-Shell, UMDL, Saved). | `OneTap.test_audio_is_kept_in_files` |
+| **Save to** is Files | Saved to Files (a-Shell, UMDL, Saved). Or: Saved *N* items to Files (a-Shell, UMDL, Saved). | `ToFiles.test_the_best_version_is_kept_as_downloaded_and_nothing_is_asked`, `ToFiles.test_several_items` |
 | Photos could not be used at all | A last line giving the reason, for example: a-Shell is not allowed to add to Photos. Allow it in Settings, a-Shell, Photos. | `Saving.test_when_photos_cannot_be_used_files_are_kept_and_the_reason_given` |
 | Some items failed | A further line: *N* failed. | `OneTap.test_partial_download_saves_what_arrived_and_says_what_did_not` |
 
@@ -153,17 +156,67 @@ The best one the site has. Two settings limit that, and nothing else has a say (
 
 1. The largest picture, up to the **Resolution** limit. A site with nothing at or under the limit gives its smallest version above it. The limit is the short side, so a tall phone video counts by its width.
 2. The highest frame rate, up to the **Frame rate** limit. Versions above this limit are passed over even when they are larger; if the site has nothing at or under it, the lowest rate is taken.
-3. Between versions equal in both, the one that costs least to get into Photos: H.264 or HEVC, which go in as they are; then AV1, on a device whose chip reads it (`Quality.test_av1_is_taken_in_place_of_vp9_where_the_chip_reads_it`); then VP9, which the device can only read in software. Sound is AAC where the site has it.
+3. Between versions equal in both, the one that costs least to get into Photos: H.264 or HEVC, which go in as they are; then AV1, on a device whose chip reads it (`Quality.test_av1_is_taken_in_place_of_vp9_where_the_chip_reads_it`); then VP9. An HDR version is taken over a plain one of the same size. Sound is AAC where the site has it.
 
-Step 3 never gives up size or smoothness: a 4K VP9 version is taken over a 1080p H.264 one. It applies to every site in the same way. Each limit works on its own (`Quality.test_each_limit_works_on_its_own`). There is no other mode and no question.
+Step 3 never gives up size or smoothness: a 4K VP9 version is taken over a 1080p H.264 one. It applies to every site in the same way. Each limit works on its own (`Quality.test_each_limit_works_on_its_own`).
 
-YouTube is where step 3 matters. Above 1080p it offers only VP9 and AV1, so a 4K download there is either AV1 or VP9 followed by a slow conversion. Whether Photos takes an AV1 file as it is has not been seen on a device yet, so AV1 is taken only when a refusal would cost nothing: the chip reads it, and a-Shell's ffmpeg can read it too, to convert it if Photos says no. After one refusal UMDL takes VP9 on that device, until **Update tools** is run. **Status** says which applies, on its "AV1" line.
+Photos takes neither AV1 nor VP9, so both are converted; the order between them is about how long that takes. An iPhone 15 Pro or later reads AV1 with its chip. No iPhone lets an app like a-Shell use its VP9 decoder: iOS keeps that for apps Apple has granted it to, YouTube's among them. On an iPhone 16 Pro Max, a 4K60 HDR AV1 video two minutes long was converted in two minutes; a 4K VP9 video was at 2% after several. **Status** says on its "AV1" line whether AV1 is taken.
+
+YouTube is where this matters: above 1080p it offers only VP9 and AV1, and at 1080p and under it has H.264.
+
+## Higher quality available
+
+When the best version would have to be converted for Photos and a smaller one would not, UMDL asks which is wanted, unless **Conversion** in Settings has already answered. a-Shell reads the link, Shortcuts asks, and a-Shell carries on without reading the link again.
+
+```mermaid
+flowchart TD
+    R["Link read: the best version, and the best one Photos plays as it is"] --> F{"Save to"}
+    F -- "Files" --> B["Take the best. Nothing is converted for Files"]
+    F -- "Photos" --> N{"Does the best version need converting?"}
+    N -- "no" --> B
+    N -- "yes" --> A{"Is there a smaller one that does not?"}
+    A -- "no" --> B2["Take the best; it is converted"]
+    A -- "yes" --> P{"Conversion, in Settings"}
+    P -- "Always" --> B2
+    P -- "Never" --> S["Take the best one Photos plays"]
+    P -- "Ask each time" --> Q(["Higher quality available"])
+    Q -- "converted" --> B2
+    Q -- "as it is" --> S
+```
+
+> **Higher quality available**
+>
+> *the title*
+>
+> 2160p60 has to be converted for Photos, which can take a while. 1080p60 is saved as it is.
+>
+> Settings, Conversion makes either the rule.
+
+| Choice | Result | Test |
+|---|---|---|
+| 🎞️ 2160p60, converted | Downloads the best version; it is converted when saved. The link is not read a second time | `HigherQuality.test_the_question_names_both_versions_and_converted_is_one_tap` |
+| ⚡ 1080p60, as it is | Downloads the best version Photos plays as it is | `HigherQuality.test_as_it_is_takes_the_best_photos_plays` |
+| Cancel | Nothing is downloaded | `HigherQuality.test_cancel_downloads_nothing` |
+
+The two sizes are those of the video in question; "HDR" follows the size when that version is HDR.
+
+| Situation | Asked? | Test |
+|---|---|---|
+| **Conversion** is "Always" or "Never" | No. The setting is the answer | `HigherQuality.test_a_preference_in_settings_answers_in_advance` |
+| The best version needs no converting, or nothing the site has plays as it is | No. There is nothing to choose between | `HigherQuality.test_nothing_is_asked_when_there_is_no_choice` |
+| **Save to** is Files | No | `ToFiles.test_the_best_version_is_kept_as_downloaded_and_nothing_is_asked` |
+| A playlist or a post with several videos | No. With "Never", each item is the best Photos plays; otherwise each is the best there is | `HigherQuality.test_a_list_of_many_follows_the_preference_and_never_asks` |
+| A "convert" setting left by a version before 1.5 | Yes. It meant something else and counts as not set | `Quality.test_settings_left_over_from_advanced_mode_are_ignored` |
+
+"Never" chooses between versions; it does not keep a video out of Photos. Where a site has only a format Photos cannot play, that is still converted.
 
 ## Saving
 
 ```mermaid
 flowchart TD
-    D["Downloaded"] --> W{"MP4 or MOV?"}
+    D["Downloaded"] --> X{"Save to"}
+    X -- "Files" --> FF(["In Files, as downloaded<br/>named by its title"])
+    X -- "Photos" --> W{"MP4 or MOV?"}
     W -- "no" --> R["Repack: same picture, MP4 wrapper"] --> T
     W -- "yes" --> T["Offer it to Photos as it is"]
     T -- "Photos takes it" --> S(["In Photos<br/>named by its title, dated today"])
@@ -173,22 +226,24 @@ flowchart TD
     T2 -- "refuses" --> F(["Kept in Files"])
 ```
 
-This is the only route. a-Shell is allowed to add to Photos, so the helper saves each file itself, from inside a-Shell. Nothing passes through Shortcuts (`Saving.test_nothing_ever_travels_through_shortcuts`), and a file that cannot go into Photos has one other place to end: Files.
+This is the only route to Photos. a-Shell is allowed to add to Photos, so the helper saves each file itself, from inside a-Shell. Nothing passes through Shortcuts (`Saving.test_nothing_ever_travels_through_shortcuts`), and a file that cannot go into Photos has one other place to end: Files.
 
 | | | Test |
 |---|---|---|
-| Name | The post's title, or the name the file was uploaded under when the site gives no title. Characters a file name cannot hold are dropped. Several files with one title are numbered | `Saving.test_the_helper_saves_it_itself_under_its_title_dated_today`, `Saving.test_several_items_get_names_that_do_not_collide` |
+| Name | The post's title, or the name the file was uploaded under when the site gives no title. Characters a file name cannot hold are dropped. Several files with one title are numbered | `Saving.test_the_helper_saves_it_itself_under_its_title_dated_today`, `Saving.test_several_items_get_names_that_do_not_collide`, `Saving.test_a_video_joined_from_two_files_keeps_its_title` |
 | Date | The day it was downloaded, not the day it was uploaded | `Saving.test_the_helper_saves_it_itself_under_its_title_dated_today` |
-| Album | The album from Settings; with none, the library | `Saving.test_no_album_saves_to_the_library` |
+| Album | The album from Settings; with none, the library. A file Photos refuses does not cost the files after it their album | `Saving.test_no_album_saves_to_the_library`, `Saving.test_a_refused_file_does_not_cost_the_album` |
 | Size | Any | |
 | Formats | Photos decides. A file is offered as it is, and converted only if Photos refuses it | `Saving.test_photos_is_asked_first_and_a_file_it_takes_is_not_converted`, `Saving.test_a_file_photos_refuses_is_converted_and_saved` |
 | Sound only, or not media | Kept in Files | `Saving.test_audio_is_still_kept_in_files` |
 
-A conversion is always at the best quality: HEVC from the device's hardware encoder, the picture's size and frame rate unchanged, 10-bit kept, sound copied where Photos plays it. There is no setting for it. If every encoder fails, the original is kept in Files.
+A conversion is always at the best quality: HEVC from the device's hardware encoder, the picture's size and frame rate unchanged, 10-bit and HDR colours kept, sound copied where Photos plays it. The encoder is given a bitrate well above the source's: 1.6 times for AV1, 1.3 times for VP9, and never under a floor for the size. If every encoder fails, the original is kept in Files.
 
-While it runs, a-Shell shows what is being converted and how far it is, for example "Converting 2160p60 VP9 + Opus for Photos  41%". The size is named after the 16:9 frame the picture fills, so a 3840×1920 video is 2160p, not "1920p". The notification names the change, and the log records the ffmpeg arguments and how long it took.
+While it runs, a-Shell shows what is being converted and how far it is, for example "Converting 2160p60 HDR AV1 + AAC for Photos  41%". The size is named after the 16:9 frame the picture fills, so a 3840×1920 video is 2160p, not "1920p". The notification names the change, and the log records the ffmpeg arguments and how long it took.
 
-Writing HEVC is done by the device's hardware. Reading the source is too, where the hardware can: ffmpeg is asked to use it whenever it is built to. As far as is known, iOS gives other apps no hardware reader for VP9, so a 4K VP9 video is read in software, and that is what makes its conversion slow. Choosing AV1 where the chip reads it (above) is how UMDL avoids that conversion.
+Writing HEVC is done by the device's hardware. Reading the source is too, where the hardware can: ffmpeg is asked to use it whenever it is built to. VP9 is the exception, read in software for the reason given under [Which version is downloaded](#which-version-is-downloaded), and that is what makes a VP9 conversion slow.
+
+Nothing else a tool prints reaches the screen: warnings yt-dlp writes past its own logger go to the log (`Saving.test_warnings_the_tool_writes_past_its_logger_stay_off_the_screen`).
 
 iOS pauses a-Shell when it is not on screen, so a conversion only moves while a-Shell is in front. Nothing is lost by leaving: see [Interrupted downloads](#interrupted-downloads).
 
@@ -196,7 +251,7 @@ The first save asks, once, to let a-Shell add to Photos. Saving to a named album
 
 ## When a file stays in Files
 
-Files is the one exception to Photos. A file kept there is in the Files app under *On My iPhone › a-Shell › UMDL › Saved*, under its title, and the notification counts it.
+With **Save to** set to Photos, Files is the one exception. A file kept there is in the Files app under *On My iPhone › a-Shell › UMDL › Saved*, under its title, and the notification counts it.
 
 | Why | The notification adds | Test |
 |---|---|---|
@@ -207,6 +262,20 @@ Files is the one exception to Photos. A file kept there is in the Files app unde
 | This a-Shell cannot add to Photos, or Photos could not be reached | This version of a-Shell cannot add to Photos. Or: Photos could not be reached (*error*). | |
 
 Saving from a-Shell cannot be tried anywhere but on a device, so each step's name is noted before it is taken. If a-Shell stops in the middle, the next download finds the note and keeps its files in Files, with the fourth line above, in place of stopping a-Shell again. **Update tools** clears the note.
+
+## Saving to Files
+
+**Save to › 📁 Files** sends every download to the Files app, under *On My iPhone › a-Shell › UMDL › Saved*, and leaves Photos alone.
+
+| | | Test |
+|---|---|---|
+| Version | The best there is. Nothing is asked | `ToFiles.test_the_best_version_is_kept_as_downloaded_and_nothing_is_asked` |
+| Format | As downloaded. Nothing is repacked or converted, so nothing waits on a conversion. Whether the Files app can play it is up to iOS: H.264 and HEVC play; AV1 plays on a device whose chip reads it; VP9 may need another app, such as VLC | `ToFiles.test_a_format_photos_cannot_play_is_not_converted` |
+| Name | The title, as in Photos | `ToFiles.test_the_best_version_is_kept_as_downloaded_and_nothing_is_asked` |
+| Notification | Saved to Files (a-Shell, UMDL, Saved). | `ToFiles.test_several_items` |
+| **When finished** set to open | The Files app opens at that folder | `ToFiles.test_open_when_finished_shows_the_folder_in_files` |
+
+The album is remembered while **Save to** is Files, and used again when it is set back (`Settings.test_save_to_files_and_back`).
 
 ## Reddit
 
@@ -360,7 +429,7 @@ yt-dlp 2026.11.23
 gallery-dl 1.32.21
 ffmpeg n7.0
 Converts with: hevc_videotoolbox, h264_videotoolbox
-AV1: taken where a site has it
+AV1: taken over VP9, it converts faster
 Tools last updated: 25 Nov 17:20
 
 Sign-ins
@@ -383,7 +452,7 @@ GitHub: reachable
 Last download: 25 Nov 17:36, failed (auth)
 ```
 
-The values above are examples. "Converts with" lists the video encoders a-Shell's ffmpeg has, in the order UMDL tries them. "AV1" is the choice between AV1 and VP9 described under [Which version is downloaded](#which-version-is-downloaded), with the reason when AV1 is not taken. "Working files" and "Unfinished downloads" describe the *Working* folder. When nothing has ever been stored, the sign-in section reads "No sign-ins are stored."
+The values above are examples. "Converts with" lists the video encoders a-Shell's ffmpeg has, in the order UMDL tries them. "AV1" is the choice between AV1 and VP9 described under [Which version is downloaded](#which-version-is-downloaded): "taken over VP9, it converts faster", or "not taken" with the reason. "Working files" and "Unfinished downloads" describe the *Working* folder. When nothing has ever been stored, the sign-in section reads "No sign-ins are stored."
 
 After the alert:
 
@@ -404,15 +473,16 @@ A row with two values switches when tapped, with no menu in between. A row with 
 
 | Row | Value shown | Tapping it | Test |
 |---|---|---|---|
-| Album | The album's name, or "Library only" | Menu **Save to**: **🖼️ An album** asks "Album name"; the album is used if Photos has it and made if not. **📚 Library only** uses no album | `Settings.test_change_album` |
+| Save to | The album's name, "Library only" or "Files" | Menu **Save to**: **🖼️ An album** asks "Album name"; the album is used if Photos has it and made if not. **📚 Library only** uses no album. **📁 Files** is [Saving to Files](#saving-to-files) | `Settings.test_change_album`, `Settings.test_save_to_files_and_back` |
 | Resolution | "Best available" or "Up to 1080p" | Menu **Highest resolution**: Best available, 2160p (4K), 1440p, 1080p, 720p, 480p | `Settings.test_resolution_and_frame_rate_choices` |
 | Frame rate | "Best available" or "Up to 30 fps" | Menu **Highest frame rate**: Best available, 60 fps, 30 fps | `Settings.test_resolution_and_frame_rate_choices` |
+| Conversion | "Ask each time", "Always, for the best quality" or "Never, take what Photos plays"; "Not needed for Files" while **Save to** is Files | Menu **Conversion**, "Some sites have their best version only in a format Photos cannot play. Converting it can take a while.": **❓ Ask each time**, **🎞️ Always, for the best quality**, **⚡ Never, take what Photos plays**. See [Higher quality available](#higher-quality-available) | `Settings.test_conversion_preference` |
 | Large downloads | Ask above *N* items | Asks "Ask before downloading more than", filled in with the current number. Accepts 1 to 9999. Anything else: alert **Not saved**, "Enter a whole number from 1 to 9999.", and the list returns | `Settings.test_change_threshold`, `Settings.test_a_bad_threshold_is_refused_and_the_list_returns` |
-| When finished | "Show a notification" or "Open Photos" | Switches. A notification is shown either way | `Settings.test_the_list_stays_open_and_each_change_is_saved_at_once` |
+| When finished | "Show a notification" or "Open Photos or Files" | Switches. A notification is shown either way; the second also opens Photos, or the folder in Files when that is where the download went | `Settings.test_the_list_stays_open_and_each_change_is_saved_at_once`, `OneTap.test_open_photos_when_finished` |
 | Reset | Sign out, or remove everything | See below. Not listed during setup | `Settings.test_reset_sign_out` |
 | Done | "Close settings", or "Install and finish" during setup | Closes the list | `Settings.test_one_list_shows_every_setting_with_its_value` |
 
-Resolution and Frame rate are described under [Which version is downloaded](#which-version-is-downloaded).
+Resolution and Frame rate are described under [Which version is downloaded](#which-version-is-downloaded). A setting holding a value UMDL does not know, such as one written by an older version, counts as not set.
 
 ### Reset
 
@@ -469,7 +539,7 @@ A first run from the share sheet can therefore need several taps on **Allow** be
 
 The flow tests run the compiled shortcut, action by action, in `tests/shortcut_sim.py`, against the real helper script. yt-dlp, gallery-dl, pip and curl are replaced by stand-ins in `tests/fakes`, so a test can stage an offline device, a failed install, a playlist of any size, a site with many versions of a video, or a site that returns an error. ffmpeg and ffprobe are the real ones, so repacking and conversion are actually carried out.
 
-That shows the logic is right. It cannot show how iOS behaves. Device tests have found nine things the tests had wrong or could not see, and each is now part of the simulator, so the old build fails in it the way it failed on the phone:
+That shows the logic is right. It cannot show how iOS behaves. Device tests have found fourteen things the tests had wrong or could not see, and each is now part of the simulator, so the old build fails in it the way it failed on the phone:
 
 | Found on a device | What it caused | Now |
 |---|---|---|
@@ -483,6 +553,11 @@ That shows the logic is right. It cannot show how iOS behaves. Device tests have
 | A 3840×1920 video was announced as "1920p" (1.5.0) | It read as a mislabelled 1080p | Sizes are named after the frame they fill; `tests/test_umdl.py`, `Labels` |
 | Converting a 4K VP9 video was at 2% after minutes, and stood still with a-Shell off screen (1.5.0) | A long wait with no way to leave | AV1 is taken where the chip reads it, reading is asked of the hardware, the log times each conversion, and an interrupted run carries on (1.6.0); `tests/test_umdl.py`, `ChoiceAmongEquals`, and `Recovery.test_a_download_stopped_while_saving_is_finished_without_downloading_again` |
 | In a-Shell, yt-dlp's challenge solver for YouTube runs in a web view, and one line of it sends that web view to a YouTube address. iOS opens the YouTube app for it (1.3.0, 1.4.0) | Every YouTube link ended in the YouTube app on "This video is unavailable"; a-Shell, no longer in front, could not hand back | The helper defuses that line before the script runs (helper 1.4.1); `tests/test_umdl.py`, `SolverInAWebView`. No simulator can show the app switch itself |
+| Video and sound that yt-dlp fetches apart are reported under their own file names, not the joined file's (1.6.0) | A YouTube video was saved as `njX2bu-_Vw4.mp4`, its id, not its title | Titles are kept by what the names have in common; the stand-in yt-dlp reports parts the same way; `Saving.test_a_video_joined_from_two_files_keeps_its_title` |
+| Photos refuses an AV1 file with error 3302, the same error it would give for a bad album (1.6.0) | The helper dropped the album for the rest of the run, and the converted video landed outside it | One more try tells file from album; `Saving.test_a_refused_file_does_not_cost_the_album`, and `AlbumOrFile` in `tests/test_umdl.py` |
+| Photos does not take AV1, even on a chip that reads it; AV1 converts in about the video's own length (1.6.0) | 1.6 concluded "take VP9 next time", the slow one | AV1 is taken because it converts faster, not in the hope of skipping conversion; `VersionPlan` in `tests/test_umdl.py` |
+| On iOS, ffmpeg refuses to ask the hardware encoder for a quality level (1.6.0) | Every conversion began with an attempt that failed, run twice | That attempt is gone, and a failed attempt is not repeated; `ConversionOrder` in `tests/test_umdl.py` |
+| yt-dlp writes some warnings straight to the terminal (1.6.0) | "WARNING: Unknown codec" in the middle of the progress line | Captured into the log; `Saving.test_warnings_the_tool_writes_past_its_logger_stay_off_the_screen` |
 
 Other checks on the shortcut as built: `Hygiene.test_every_action_in_the_shortcut_is_modelled`, `Hygiene.test_shortcut_metadata`, `Hygiene.test_unscripted_question_fails_loudly`.
 
@@ -493,6 +568,9 @@ Confirmed on a device so far:
 - a-Shell's ffmpeg has the hardware encoders: Status shows "Converts with: hevc_videotoolbox, h264_videotoolbox".
 - YouTube downloads, with helper 1.4.1's fix for the challenge solver. A short saved; a long video downloaded and then failed at the hand-over to Shortcuts, which 1.5 removed.
 - A conversion with the hardware encoder starts and reports its progress (1.5.0, a 4K VP9 video).
+- Saving from a-Shell straight into Photos, to the album, with nothing passing through Shortcuts (1.6.0: an Instagram post, and a converted YouTube video).
+- A 4K60 HDR AV1 video two minutes long, converted to HEVC in two minutes and accepted by Photos (1.6.0).
+- Photos refuses AV1 as it is (1.6.0).
 - The main menu and the menus under it.
 - The helper's result reaching the shortcut, the failed-download menu, and copying details.
 - Signing in, and private posts downloading with the sign-in (Instagram and X).
@@ -501,9 +579,10 @@ Confirmed on a device so far:
 
 Not yet confirmed on a device, and so the first things to check ([device checklist](BUILDING.md#device-checklist)):
 
-- Saving from a-Shell straight into Photos: the permission prompt, the album, the name and the date. No log from a device shows it yet. If it fails, the notification and the log say at which step, and the file is in Files.
-- Whether Photos takes a 4K AV1 file as it is on a device whose chip reads AV1. If it does, 4K from YouTube needs no conversion there.
-- How long a conversion takes, and whether asking the hardware to read the source helps. The log now records both.
+- The **Higher quality available** question on a real YouTube link, and that the link is read once.
+- **Save to › Files**, and that **When finished** opens the Files app at the folder. The link it uses, `shareddocuments://` and the folder's path, has not been tried.
+- That a converted HDR video shows as HDR in Photos, now that its colour information is passed on explicitly.
+- The title as the name of a YouTube video in Photos (1.6.0 used the id).
 - Carrying on after iOS has closed a-Shell in the middle of a download.
 - Reddit by reading the post's page. The page's markup was written from memory, not from a captured page.
 - Reddit through a-Shell's browser, now that scripts report through the print channel. Each step is written to the log, so a failure there can be read from Status, **📋 Copy**.

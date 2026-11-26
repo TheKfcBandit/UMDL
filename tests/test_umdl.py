@@ -292,12 +292,21 @@ class Quality(unittest.TestCase):
     """Which version is downloaded: two limits and nothing else."""
 
     def test_settings_have_safe_defaults(self):
-        best = {"res": "best", "fps": "best"}
-        self.assertEqual(umdl.settings_from({}), best)
-        self.assertEqual(umdl.settings_from(None), best)
-        self.assertEqual(umdl.settings_from({"res": "999", "fps": "24"}), best)
-        self.assertEqual(umdl.settings_from({"res": "1080", "fps": "30", "mode": "advanced",
-                                             "convert": "off"}), {"res": "1080", "fps": "30"})
+        unset = {"res": "best", "fps": "best", "dest": "photos", "convert": "ask"}
+        self.assertEqual(umdl.settings_from({}), unset)
+        self.assertEqual(umdl.settings_from(None), unset)
+        self.assertEqual(umdl.settings_from({"res": "999", "fps": "24", "dest": "icloud"}), unset)
+        # "convert" meant something else before 1.5; what it held then is not a preference.
+        self.assertEqual(umdl.settings_from({"res": "1080", "fps": "30", "mode": "advanced", "convert": "off"}),
+                         dict(unset, res="1080", fps="30"))
+        self.assertEqual(umdl.settings_from({"dest": "files", "convert": "no"}),
+                         dict(unset, dest="files", convert="no"))
+
+    def test_the_answer_to_the_question_outranks_the_stored_preference(self):
+        self.assertEqual(umdl.settings_from({"convert": "no"}, "yes")["convert"], "yes")
+        self.assertEqual(umdl.settings_from({}, "no")["convert"], "no")
+        self.assertEqual(umdl.settings_from({"convert": "no"}, "")["convert"], "no")
+        self.assertEqual(umdl.settings_from({}, "maybe")["convert"], "ask")
 
     def test_best_means_size_then_smoothness_then_what_photos_plays(self):
         sort = lambda **q: umdl.ytdlp_sort(umdl.settings_from(q))  # noqa: E731
@@ -310,6 +319,14 @@ class Quality(unittest.TestCase):
         self.assertEqual(umdl.ytdlp_format(umdl.settings_from({})), "bv*+ba/b/ba")
         self.assertEqual(umdl.ytdlp_format(umdl.settings_from({"fps": "30"})),
                          "bv*[fps<=?30]+ba/b[fps<=?30]/bv*+ba/b/ba")
+
+    def test_never_converting_puts_what_photos_plays_in_front(self):
+        native = "[vcodec~='^(avc|h264|hev|hvc|h265)']"
+        self.assertEqual(umdl.ytdlp_format(umdl.settings_from({}), native_first=True),
+                         "bv*%s+ba/b%s/bv*+ba/b/ba" % (native, native))
+        self.assertEqual(umdl.ytdlp_format(umdl.settings_from({"fps": "30"}), native_first=True),
+                         "bv*%s[fps<=?30]+ba/b%s[fps<=?30]/bv*[fps<=?30]+ba/b[fps<=?30]/bv*+ba/b/ba"
+                         % (native, native))
 
 
 class Labels(unittest.TestCase):
@@ -327,9 +344,9 @@ class Labels(unittest.TestCase):
         self.assertEqual(umdl.describe_media(dict(info, fps=30, a=None)), "2160p VP9")
 
 
-class ChoiceAmongEquals(Base):
-    """yt-dlp ranks by size and frame rate. Among versions equal in both, the
-    one that costs least to get into Photos is taken."""
+class VersionPlan(Base):
+    """yt-dlp ranks by size and frame rate. The plan says which version that
+    is, whether Photos will need it converted, and what the alternative is."""
 
     FORMATS = [  # worst first, as yt-dlp lists them
         {"format_id": "251", "vcodec": "none", "acodec": "opus"},
@@ -341,55 +358,98 @@ class ChoiceAmongEquals(Base):
     BEST = {"res": "best", "fps": "best"}
 
     def test_quality_is_never_given_up_for_an_easier_codec(self):
-        self.assertEqual(umdl.choose_formats(self.FORMATS, self.BEST, False), "313+140")   # 4K, not the 1080p H.264
+        plan = umdl.plan_versions(self.FORMATS, self.BEST, False)
+        self.assertEqual(plan, {"take": "313+140", "converts": True, "name": "2160p",      # 4K, in VP9
+                                "native": "137+140", "native_name": "1080p"})              # the alternative
 
-    def test_av1_is_taken_where_the_chip_reads_it(self):
-        self.assertEqual(umdl.choose_formats(self.FORMATS, self.BEST, True), "401+140")
+    def test_av1_is_taken_over_vp9_where_it_converts_faster(self):
+        self.assertEqual(umdl.plan_versions(self.FORMATS, self.BEST, True)["take"], "401+140")
 
-    def test_h264_or_hevc_of_the_same_size_wins_outright(self):
-        formats = self.FORMATS + [{"format_id": "hev", "vcodec": "hev1.2.4", "acodec": "none",
-                                   "width": 3840, "height": 2160, "fps": 30}]
-        formats.insert(-1, formats.pop())                       # yt-dlp still ranks VP9 last, so best
-        formats[-1], formats[-2] = formats[-2], formats[-1]
-        self.assertEqual(umdl.choose_formats(formats, self.BEST, True), "hev+140")
+    def test_h264_or_hevc_of_the_same_size_wins_outright_and_leaves_no_question(self):
+        formats = self.FORMATS[:3] + [{"format_id": "hev", "vcodec": "hev1.2.4", "acodec": "none",
+                                       "width": 3840, "height": 2160, "fps": 30}] + self.FORMATS[3:]
+        self.assertEqual(umdl.plan_versions(formats, self.BEST, True),
+                         {"take": "hev+140", "converts": False, "name": "2160p"})
 
     def test_a_smoother_version_is_not_traded_away(self):
         formats = self.FORMATS + [{"format_id": "315", "vcodec": "vp9", "acodec": "none",
                                    "width": 3840, "height": 2160, "fps": 60}]
-        self.assertEqual(umdl.choose_formats(formats, self.BEST, True), "315+140")
+        plan = umdl.plan_versions(formats, self.BEST, True)
+        self.assertEqual((plan["take"], plan["name"]), ("315+140", "2160p60"))
+        formats[-1]["dynamic_range"] = "HDR10"
+        self.assertEqual(umdl.plan_versions(formats, self.BEST, True)["name"], "2160p60 HDR")
 
-    def test_one_file_with_sound_needs_no_partner_and_nothing_listed_means_no_choice(self):
+    def test_a_frame_rate_limit_applies_to_both_versions(self):
+        formats = self.FORMATS + [
+            {"format_id": "299", "vcodec": "avc1", "acodec": "none", "width": 1920, "height": 1080, "fps": 60},
+            {"format_id": "315", "vcodec": "vp9", "acodec": "none", "width": 3840, "height": 2160, "fps": 60}]
+        plan = umdl.plan_versions(formats, {"res": "best", "fps": "30"}, False)
+        self.assertEqual((plan["take"], plan["native"]), ("313+140", "137+140"))
+
+    def test_nothing_playable_as_it_is_means_no_alternative(self):
+        plan = umdl.plan_versions([f for f in self.FORMATS if f["format_id"] != "137"], self.BEST, False)
+        self.assertEqual(plan, {"take": "313+140", "converts": True, "name": "2160p"})
+
+    def test_one_file_with_sound_needs_no_partner_and_nothing_listed_means_no_plan(self):
         whole = [{"format_id": "18", "vcodec": "avc1", "acodec": "mp4a", "width": 640, "height": 360, "fps": 30}]
-        self.assertEqual(umdl.choose_formats(whole, self.BEST, False), "18")
-        self.assertEqual(umdl.choose_formats([], self.BEST, False), "")
-        self.assertEqual(umdl.choose_formats(None, self.BEST, False), "")
+        self.assertEqual(umdl.plan_versions(whole, self.BEST, False),
+                         {"take": "18", "converts": False, "name": "360p"})
+        self.assertEqual(umdl.plan_versions([], self.BEST, False), {})
+        self.assertEqual(umdl.plan_versions(None, self.BEST, False), {})
 
-    def test_av1_needs_the_chip_a_way_to_convert_it_and_no_refusal_on_record(self):
+    def test_av1_needs_a_chip_that_reads_it_and_an_ffmpeg_that_can(self):
         self.addCleanup(umdl._FFMPEG_HAS.clear)
-        umdl._FFMPEG_HAS["-decoders"] = {"vp9", "libdav1d"}
+        umdl._FFMPEG_HAS.update({"-decoders": {"vp9", "libdav1d"}, "-hwaccels": set()})
         self.assertEqual(umdl.av1_verdict(), (False, "not taken, the chip does not read it"))
         os.environ["UMDL_TEST_HARDWARE"] = "av01"
-        self.assertEqual(umdl.av1_verdict(), (True, "taken where a site has it"))
+        self.assertEqual(umdl.av1_verdict(), (True, "taken over VP9, it converts faster"))
         umdl._FFMPEG_HAS["-decoders"] = {"vp9", "av1"}             # ffmpeg's own AV1 reader needs hardware
-        self.assertEqual(umdl.av1_verdict(), (False, "not taken, this ffmpeg could not convert it"))
-        umdl._FFMPEG_HAS["-decoders"] = {"libdav1d"}
-        umdl.write_json(umdl.STATE_FILE, {"av1_refused": True})
-        self.assertEqual(umdl.av1_verdict(), (False, "not taken, Photos turned it down"))
+        self.assertEqual(umdl.av1_verdict(), (False, "not taken, this ffmpeg cannot read it"))
+        umdl._FFMPEG_HAS["-hwaccels"] = {"videotoolbox"}
+        self.assertTrue(umdl.av1_verdict()[0])
+        umdl.write_json(umdl.STATE_FILE, {"av1_refused": True})    # what 1.6 concluded from a refusal
+        self.assertTrue(umdl.av1_verdict()[0])                     # Photos refusing AV1 is why it is converted
 
     @unittest.skipUnless(has_encoder("libsvtav1") or has_encoder("libaom-av1"), "no AV1 encoder")
-    def test_a_refused_av1_file_is_converted_and_av1_is_not_taken_again(self):
-        os.environ["UMDL_TEST_HARDWARE"] = "av01"
+    def test_a_refused_av1_file_is_converted_and_lands_in_the_album(self):
+        # The 1.6 device log: Photos refused the AV1 file, the helper took that
+        # for a refusal of the album, and the converted file missed the album.
         encoder = "libsvtav1" if has_encoder("libsvtav1") else "libaom-av1"
         clip = make_clip(os.path.join(self.media, "av1.mp4"), encoder, "aac")
         folder = tempfile.mkdtemp(dir=WORK)
-        ctx = {"dir": folder, "titles": {"a.mp4": "Clip"}, "converted": [], "checkpoint": lambda: None}
+        ctx = {"dir": folder, "titles": {"a": "Clip"}, "converted": [], "checkpoint": lambda: None}
         shutil.copy(clip, os.path.join(folder, "a.mp4"))
         library, _ = umdl.open_library("UMDL")                   # this Photos plays H.264 and HEVC only
-        self.assertTrue(umdl.av1_goes_in())
         self.assertEqual(umdl.place(ctx, umdl.stage(ctx, [os.path.join(folder, "a.mp4")])[0], library), "saved")
         self.assertEqual(ctx["converted"], ["AV1 → H.264"])
-        self.assertFalse(umdl.av1_goes_in())
         self.assertEqual(self.library(), [("UMDL", "Clip.mp4")])
+        self.assertEqual(library.where(), "UMDL")
+
+
+class AlbumOrFile(Base):
+    """A refusal can mean the file or the album. One more try tells which."""
+
+    class Picky(umdl.Library):
+        def __init__(self, album, refuses):
+            self.album, self.refuses, self.tries = album, refuses, []
+
+        def add_once(self, path, name):
+            self.tries.append(self.album)
+            if self.refuses == "file" or (self.refuses == "album" and self.album):
+                raise umdl.Refused("error 3302")
+
+    def test_the_file_was_refused_so_the_album_stays(self):
+        library = self.Picky("Clips", "file")
+        with self.assertRaises(umdl.Refused):
+            library.add("/tmp/x.mp4", "x.mp4")
+        self.assertEqual((library.tries, library.where()), (["Clips", ""], "Clips"))
+
+    def test_the_album_was_refused_so_the_library_is_used_from_then_on(self):
+        library = self.Picky("Clips", "album")
+        library.add("/tmp/x.mp4", "x.mp4")
+        library.add("/tmp/y.mp4", "y.mp4")
+        self.assertEqual((library.tries, library.where()), (["Clips", "", ""], ""))
+        self.assertFalse(os.path.exists(umdl.GUARD_FILE))
 
 
 class Saving(Base):
@@ -497,21 +557,23 @@ class ConversionOrder(unittest.TestCase):
     INFO = {"width": 3840, "height": 2160, "fps": 60.0, "vbitrate": 26_000_000, "bitrate": 26_200_000,
             "pix_fmt": "yuv420p", "v": "vp9", "a": "opus"}
 
-    def test_hardware_hevc_at_a_quality_level_comes_first(self):
+    def test_hardware_hevc_comes_first_and_is_not_asked_for_a_quality_level(self):
         attempts = umdl.conversion_attempts(self.INFO, {"hevc_videotoolbox", "h264_videotoolbox",
                                                          "libx264"})
-        self.assertEqual([codec for codec, _ in attempts], ["HEVC", "HEVC", "H.264", "H.264"])
+        self.assertEqual([codec for codec, _ in attempts], ["HEVC", "H.264", "H.264"])
         first = attempts[0][1]
         self.assertEqual(first[:4], ["-c:v", "hevc_videotoolbox", "-tag:v", "hvc1"])
-        self.assertEqual(first[-2:], ["-q:v", "75"])
+        self.assertEqual(first[-2], "-b:v")
+        self.assertNotIn("-q:v", [arg for _, args in attempts for arg in args])   # refused on iOS, seen on a device
         self.assertNotIn("-vf", first)                      # size and frame rate are left alone
         self.assertNotIn("-r", first)
 
-    def test_the_bitrate_fallback_never_goes_below_the_source(self):
-        attempts = umdl.conversion_attempts(self.INFO, {"hevc_videotoolbox"})
-        rate = int(attempts[1][1][-1])
-        self.assertGreaterEqual(rate, self.INFO["vbitrate"])
-        self.assertLessEqual(rate, 80_000_000)
+    def test_the_bitrate_leaves_room_above_the_source(self):
+        rate = lambda info: int(umdl.conversion_attempts(info, {"hevc_videotoolbox"})[0][1][-1])  # noqa: E731
+        self.assertEqual(rate(self.INFO), 36_000_000)                                  # the floor for 4K60
+        self.assertEqual(rate(dict(self.INFO, vbitrate=40_000_000)), 52_000_000)      # VP9: 1.3 times
+        self.assertEqual(rate(dict(self.INFO, v="av1", vbitrate=40_000_000)), 64_000_000)   # AV1: 1.6 times
+        self.assertEqual(rate(dict(self.INFO, v="av1", vbitrate=70_000_000)), 80_000_000)   # and a ceiling
 
     def test_ten_bit_sources_stay_ten_bit(self):
         deep = dict(self.INFO, pix_fmt="yuv420p10le")
@@ -526,7 +588,7 @@ class ConversionOrder(unittest.TestCase):
 
     def test_a_low_bitrate_source_gets_a_sensible_floor(self):
         thin = dict(self.INFO, width=1280, height=720, fps=30.0, vbitrate=300_000, bitrate=350_000)
-        rate = int(umdl.conversion_attempts(thin, {"hevc_videotoolbox"})[1][1][-1])
+        rate = int(umdl.conversion_attempts(thin, {"hevc_videotoolbox"})[0][1][-1])
         self.assertGreater(rate, 1_000_000)
 
 
@@ -681,6 +743,28 @@ class RepackAndConvert(Base):
         self.assertTrue(ready.endswith("001.mp4"))
         self.assertEqual(os.listdir(os.path.dirname(ready)), ["001.mp4"])   # the original is gone
         self.assertRegex(open(umdl.LOG_FILE).read(), r"converted \S+ VP9 to H\.264 in \d+ s with -c:v libx264")
+
+    @unittest.skipUnless(has_encoder("libvpx-vp9"), "no libvpx-vp9")
+    def test_hdr_colours_are_carried_across_a_conversion(self):
+        clip = make_clip(os.path.join(self.media, "hdr.webm"), "libvpx-vp9", None,
+                         extra=("-color_primaries", "bt2020", "-color_trc", "smpte2084", "-colorspace", "bt2020nc"))
+        staged = self.stage(clip)
+        before = umdl.probe_media(staged)
+        self.assertEqual(before["colour"], ["-color_primaries", "bt2020", "-color_trc", "smpte2084",
+                                            "-colorspace", "bt2020nc"])
+        self.assertIn(" HDR VP9", umdl.describe_media(before))
+        after = umdl.probe_media(umdl.convert(staged, before, []))
+        self.assertEqual(after["colour"], before["colour"])
+        self.assertTrue(after["hdr"])
+
+    @unittest.skipUnless(has_encoder("libvpx-vp9"), "no libvpx-vp9")
+    def test_a_plain_video_is_given_no_colour_options(self):
+        # ffprobe calls this clip's colour space "gbr", a name ffmpeg's encoders do not take.
+        clip = make_clip(os.path.join(self.media, "gbr.webm"), "libvpx-vp9", None,
+                         extra=("-pix_fmt", "gbrp", "-colorspace", "rgb"))
+        info = umdl.probe_media(clip)
+        self.assertEqual((info["colour"], info["hdr"]), ([], False))
+        self.assertIsNotNone(umdl.convert(self.stage(clip), info, []))
 
     def test_hardware_reading_is_asked_for_only_where_ffmpeg_offers_it(self):
         self.addCleanup(umdl._FFMPEG_HAS.clear)

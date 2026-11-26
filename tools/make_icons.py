@@ -146,6 +146,13 @@ def frames(draw, color):
     line(draw, [(50, 32), (66, 48), (50, 64)], width=7)
 
 
+def swap(draw, color):
+    line(draw, [(30, 39), (62, 39)], width=6)
+    arrow_head(draw, (70, 39), 0, size=13)
+    line(draw, [(34, 57), (66, 57)], width=6)
+    arrow_head(draw, (26, 57), 180, size=13)
+
+
 def tick(draw, color):
     line(draw, [(30, 49), (43, 62), (67, 35)], width=8)
 
@@ -167,6 +174,7 @@ ICONS = {
     "done": (tick, GREEN),
     "album": (album, PINK),
     "stack": (stack, ORANGE),
+    "convert": (swap, INDIGO),
     "finish": (check, GREEN),
     "reset": (trash, RED),
 }

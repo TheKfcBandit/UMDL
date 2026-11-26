@@ -117,7 +117,10 @@ On an iPhone or iPad with a-Shell installed and UMDL not yet set up:
 - [ ] Open UMDL from the Shortcuts app. The main menu appears at once, with icons, and no other message first.
 - [ ] The first download asks to let a-Shell add to Photos. Allow it. The video is in the album, named by its title, dated today.
 - [ ] Share a long video, 30 minutes or more. It is saved; nothing is kept in Files.
-- [ ] Open Status and read the "AV1" line. Then share a 4K YouTube link. It is saved at 2160p. If AV1 was taken and Photos accepted it, nothing is converted; otherwise the notification says "1 converted". Copy the log from Status: the "version:" line shows what was chosen, and the "converted … in N s with …" line the time and the arguments.
+- [ ] Share a 4K YouTube link with **Conversion** at "Ask each time". **Higher quality available** names both sizes. Choose the converted one: a-Shell does not show "Reading link" working a second time, the video is saved at 2160p in the album under its title, and the notification says "1 converted". Copy the log from Status: "version:" shows what was chosen, "converted … in N s with …" the time and the arguments. If the video is HDR, check that Photos shows it as HDR.
+- [ ] Share the same link and choose "as it is". The 1080p version is saved with no conversion.
+- [ ] Set **Conversion** to "Never", then to "Always", and share the link each time. Nothing is asked.
+- [ ] Set **Save to** to Files and share the link. Nothing is asked or converted; the file is in Files under a-Shell › UMDL › Saved, under its title, and plays there. With **When finished** set to open, the Files app opens at that folder.
 - [ ] Set Resolution to 1080p and share the same link. No conversion; the saved video is 1080p.
 - [ ] Settings: change Resolution, then Frame rate. The list comes back after each with the new value. **Done** closes it.
 - [ ] Share a post with several images from X, Instagram or Reddit.

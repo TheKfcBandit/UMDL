@@ -41,14 +41,15 @@
 
 // Keep in step with version.json. The protocol number only changes when the
 // payload or callback format does.
-@umdlVersion = "1.6.0"
-@protocol = "6"
+@umdlVersion = "1.7.0"
+@protocol = "7"
 
 @shared = "{ShortcutInput}"
 @link = ""
 @hasLink = "0"
 @runMode = "auto"
 @runLimit = ""
+@runConvert = ""
 @forceUpdate = ""
 @toolCmd = "none"
 @signInTo = ""
@@ -64,6 +65,8 @@
 @cfgAfter = "notify"
 @cfgRes = "best"
 @cfgFps = "best"
+@cfgDest = "photos"
+@cfgConvert = "ask"
 @haveCfg = "0"
 @needsHelper = "0"
 @saveCfg = "0"
@@ -72,6 +75,7 @@
 @updateVersion = ""
 @updateLink = ""
 @doneText = ""
+@openLink = ""
 
 /* ------------------------------------------------------------------------
  * 1. What started this run: a callback from the helper, or something shared
@@ -102,12 +106,15 @@ if @shared beginsWith "UMDLCB:" {
             @cfgAfter = "{cbCfg['after']}"
             @cfgRes = "{cbCfg['res']}"
             @cfgFps = "{cbCfg['fps']}"
+            @cfgDest = "{cbCfg['dest']}"
+            @cfgConvert = "{cbCfg['convert']}"
             @haveCfg = "1"
         }
 
         // The helper has put the files where they belong. "msg" says where.
         if @cbType == "done" {
             @doneText = "{cb['msg']}"
+            @openLink = "{cb['open']}"
             @jobTitle = "{cb['title']}"
             @updateVersion = "{cb['upv']}"
             @updateLink = "{cb['upurl']}"
@@ -133,6 +140,24 @@ if @shared beginsWith "UMDLCB:" {
                     @runLimit = @confirmLimit
                 item "⬇️ First only":
                     @runMode = "first"
+                item "Cancel":
+                    stop()
+            }
+        }
+
+        // The best version has to be converted for Photos, and a smaller one does not.
+        if @cbType == "choose" {
+            @link = "{cb['url']}"
+            @choosePrompt = "Higher quality available"
+            @probe = "[{cb['title']}]"
+            if @probe != "[]" {
+                @choosePrompt = "{@choosePrompt}\n\n{cb['title']}"
+            }
+            menu "{@choosePrompt}\n\n{cb['best']} has to be converted for Photos, which can take a while. {cb['native']} is saved as it is.\n\nSettings, Conversion makes either the rule." {
+                item "🎞️ {cb['best']}, converted":
+                    @runConvert = "yes"
+                item "⚡ {cb['native']}, as it is":
+                    @runConvert = "no"
                 item "Cancel":
                     stop()
             }
@@ -274,6 +299,8 @@ if @haveCfg == "0" {
             @cfgAfter = "{cfg['after']}"
             @cfgRes = "{cfg['res']}"
             @cfgFps = "{cfg['fps']}"
+            @cfgDest = "{cfg['dest']}"
+            @cfgConvert = "{cfg['convert']}"
             @haveCfg = "1"
         }
     }
@@ -303,6 +330,16 @@ if @probe == "[]" {
 @probe = "[{@cfgFps}]"
 if @probe == "[]" {
     @cfgFps = "best"
+}
+// These two have a fixed set of values. Anything else, such as the "convert"
+// that versions before 1.5 stored, counts as not set.
+if @cfgDest != "files" {
+    @cfgDest = "photos"
+}
+if @cfgConvert != "yes" {
+    if @cfgConvert != "no" {
+        @cfgConvert = "ask"
+    }
 }
 /* ------------------------------------------------------------------------
  * 3. First run
@@ -346,8 +383,12 @@ if @probe != "[]" {
         }
     }
     if @hasLink == "0" {
-        if @cfgAfter == "photos" {
-            openURL("photos-redirect://")
+        // The helper says where the download went: Photos, or its folder in Files.
+        @probe = "[{@openLink}]"
+        if @probe != "[]" {
+            if @cfgAfter == "photos" {
+                openURL("{@openLink}")
+            }
         }
         stop()
     }
@@ -489,9 +530,10 @@ if @needsMenu == "1" {
  * Each row shows its value. A row with two values switches when tapped; a
  * row with more opens one menu. Every change is saved at once.
  *
- * Resolution and frame rate decide which version is downloaded. There is
- * nothing else to decide: a video Photos cannot play is converted at the best
- * quality, and only then.
+ * Resolution and frame rate limit which version is downloaded. "Save to" says
+ * where it ends: Photos, or Files, where nothing is ever converted.
+ * "Conversion" settles one question in advance: when the best version has
+ * to be converted for Photos and a smaller one does not, which to take.
  * ---------------------------------------------------------------------- */
 
 if @openSettings == "1" {
@@ -499,6 +541,7 @@ if @openSettings == "1" {
     const iconResolution = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEUxrOX7/f4+sednwuzJ6fhSuuqz4fWU1PLc8fuGzvCo3PUdpeRgv+sAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACe/qQSAAAAMHRSTlP/////////////////AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAC8AjCNAAAA60lEQVR42u2XwRLCIAxEC0moVf//e60zWqBCzZD0oLPv1mHJAoWWnSYAAAAAAAB8ibF+KhiuKYkzIaRcaQ4lTIP1ww5u119Zhgx4XybIa30+GsLIMjXKULdFfAzeTemcGVy2YUZ2NKCNagOQPDeoRDEb6FQGA1HtZYNBPHsGMLC+5Gg+yeShapM050Cpag+Oy8+DTdU7ReSnAj9xVbGpWszVVcWm6vQsrio21Z9+i1jVlWEAg69d77ejhCN2A0XCsRmoEo6TwUHCcTLwTTgT6RPOdex/sGgTzmD9tRCVNBKONYkDAAAAAACQeQCWqgW0cNEKHwAAAABJRU5ErkJggg=="
     const iconFps = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEX/lQD//v3/jQD/vmX/pzH/1Jn/xXP/zYf/uVv/3q//47z/5cEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA8//chAAAAMHRSTlP///////////////8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA8iIx5AAAAxklEQVR42u2XQRLCIAwAS6AU9f//1aljqTaAY3JRd8fTHjaQC3WaAAAAAAA8EHlHfZ5POScZKUO/hBuL9JWBFFaydJXhAvleC1E6yjJgCa85RTmsaJ9TlMsVtpyiTBPicUJkAhOY8AsTijSV04TUVvbn7em1UZTpfX7UtgdTUR79uqLkuKJdbJam8um31Xecnz79v+uXY7849iflsJ7nr38GakxRHh/XNaYohxXN0lXmK1wGykQ5nfNYWe6w/kYKAAAAAMCDKxZrBr1jpwzHAAAAAElFTkSuQmCC"
     const iconStack = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEX/lAD//v3/jgD/sEH/473/qC//yHz/vmX/yoD/6cr/1p3/2KH/8NoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADMVdtuAAAAMHRSTlP/////////////////AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAC8AjCNAAAAg0lEQVR42u3USRKAIAxEURII4HD/84q61VgFWuXivz1pBu0QAAAAAOxUvx1vOdsZ4Qb17kKLNOVYnkWmdE1k7gwwOViLyuJKfQeo5+rajiAP7OuAqINXtPjz1/FHTt78ycY/02Dxlr3zo+kt+og2pU1pU9qUNgVtSpvSprQpAAAA8CcbYRcH23+VprkAAAAASUVORK5CYII="
+    const iconConvert = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEVdW+X9/f5gXuaHhuzV1PhmZed2dOnn5vupqPG6ufSVlO5OTOSAfuvHxvbg3/oAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADeEmLFAAAAMHRSTlP///////////////////8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABd9rBbAAABNElEQVR42u2X4W7DIAyEY4MhJO3e/3ELiKbqVhaE40mT7pP61xeMfVeWBQAAAAAAgH8P25aXYPz9QqvtIYTIi6VCFqDoDA9RBIiSToHrjz/RBMgHlYLIyQkym+IQayTf5SlAiecUeFlpjBh2xTUOsbKxwF2mWnQfrb/NzpAfKq+Z1Jvrc/TfaJu5TZDOLbjL0yrYzIxEu8Vn4SVqH3qrH4Jh4OQqjtz3YiUyL6uf6KfAcmF7yr45o2nJVbc6j0YCecoTNQH5vA+s61WIzRDcPpF65+15RU7sJlucM+v6baN+7efqb+OBc5u6hzQuMDdj+3HDp6nPyhk9/VexsG7LSm79Em6KTGg+Ua5xt3mKHLvQ2+S6zUozCl+GZlclJJkKdALnYolg/OQzfrECAAAAAADwFzwAOmkHhGpYdQIAAAAASUVORK5CYII="
     const iconFinish = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEUzxlj8/v1a0Xiu6LxDy2XU89uE3Zpt1og8yWDC7s1g032U4ai568YfwUiN36IAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADZ5XGAAAAAMHRSTlP///////////////////8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABd9rBbAAAA1klEQVR42u2XWQ6DMAxEsU0WCu39j1upbZQAQXzg4afzDvDGLBk5w0AIIYQQQgj5H0as3UQmBfrlQ4IFhG+AoPzLzy8PjN+KH/SOql8ywj9Xf0T4Y/W/wP75CfCn6jfE/HqfPyCabGz8GdFkwWn+gybLweuAlZOqR/PLtZ7OfY95+dtPqV3/5QqdOgnmWUDN314Som/BpW1C9C7QzTMACmiVACmgNqGyYHrNreDOEnz9+wRv/y4BsIuuEiCLqIL9TQJszVXghnXPRQB/lSGEEEIIIYSc8Aa+OwN51z07VwAAAABJRU5ErkJggg=="
     const iconReset = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEX/RTr//f3/Oy//dGz/zsv/UUf/09D/TEL/6un/uLT/bGT/npj/jIb/LyL/YFf/wb3/4N4AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAqdfc0AAAAMHRSTlP//////////////////////wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABKBZhFAAABBUlEQVR42u2Y6QqDMBCEk82xUXu9/9NWoVWaAzSMhdL5fkggsJNj3GxiDCGEEEII+TNEg6zMbbjAlGz00S9En+yg4PFPNsNj56ApF7AjVCEU8a2DCsiQx09g55j7Z/x4Qzhqc878yQQAjiqd06LTURXntOhzVNgdv9NRpXNa9DpK/b74j+5/Tka3B9Pv0y1/Vvqu7b7DOq6yWPGCyxOX+toPoGwkrrW7E0ZBmmZKelaqxqbsbwk4E0zMW1ABee/GR4sCFKAABShwUEDXsHqGwLiOezxnBkvBnrd+5Mh8HY81wql1F7DyatTxUXHX8NplZ1ABPlSURTv4uUIK+D5ECCGEEHKIJ2TGCeWfM7REAAAAAElFTkSuQmCC"
     const iconDone = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEUzxlj8/v1b0Xmu6LxCy2SF3ZvT89s8yWBg031s1ofC7s2Q4KQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABs3GAYAAAAMHRSTlP///////////////8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA8iIx5AAAA0klEQVR42u2XWw7DIBADWd6k979vq6YCosCfLTWS5wBjZSOz4JwQQgghhBDif4hcezA7PNFvXxotIJ8BxvKHn98q2U+aUep+K2R/Yvjr8L8Yfj/8gVgAmr/k7s/Ugn38hVsAi4yDcvJ7xkE5FaAyDkpUwcJmCBXkL5sxwwoW1z8SWLBjlYAs2DSLkQAtWLsnwAq2+QZQwbYJoIJtExpjg80JnA25SsBuGE/23xPwG+yawNhglwTKZd2jC7ZPIF1ye0Jy7qkvGf5bTAghhBBCiKfzBtGiA6FDICzEAAAAAElFTkSuQmCC"
@@ -513,6 +556,19 @@ if @openSettings == "1" {
             if @cfgAlbum == "Recents" {
                 @albumDetail = "Library only"
             }
+            if @cfgDest == "files" {
+                @albumDetail = "Files"
+            }
+            @convertDetail = "Ask each time"
+            if @cfgConvert == "yes" {
+                @convertDetail = "Always, for the best quality"
+            }
+            if @cfgConvert == "no" {
+                @convertDetail = "Never, take what Photos plays"
+            }
+            if @cfgDest == "files" {
+                @convertDetail = "Not needed for Files"
+            }
             @resDetail = "Up to {@cfgRes}p"
             if @cfgRes == "best" {
                 @resDetail = "Best available"
@@ -523,14 +579,14 @@ if @openSettings == "1" {
             }
             @afterDetail = "Show a notification"
             if @cfgAfter == "photos" {
-                @afterDetail = "Open Photos"
+                @afterDetail = "Open Photos or Files"
             }
             @doneDetail = "Close settings"
             if @firstRun == "1" {
                 @doneDetail = "Install and finish"
             }
 
-            @settingCards = "BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Album;;;;\nORG;CHARSET=utf-8:{@albumDetail};\nPHOTO;ENCODING=b:{iconAlbum}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Resolution;;;;\nORG;CHARSET=utf-8:{@resDetail};\nPHOTO;ENCODING=b:{iconResolution}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Frame rate;;;;\nORG;CHARSET=utf-8:{@fpsDetail};\nPHOTO;ENCODING=b:{iconFps}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Large downloads;;;;\nORG;CHARSET=utf-8:Ask above {@cfgThreshold} items;\nPHOTO;ENCODING=b:{iconStack}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:When finished;;;;\nORG;CHARSET=utf-8:{@afterDetail};\nPHOTO;ENCODING=b:{iconFinish}\nEND:VCARD\n"
+            @settingCards = "BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Save to;;;;\nORG;CHARSET=utf-8:{@albumDetail};\nPHOTO;ENCODING=b:{iconAlbum}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Resolution;;;;\nORG;CHARSET=utf-8:{@resDetail};\nPHOTO;ENCODING=b:{iconResolution}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Frame rate;;;;\nORG;CHARSET=utf-8:{@fpsDetail};\nPHOTO;ENCODING=b:{iconFps}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Conversion;;;;\nORG;CHARSET=utf-8:{@convertDetail};\nPHOTO;ENCODING=b:{iconConvert}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Large downloads;;;;\nORG;CHARSET=utf-8:Ask above {@cfgThreshold} items;\nPHOTO;ENCODING=b:{iconStack}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:When finished;;;;\nORG;CHARSET=utf-8:{@afterDetail};\nPHOTO;ENCODING=b:{iconFinish}\nEND:VCARD\n"
             // Nothing to reset before setup has finished.
             if @firstRun == "0" {
                 @settingCards = "{@settingCards}BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Reset;;;;\nORG;CHARSET=utf-8:Sign out, or remove everything;\nPHOTO;ENCODING=b:{iconReset}\nEND:VCARD\n"
@@ -543,7 +599,7 @@ if @openSettings == "1" {
             @setting = "{settingsPick}"
             @settingTouched = "0"
 
-            if @setting == "Album" {
+            if @setting == "Save to" {
                 // The helper finds the album by this name, or makes it.
                 menu "Save to" {
                     item "🖼️ An album":
@@ -558,8 +614,25 @@ if @openSettings == "1" {
                             @albumName = "UMDL"
                         }
                         @cfgAlbum = @albumName
+                        @cfgDest = "photos"
                     item "📚 Library only":
                         @cfgAlbum = "Recents"
+                        @cfgDest = "photos"
+                    item "📁 Files":
+                        // Kept exactly as downloaded: nothing is repacked or converted.
+                        @cfgDest = "files"
+                }
+                @settingTouched = "1"
+            }
+
+            if @setting == "Conversion" {
+                menu "Conversion\n\nSome sites have their best version only in a format Photos cannot play. Converting it can take a while." {
+                    item "❓ Ask each time":
+                        @cfgConvert = "ask"
+                    item "🎞️ Always, for the best quality":
+                        @cfgConvert = "yes"
+                    item "⚡ Never, take what Photos plays":
+                        @cfgConvert = "no"
                 }
                 @settingTouched = "1"
             }
@@ -636,7 +709,7 @@ if @openSettings == "1" {
 
             if @settingTouched == "1" {
                 @settingsChanged = "1"
-                const liveCfg = {"album": "{@cfgAlbum}", "threshold": "{@cfgThreshold}", "after": "{@cfgAfter}", "res": "{@cfgRes}", "fps": "{@cfgFps}"}
+                const liveCfg = {"album": "{@cfgAlbum}", "dest": "{@cfgDest}", "convert": "{@cfgConvert}", "threshold": "{@cfgThreshold}", "after": "{@cfgAfter}", "res": "{@cfgRes}", "fps": "{@cfgFps}"}
                 const liveCfgText = text("{liveCfg}")
                 const liveCfgBlob = base64Encode(liveCfgText, "None")
                 rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
@@ -661,7 +734,7 @@ if @openSettings == "1" {
 }
 
 if @saveCfg == "1" {
-    const cfgOut = {"album": "{@cfgAlbum}", "threshold": "{@cfgThreshold}", "after": "{@cfgAfter}", "res": "{@cfgRes}", "fps": "{@cfgFps}"}
+    const cfgOut = {"album": "{@cfgAlbum}", "dest": "{@cfgDest}", "convert": "{@cfgConvert}", "threshold": "{@cfgThreshold}", "after": "{@cfgAfter}", "res": "{@cfgRes}", "fps": "{@cfgFps}"}
     const cfgOutText = text("{cfgOut}")
     const cfgOutBlob = base64Encode(cfgOutText, "None")
     rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
@@ -714,7 +787,7 @@ if @needsHelper == "1" {
     }
 }
 
-const payload = {"v": "{@umdlVersion}", "p": "{@protocol}", "name": "UMDL", "url": "{@link}", "mode": "{@runMode}", "limit": "{@runLimit}", "force_update": "{@forceUpdate}", "cfg": {"album": "{@cfgAlbum}", "threshold": "{@cfgThreshold}", "after": "{@cfgAfter}", "res": "{@cfgRes}", "fps": "{@cfgFps}"}}
+const payload = {"v": "{@umdlVersion}", "p": "{@protocol}", "name": "UMDL", "url": "{@link}", "mode": "{@runMode}", "limit": "{@runLimit}", "convert": "{@runConvert}", "force_update": "{@forceUpdate}", "cfg": {"album": "{@cfgAlbum}", "dest": "{@cfgDest}", "convert": "{@cfgConvert}", "threshold": "{@cfgThreshold}", "after": "{@cfgAfter}", "res": "{@cfgRes}", "fps": "{@cfgFps}"}}
 const payloadText = text("{payload}")
 const payloadBlob = base64Encode(payloadText, "None")
 @blob = "{payloadBlob}"
