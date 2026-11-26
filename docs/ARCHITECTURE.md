@@ -205,7 +205,7 @@ A conversion, when Photos refuses a file, never changes the picture's size or fr
 2. `h264_videotoolbox -profile:v high -b:v <1.6 × rate>`.
 3. `libx264 -crf 17 -preset veryfast`.
 
-The source's colour information (`-color_primaries`, `-color_trc`, `-colorspace`, as ffprobe reports them) is added to each, so HDR stays HDR.
+For an HDR source, `-vf setparams=color_primaries=…:color_trc=…:colorspace=…` is added to each, with the values ffprobe reports, so HDR stays HDR. A filter, because newer ffmpeg takes the encoder's colour settings from the frames and ignores the same values given as options.
 
 Each attempt is made with `-hwaccel videotoolbox` in front of the input when `ffmpeg -hwaccels` lists it, and once more without if every encoder fails that way. A failed attempt is not repeated. Progress is read from a file ffmpeg writes (`-progress <file>`), not from its output. The log line for a conversion gives the arguments used and the seconds it took.
 

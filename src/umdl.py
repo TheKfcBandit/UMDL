@@ -1687,12 +1687,15 @@ def media_files(folder, ytdlp=False):
 
 
 # How an HDR picture's colours are to be read: the field as ffprobe reports
-# it, the option that tells ffmpeg, and the values passed on. Carried across a
-# conversion, or an HDR video comes out washed out. Only these values: ffprobe
-# and ffmpeg do not share a name for every other one ("gbr" is one such).
-COLOUR_TAGS = (("color_primaries", "-color_primaries", ("bt2020",)),
-               ("color_transfer", "-color_trc", ("smpte2084", "arib-std-b67")),
-               ("color_space", "-colorspace", ("bt2020nc", "bt2020c")))
+# it, its name in ffmpeg's "setparams" filter, and the values passed on.
+# Carried across a conversion, or an HDR video comes out washed out. They are
+# set on the frames, by a filter: newer ffmpeg takes the encoder's colour
+# settings from the frames and ignores the same thing given as an option.
+# Only these values: ffprobe and ffmpeg do not share a name for every other
+# one ("gbr" is one such).
+COLOUR_TAGS = (("color_primaries", "color_primaries", ("bt2020",)),
+               ("color_transfer", "color_trc", ("smpte2084", "arib-std-b67")),
+               ("color_space", "colorspace", ("bt2020nc", "bt2020c")))
 HDR_TRANSFERS = COLOUR_TAGS[1][2]
 
 
@@ -1722,9 +1725,9 @@ def probe_media(path):
                     info["height"] = to_int(stream.get("height"), 0)
                     info["pix_fmt"] = str(stream.get("pix_fmt") or "")
                     info["vbitrate"] = to_int(stream.get("bit_rate"), 0)
-                    for field, option, passed_on in COLOUR_TAGS:
-                        if stream.get(field) in passed_on:
-                            info["colour"] += [option, stream[field]]
+                    tags = ["%s=%s" % (name, stream[field]) for field, name, passed_on in COLOUR_TAGS
+                            if stream.get(field) in passed_on]
+                    info["colour"] = ["-vf", "setparams=" + ":".join(tags)] if tags else []
                     info["hdr"] = str(stream.get("color_transfer")) in HDR_TRANSFERS
                     rate = str(stream.get("avg_frame_rate") or stream.get("r_frame_rate") or "")
                     top, _, bottom = rate.partition("/")
