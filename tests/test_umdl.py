@@ -272,48 +272,18 @@ class PureLogic(unittest.TestCase):
         self.assertEqual(umdl.safe_title("", "fallback"), "fallback")
         self.assertEqual(len(umdl.safe_title("y" * 300, "x")), 80)
 
-    def test_format_string_prefers_native(self):
-        first = umdl.YTDLP_FORMAT.split("/")[0]
-        self.assertIn("avc", first)
-        self.assertIn("mp4a", first)
-        self.assertEqual(umdl.YTDLP_FORMAT.split("/")[-2:], ["b", "ba"])
 
 
 class Quality(unittest.TestCase):
-    """Settings, format choice and the advanced-mode plan."""
-
-    FORMATS = [
-        {"format_id": "18", "vcodec": "avc1.42001E", "acodec": "mp4a.40.2", "width": 640,
-         "height": 360, "fps": 30, "tbr": 500, "filesize": 10_000_000},
-        {"format_id": "22", "vcodec": "avc1.64001F", "acodec": "mp4a.40.2", "width": 1280,
-         "height": 720, "fps": 30, "tbr": 1500},
-        {"format_id": "137", "vcodec": "avc1.640028", "acodec": "none", "width": 1920,
-         "height": 1080, "fps": 30, "tbr": 4000, "filesize": 80_000_000},
-        {"format_id": "299", "vcodec": "avc1.64002a", "acodec": "none", "width": 1920,
-         "height": 1080, "fps": 60, "tbr": 6000, "filesize": 120_000_000},
-        {"format_id": "315", "vcodec": "vp09.00.51.08", "acodec": "none", "width": 3840,
-         "height": 2160, "fps": 60, "tbr": 26000, "filesize": 650_000_000},
-        {"format_id": "140", "vcodec": "none", "acodec": "mp4a.40.2", "abr": 129},
-        {"format_id": "251", "vcodec": "none", "acodec": "opus", "abr": 160},
-    ]
-
-    def plan(self, **quality):
-        settings = umdl.settings_from(dict({"mode": "advanced"}, **quality))
-        return umdl.build_plan(self.FORMATS, settings, "A video")
+    """Which version is downloaded: two limits and nothing else."""
 
     def test_settings_have_safe_defaults(self):
-        best = {"convert": "best", "res": "best", "fps": "best", "advanced": False}
+        best = {"res": "best", "fps": "best"}
         self.assertEqual(umdl.settings_from({}), best)
         self.assertEqual(umdl.settings_from(None), best)
-        self.assertEqual(umdl.settings_from({"res": "999", "fps": "24", "convert": "sometimes"}), best)
-        self.assertEqual(umdl.settings_from({"res": "1080", "fps": "30", "convert": "small",
-                                             "mode": "advanced"}),
-                         {"convert": "small", "res": "1080", "fps": "30", "advanced": True})
-
-    def test_settings_saved_by_earlier_versions_still_mean_the_same(self):
-        for old, new in (("1", "best"), ("0", "off"), ("needed", "best"), ("never", "off"),
-                         ("best", "best"), ("off", "off")):
-            self.assertEqual(umdl.settings_from({"convert": old})["convert"], new, old)
+        self.assertEqual(umdl.settings_from({"res": "999", "fps": "24"}), best)
+        self.assertEqual(umdl.settings_from({"res": "1080", "fps": "30", "mode": "advanced",
+                                             "convert": "off"}), {"res": "1080", "fps": "30"})
 
     def test_best_means_size_then_smoothness_then_what_photos_plays(self):
         sort = lambda **q: umdl.ytdlp_sort(umdl.settings_from(q))  # noqa: E731
@@ -322,79 +292,103 @@ class Quality(unittest.TestCase):
         self.assertEqual(sort(fps="30")[1:3], ["res", "fps:30"])
         self.assertEqual(sort(res="720", fps="60")[1:3], ["res:720", "fps:60"])
 
-    def test_the_conversion_setting_has_no_say_in_the_version(self):
-        asked = {(umdl.ytdlp_format("best", q), tuple(umdl.ytdlp_sort(q)))
-                 for q in (umdl.settings_from({"convert": c}) for c in ("best", "small", "off"))}
-        self.assertEqual(asked, {("bv*+ba/b/ba", ("lang", "res", "fps", "vcodec:h265", "acodec:aac"))})
-
     def test_a_frame_rate_limit_filters_with_a_fallback(self):
-        capped = umdl.ytdlp_format("best", umdl.settings_from({"fps": "30"}))
-        self.assertEqual(capped, "bv*[fps<=?30]+ba/b[fps<=?30]/bv*+ba/b/ba")
-        native = umdl.ytdlp_format("native", umdl.settings_from({"fps": "60"}))
-        self.assertTrue(native.endswith("/" + umdl.YTDLP_FORMAT))
-        self.assertEqual(native.count("[fps<=?60]"), umdl.YTDLP_FORMAT.count("/"))   # every choice but "ba"
-        self.assertEqual(umdl.ytdlp_format("native"), umdl.YTDLP_FORMAT)
+        self.assertEqual(umdl.ytdlp_format(umdl.settings_from({})), "bv*+ba/b/ba")
+        self.assertEqual(umdl.ytdlp_format(umdl.settings_from({"fps": "30"})),
+                         "bv*[fps<=?30]+ba/b[fps<=?30]/bv*+ba/b/ba")
 
-    def test_plan_names_the_best_of_each_kind(self):
-        plan = self.plan()
-        self.assertEqual(plan["info"], "A video\n\nBest video: 2160p60 VP9 · 650 MB\n"
-                                       "Best audio: Opus · 160 kbps\nSingle file: 720p H.264 + AAC")
-        self.assertEqual([(o["title"], o["detail"], o["format"], o["convert"]) for o in plan["options"]], [
-            ("2160p60 · VP9 → HEVC", "Best available", "315+140", True),
-            ("1080p60 · H.264", "Best without converting", "299+140", False),
-            ("720p · H.264 · single file", "Nothing to merge", "22", False)])
 
-    def test_sound_photos_plays_is_preferred_so_it_can_be_copied(self):
-        self.assertTrue(all(o["format"].endswith("+140") for o in self.plan()["options"][:2]))
-        only_opus = [f for f in self.FORMATS if f["format_id"] != "140"]
-        plan = umdl.build_plan(only_opus, umdl.settings_from({}), "")
-        self.assertEqual(plan["options"][0]["format"], "315+251")
+class Saving(Base):
+    """Names, the order of attempts, and the fence around saving from a-Shell."""
 
-    def test_between_equals_the_one_photos_plays_wins(self):
-        twin = dict(self.FORMATS[4], format_id="401", vcodec="hev1.2.4.L153", tbr=20000)
-        plan = umdl.build_plan(self.FORMATS + [twin], umdl.settings_from({}), "")
-        self.assertEqual((plan["options"][0]["title"], plan["options"][0]["format"]),
-                         ("2160p60 · HEVC", "401+140"))
+    class Library:
+        def __init__(self, plays=("h264", "hevc")):
+            self.plays, self.added, self.asked = plays, [], []
 
-    def test_plan_respects_the_limits_and_says_so(self):
-        plan = self.plan(res="1080", fps="30")
-        self.assertTrue(plan["info"].endswith("\nYour limit: 1080p 30 fps"))
-        self.assertEqual([o["format"] for o in plan["options"]], ["137+140", "22"])
-        plan = self.plan(res="480")
-        self.assertEqual([o["format"] for o in plan["options"]], ["18"])
+        def where(self):
+            return "Clips"
 
-    def test_a_frame_rate_limit_is_kept_even_at_a_smaller_size(self):
-        sixty = [f for f in self.FORMATS if f["format_id"] in ("18", "299", "315", "140")]
-        plan = umdl.build_plan(sixty, umdl.settings_from({"fps": "30"}), "")
-        self.assertEqual([o["format"] for o in plan["options"]], ["18"])
+        def add(self, path, name):
+            self.asked.append(name)
+            info = umdl.probe_media(path)
+            if umdl.ext_of(path) not in umdl.PHOTOS_CONTAINERS or info["v"] not in self.plays:
+                raise umdl.Refused("unsupported")
+            self.added.append(name)
 
-    def test_nothing_within_the_limit_offers_the_smallest_there_is(self):
-        tall = [f for f in self.FORMATS if f["format_id"] in ("137", "299", "315", "140")]
-        plan = umdl.build_plan(tall, umdl.settings_from({"res": "720"}), "")
-        self.assertEqual([o["format"] for o in plan["options"]], ["299+140"])
+    def ctx(self, titles):
+        folder = tempfile.mkdtemp(dir=WORK)
+        return {"dir": folder, "titles": titles, "converted": []}
 
-    def test_the_conversion_named_is_the_one_this_device_does(self):
-        plan = umdl.build_plan(self.FORMATS, umdl.settings_from({}), "", target="H.264")
-        self.assertEqual(plan["options"][0]["title"], "2160p60 · VP9 → H.264")
+    def test_names_are_titles_made_safe_and_never_collide(self):
+        ctx = self.ctx({"a.mp4": "AMD's Gaslighting: Part 2/3?", "b.mp4": "AMD's Gaslighting: Part 2/3?"})
+        files = []
+        for name in ("a.mp4", "b.mp4", "IMG_0042.jpg"):
+            path = os.path.join(ctx["dir"], name)
+            shutil.copy(self.jpg, path)
+            files.append(path)
+        items = umdl.stage(ctx, files)
+        self.assertEqual([i["stem"] for i in items],
+                         ["AMD's Gaslighting Part 2 3", "AMD's Gaslighting Part 2 3 2", "IMG_0042"])
+        self.assertEqual([os.path.basename(i["path"]) for i in items], ["001.mp4", "002.mp4", "003.jpg"])
 
-    def test_plan_for_a_site_with_one_file(self):
-        plan = umdl.build_plan(self.FORMATS[:1], umdl.settings_from({}), "")
-        self.assertEqual([(o["format"], o["convert"]) for o in plan["options"]], [("18", False)])
+    @unittest.skipUnless(has_encoder("libvpx-vp9"), "no libvpx-vp9")
+    def test_photos_is_offered_the_file_before_anything_is_converted(self):
+        clip = make_clip(os.path.join(self.media, "vp9.webm"), "libvpx-vp9", None)
+        for plays, attempts, converted in ((("h264", "hevc", "vp9"), 1, 0), (("h264", "hevc"), 2, 1)):
+            ctx = self.ctx({"v.webm": "Clip"})
+            path = os.path.join(ctx["dir"], "v.webm")
+            shutil.copy(clip, path)
+            library = self.Library(plays)
+            outcome, final = umdl.place(ctx, umdl.stage(ctx, [path])[0], library)
+            self.assertEqual(outcome, "saved", plays)
+            self.assertEqual(library.asked, ["Clip.mp4"] * attempts, plays)   # as it is first
+            self.assertEqual(len(ctx["converted"]), converted, plays)
 
-    def test_titles_are_unique_even_after_a_trip_through_shortcuts(self):
-        for quality in ({}, {"res": "1080"}, {"res": "720", "fps": "30"}, {"res": "480"}):
-            names = [umdl.plain(o["title"]) for o in self.plan(**quality)["options"]]
-            self.assertEqual(len(names), len(set(names)), quality)
-        self.assertEqual(umdl.plain("2160p60 · VP9 → HEVC"), umdl.plain(" 2160p60  VP9 -> hevc"))
+    def test_a_file_photos_plays_goes_in_untouched(self):
+        clip = make_clip(os.path.join(self.media, "native.mp4"), "libx264", "aac")
+        ctx = self.ctx({"n.mp4": "Clip"})
+        path = os.path.join(ctx["dir"], "n.mp4")
+        shutil.copy(clip, path)
+        library = self.Library()
+        before = os.path.getsize(path)
+        outcome, final = umdl.place(ctx, umdl.stage(ctx, [path])[0], library)
+        self.assertEqual((outcome, library.added, os.path.getsize(final)), ("saved", ["Clip.mp4"], before))
 
-    def test_rows_are_cards_with_an_icon_marker_each(self):
-        cards = umdl.cards_for(self.plan()["options"])
-        self.assertEqual(cards.count("BEGIN:VCARD"), 3)
-        self.assertEqual(cards.count(umdl.ICON_CONVERT), 1)      # only the version that needs converting
-        self.assertEqual(cards.count(umdl.ICON_GET), 2)
-        self.assertIn("\nN;CHARSET=utf-8:1080p60 · H.264;;;;\nORG;CHARSET=utf-8:Best without converting", cards)
-        odd = umdl.cards_for([{"title": "a;b,c\\d\ne", "detail": "x;y"}])
-        self.assertIn("N;CHARSET=utf-8:a b c d e;;;;\nORG;CHARSET=utf-8:x y;", odd)
+    def test_through_shortcuts_the_file_carries_its_name_in_its_path(self):
+        clip = make_clip(os.path.join(self.media, "native.mp4"), "libx264", "aac")
+        ctx = self.ctx({"n.mp4": "My clip"})
+        path = os.path.join(ctx["dir"], "n.mp4")
+        shutil.copy(clip, path)
+        outcome, final = umdl.place(ctx, umdl.stage(ctx, [path])[0], None)
+        self.assertEqual(outcome, "ready")
+        self.assertTrue(final.endswith(os.path.join("out", "001", "My clip.mp4")))
+
+    def test_summary(self):
+        self.assertEqual(umdl.summary(1, "UMDL", [], 0, 0, 0), "Saved to the UMDL album.")
+        self.assertEqual(umdl.summary(3, "", ["VP9 → HEVC"], 1, 0, 2),
+                         "Saved 3 items to Photos.\n1 converted (VP9 → HEVC).\n"
+                         "1 kept in Files (a-Shell, UMDL, Saved).\n2 failed.")
+        self.assertEqual(umdl.summary(0, "UMDL", [], 1, 0, 0),
+                         "Nothing was added to Photos.\n1 kept in Files (a-Shell, UMDL, Saved).")
+
+    def test_a_step_that_stopped_a_shell_turns_direct_saving_off_until_the_helper_changes(self):
+        self.addCleanup(setattr, umdl, "IOS", umdl.IOS)
+        umdl.IOS = True
+        os.makedirs(umdl.WORKSPACE, exist_ok=True)
+        with open(umdl.GUARD_FILE, "w") as handle:
+            handle.write("save My clip")
+        self.assertIsNone(umdl.open_library("UMDL"))
+        self.assertFalse(os.path.exists(umdl.GUARD_FILE))
+        state = umdl.read_json(umdl.STATE_FILE, {})
+        self.assertEqual(state["photos_off"], {"step": "save My clip", "helper": umdl.HELPER_VERSION})
+        self.assertIsNone(umdl.open_library("UMDL"))          # and stays off without touching anything
+        state["photos_off"]["helper"] = "0.0.1"               # a different helper tries again
+        umdl.write_json(umdl.STATE_FILE, state)
+        self.assertIsNone(umdl.open_library("UMDL"))          # (here it cannot: this is not a device)
+        self.assertIn("cannot save from a-Shell", open(umdl.LOG_FILE).read())
+
+    def test_off_a_device_files_go_through_shortcuts(self):
+        self.assertIsNone(umdl.open_library("UMDL"))
 
 
 class ConversionOrder(unittest.TestCase):
@@ -427,17 +421,6 @@ class ConversionOrder(unittest.TestCase):
         attempts = umdl.conversion_attempts(self.INFO, {"libx264"})
         self.assertEqual([args[1] for _, args in attempts], ["libx264"])
         self.assertIn("17", attempts[0][1])                 # visually lossless, not a fixed bitrate
-
-    def test_smaller_file_asks_for_less_at_every_step(self):
-        have = {"hevc_videotoolbox", "h264_videotoolbox", "libx264"}
-        best = umdl.conversion_attempts(self.INFO, have)
-        small = umdl.conversion_attempts(self.INFO, have, "small")
-        self.assertEqual([c for c, _ in small], [c for c, _ in best])        # same encoders, same order
-        self.assertEqual((best[0][1][-1], small[0][1][-1]), ("75", "55"))
-        self.assertLess(int(small[1][1][-1]), int(best[1][1][-1]))
-        self.assertEqual((best[3][1][5], small[3][1][5]), ("17", "23"))
-        self.assertNotIn("-vf", small[0][1])                                # still the same size
-        self.assertNotIn("-r", small[0][1])
 
     def test_a_low_bitrate_source_gets_a_sensible_floor(self):
         thin = dict(self.INFO, width=1280, height=720, fps=30.0, vbitrate=300_000, bitrate=350_000)
@@ -545,11 +528,11 @@ class PhotosReady(Base):
     def test_native_mp4_untouched(self):
         clip = make_clip(os.path.join(self.media, "native.mp4"), "libx264", "aac")
         staged = self.stage(clip)
-        self.assertEqual(umdl.make_photos_ready(staged, True), staged)
+        self.assertEqual(umdl.make_photos_ready(staged, []), staged)
 
     def test_mkv_is_rewrapped_without_reencoding(self):
         clip = make_clip(os.path.join(self.media, "wrapped.mkv"), "libx264", "aac")
-        ready = umdl.make_photos_ready(self.stage(clip), False)
+        ready = umdl.make_photos_ready(self.stage(clip), [])
         self.assertTrue(ready.endswith("001.mp4"))           # takes the original's place
         info = umdl.probe_media(ready)
         self.assertEqual((info["v"], info["a"]), ("h264", "aac"))
@@ -557,15 +540,14 @@ class PhotosReady(Base):
     @unittest.skipUnless(has_encoder("libopus"), "no libopus")
     def test_wrong_audio_only_reencodes_audio(self):
         clip = make_clip(os.path.join(self.media, "opus.mkv"), "libx264", "libopus")
-        ready = umdl.make_photos_ready(self.stage(clip), False)
+        ready = umdl.make_photos_ready(self.stage(clip), [])
         info = umdl.probe_media(ready)
         self.assertEqual((info["v"], info["a"]), ("h264", "aac"))
 
     @unittest.skipUnless(has_encoder("libvpx-vp9"), "no libvpx-vp9")
     def test_vp9_converted_only_when_allowed(self):
         clip = make_clip(os.path.join(self.media, "vp9.webm"), "libvpx-vp9", None)
-        self.assertIsNone(umdl.make_photos_ready(self.stage(clip), False))
-        ready = umdl.make_photos_ready(self.stage(clip), True)
+        ready = umdl.make_photos_ready(self.stage(clip), [])
         self.assertIsNotNone(ready)
         self.assertEqual(umdl.probe_media(ready)["v"], "h264")
 
@@ -574,7 +556,7 @@ class PhotosReady(Base):
         clip = make_clip(os.path.join(self.media, "hev1.mp4"), "libx265", "aac",
                          extra=("-tag:v", "hev1"))
         self.assertEqual(umdl.probe_media(clip)["tag"], "hev1")
-        ready = umdl.make_photos_ready(self.stage(clip), False)
+        ready = umdl.make_photos_ready(self.stage(clip), [])
         self.assertEqual(umdl.probe_media(ready)["tag"], "hvc1")
 
     @unittest.skipUnless(has_encoder("libvpx-vp9"), "no libvpx-vp9")
@@ -585,14 +567,13 @@ class PhotosReady(Base):
         song = make_clip(os.path.join(self.media, "song.m4a"), None, "aac")
         self.assertEqual([umdl.photos_verdict(p)[0] for p in (native, wrapped, vp9, song, self.jpg)],
                          ["ready", "repack", "convert", "files", "ready"])
-        self.assertEqual([p for p, _ in umdl.conversions_pending([native, wrapped, vp9, song])], [vp9])
 
     @unittest.skipUnless(has_encoder("libvpx-vp9"), "no libvpx-vp9")
     def test_conversion_keeps_size_and_frame_rate_and_is_noted(self):
         clip = make_clip(os.path.join(self.media, "vp9.webm"), "libvpx-vp9", None)
         before = umdl.probe_media(clip)
         notes = []
-        ready = umdl.make_photos_ready(self.stage(clip), True, notes)
+        ready = umdl.make_photos_ready(self.stage(clip), notes)
         after = umdl.probe_media(ready)
         self.assertEqual((after["width"], after["height"]), (before["width"], before["height"]))
         self.assertAlmostEqual(after["fps"], before["fps"], places=1)
@@ -602,19 +583,19 @@ class PhotosReady(Base):
 
     def test_audio_and_unknown_stay_in_files(self):
         clip = make_clip(os.path.join(self.media, "song.m4a"), None, "aac")
-        self.assertIsNone(umdl.make_photos_ready(self.stage(clip), True))
+        self.assertIsNone(umdl.make_photos_ready(self.stage(clip), []))
         other = os.path.join(self.media, "archive.zip")
         with open(other, "wb") as handle:
             handle.write(b"PK\x03\x04")
-        self.assertIsNone(umdl.make_photos_ready(self.stage(other), True))
+        self.assertIsNone(umdl.make_photos_ready(self.stage(other), []))
 
     def test_audio_in_video_container_stays_in_files(self):
         clip = make_clip(os.path.join(self.media, "audio_only.mp4"), None, "aac")
-        self.assertIsNone(umdl.make_photos_ready(self.stage(clip), True))
+        self.assertIsNone(umdl.make_photos_ready(self.stage(clip), []))
 
     def test_images_pass_through(self):
         staged = self.stage(self.jpg)
-        self.assertEqual(umdl.make_photos_ready(staged, True), staged)
+        self.assertEqual(umdl.make_photos_ready(staged, []), staged)
 
 
 class EndToEnd(Base):
@@ -644,7 +625,7 @@ class EndToEnd(Base):
             manifest = json.load(handle)
         self.assertEqual(len(manifest["photos"]), 1)
         self.assertTrue(os.path.exists(manifest["photos"][0]))
-        self.assertNotIn(" ", manifest["photos"][0].replace(WORK, ""))
+        self.assertTrue(manifest["photos"][0].endswith(os.path.join("out", "001", "My clip.mp4")))
         with open(umdl.PENDING_FILE) as handle:
             self.assertEqual(handle.read(), data["m"])
         self.assertFalse(os.path.exists(umdl.LAST_FILE))
@@ -694,7 +675,7 @@ class EndToEnd(Base):
         with open(data["m"]) as handle:
             manifest = json.load(handle)
         self.assertTrue(all(os.path.exists(p) for p in manifest["photos"]))
-        self.assertTrue(all(os.path.basename(p)[:3].isdigit() for p in manifest["photos"]))
+        self.assertEqual([p.split(os.sep)[-2] for p in manifest["photos"]], ["001", "002", "003"])
 
     def test_gallery_first_and_confirm(self):
         install_fake_ytdlp({"raw": {"_type": "video", "id": "x"}})

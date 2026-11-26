@@ -103,16 +103,60 @@ class RedditScript(unittest.TestCase):
                          [{"id": "orig", "is_video": True,
                            "secure_media": {"reddit_video": {"dash_url": "d"}}}])
 
-    def test_a_block_page_is_reported_with_what_it_says(self):
-        page = "<html><body><h1>\"You've been blocked by network security.\"</h1>\n<p>To continue</p></body></html>"
-        result = self.run_script(CANONICAL, {"GET " + JSON_PATH: {"status": 403, "body": page}})
-        self.assertEqual(result["answer"],
-                         "HTTP 403 \"You've been blocked by network security.\" To continue")
+    PAGE_PATH = "/r/me_irl/comments/1abcde/some_title/?share_id=x"
+    BLOCK = ("<html><head><style>.theme-light,:root{--rem360:22.5rem}</style></head><body>"
+             "<h1>\"You've been blocked by network security.\"</h1>\n<p>To continue</p></body></html>")
 
-    def test_a_refusal_in_json_is_reported(self):
-        body = json.dumps({"reason": "private", "message": "Forbidden", "error": 403})
-        result = self.run_script(CANONICAL, {"GET " + JSON_PATH: {"status": 403, "body": body}})
-        self.assertEqual(result["answer"], "HTTP 403 Forbidden")
+    def page(self, attributes, inside=""):
+        return ("<html><body><shreddit-app><shreddit-post " + attributes + ">" + inside +
+                "</shreddit-post><shreddit-comment-tree><img src=\"https://preview.redd.it/not-the-post.jpg\">"
+                "</shreddit-comment-tree></body></html>")
+
+    def from_page(self, html):
+        return self.run_script(CANONICAL, {"GET " + JSON_PATH: {"status": 403, "body": self.BLOCK},
+                                           "GET " + self.PAGE_PATH: {"body": html}})
+
+    def test_when_the_data_is_refused_the_posts_page_is_read(self):
+        result = self.from_page(self.page(
+            'id="t3_1abcde" post-title="Tom &amp; Jerry&#x27;s &quot;best&quot;" post-type="video" '
+            'content-href="https://v.redd.it/abc123xyz"',
+            '<shreddit-player-2 src="https://v.redd.it/abc123xyz/HLSPlaylist.m3u8?a=1&amp;v=1"></shreddit-player-2>'))
+        self.assertEqual(result["calls"][-1], ["GET", self.PAGE_PATH, "include"])
+        post = json.loads(result["answer"][3:])
+        self.assertEqual(post, {"id": "1abcde", "title": "Tom & Jerry's \"best\"",
+                                "umdl": ["video", "https://v.redd.it/abc123xyz/DASHPlaylist.mpd"]})
+        self.assertEqual(umdl.reddit_targets(post), ("video", "https://v.redd.it/abc123xyz/DASHPlaylist.mpd"))
+
+    def test_a_gallery_on_the_page_gives_the_originals_in_order_once_each(self):
+        slides = "".join('<li><img src="https://preview.redd.it/%s?width=640&amp;s=x"></li>' % name for name in (
+            "first-slide-v0-aaa111.jpg", "bbb222.png", "first-slide-v0-aaa111.jpg"))
+        slides += '<li><img data-lazy-src="https://preview.redd.it/ccc333.jpeg?width=640"></li>'
+        post = json.loads(self.from_page(self.page('id="t3_1abcde" post-title="Set" post-type="gallery"',
+                                                   slides))["answer"][3:])
+        self.assertEqual(post["umdl"], ["files", ["https://i.redd.it/aaa111.jpg", "https://i.redd.it/bbb222.png",
+                                                  "https://i.redd.it/ccc333.jpeg"]])     # nothing from the comments
+
+    def test_a_single_image_and_a_link_to_another_site(self):
+        post = json.loads(self.from_page(self.page(
+            'id="t3_1abcde" post-title="Pic" post-type="image" content-href="https://i.redd.it/zzz999.jpeg"',
+            '<img src="https://preview.redd.it/zzz999.jpeg?width=320">'))["answer"][3:])
+        self.assertEqual(post["umdl"], ["files", ["https://i.redd.it/zzz999.jpeg"]])
+        post = json.loads(self.from_page(self.page(
+            'id="t3_1abcde" post-title="Clip" post-type="link" content-href="https://streamable.com/abc"'))["answer"][3:])
+        self.assertEqual(umdl.reddit_targets(post), ("link", "https://streamable.com/abc"))
+
+    def test_a_text_post_on_the_page_has_nothing_to_download(self):
+        post = json.loads(self.from_page(self.page(
+            'id="t3_1abcde" post-title="Words" post-type="text" '
+            'content-href="https://www.reddit.com/r/me_irl/comments/1abcde/words/"'))["answer"][3:])
+        self.assertEqual(post["umdl"], ["none", ""])
+        with self.assertRaises(umdl.EngineError):
+            umdl.reddit_targets(post)
+
+    def test_a_block_on_both_is_reported_with_what_it_says(self):
+        result = self.run_script(CANONICAL, {"GET " + JSON_PATH: {"status": 403, "body": self.BLOCK},
+                                             "GET " + self.PAGE_PATH: {"status": 403, "body": self.BLOCK}})
+        self.assertEqual(result["answer"], "HTTP 403, page 403: \"You've been blocked by network security.\" To continue")
 
     def test_no_connection_and_no_post(self):
         result = self.run_script(CANONICAL, {})

@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.5.0
+
+One tap, and nothing else. Install the new shortcut; it brings its helper with it.
+
+Changed:
+
+- **a-Shell saves to Photos itself.** Files no longer travel through Shortcuts, so a video of any size is saved. In 1.4 a long video downloaded and then failed with "There was a problem running the shortcut", because a-Shell cannot hand Shortcuts a large file.
+- **Saved items carry their title as their name**, or the name they were uploaded under, in place of `:private:var:mobile:…`.
+- **Saved items are dated the day they were downloaded**, not the day they were uploaded.
+- **Photos decides what it can play.** A file is offered as it is and converted only if Photos refuses it. Before, anything that was not H.264 or HEVC was converted without asking.
+- Conversion is always at the best quality. The Convert setting is gone.
+- The **Update tools** message shows the helper that is installed now, not the one that did the updating.
+
+Removed:
+
+- **Advanced mode**, with its version list and its questions. Resolution and Frame rate in Settings decide the version.
+- **Enter a link.** Download from clipboard does the same.
+
+Added:
+
+- Reddit: when Reddit refuses the post's data even to its signed-in browser, the browser reads the post's page instead. Written without a captured page to check against, and not yet run on a device.
+
+If saving from a-Shell fails on a device, the helper falls back to handing files to Shortcuts, as before, and the log says at which step it failed.
+
+
 ## Helper 1.4.1
 
 A helper-only update. Open UMDL and choose **Update tools** once; the shortcut stays as it is.

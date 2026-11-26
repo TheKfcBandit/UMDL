@@ -136,6 +136,7 @@ class World:
         self.set_scenario({})
         self.clipboard = ""
         self.extra_env = {}
+        self.get_file_limit = 0   # bytes above which Get File fails, 0 for none
         self.ui = []          # scripted answers: ("menu"|"list"|"ask", text)
         self.events = []      # everything the user would see or that left the shortcut
         self.photos = []      # (file name, album, byte size)
@@ -291,6 +292,20 @@ class World:
             return []
         with open(self.record_path) as handle:
             return [json.loads(line) for line in handle if line.strip()]
+
+    def save_from_a_shell(self, plays="h264,hevc"):
+        """Let the helper save to Photos itself, as on a device. `plays` is what
+        this stand-in for Photos accepts."""
+        self.extra_env.update(UMDL_TEST_PHOTOS=os.path.join(self.home, "PhotosLibrary"),
+                              UMDL_TEST_PHOTOS_PLAYS=plays)
+
+    def library(self):
+        """What the helper saved to Photos itself: (album, name, date) per item."""
+        path = os.path.join(self.home, "PhotosLibrary", "added.txt")
+        if not os.path.exists(path):
+            return []
+        with open(path, encoding="utf-8") as handle:
+            return [tuple(line.rstrip("\n").split("\t")) for line in handle if line.strip()]
 
     def kept_files(self):
         saved = os.path.join(self.workspace, "Saved")
@@ -709,7 +724,10 @@ class Run:
                 raise SimError("unmodelled URL component")
             return urllib.parse.urlsplit(as_text(get("WFURL"))).hostname
         if name == "setitemname":
-            return File(as_text(get("WFInput")).encode("utf-8"), name=as_text(get("WFName")))
+            item = get("WFInput")
+            if isinstance(item, File):
+                return File(item.data, path=item.path, name=as_text(get("WFName")))
+            return File(as_text(item).encode("utf-8"), name=as_text(get("WFName")))
         if name == "choosefromlist":
             items = as_list(get("WFInput"))
             labels = [as_text(i) for i in items]
@@ -755,7 +773,7 @@ class Run:
             if not isinstance(item, File) or not item.data:
                 raise SimError("Save to Photo Album got no file")
             album = as_text(get("WFCameraRollSelectedGroup", "Recents"))
-            world.photos.append((os.path.basename(item.path), album, len(item.data)))
+            world.photos.append((item.name, album, len(item.data)))
             return None
         if name == ASHELL + "ExecuteCommandIntent":
             command = as_text(get("command"))
@@ -773,8 +791,8 @@ class Run:
             return None
         if name == ASHELL + "GetFileIntent":
             path = as_text(get("fileName"))
-            if not os.path.isabs(path) or " " in path:
-                raise SimError("Get File needs a clean absolute path, got %r" % path)
+            if not os.path.isabs(path):
+                raise SimError("Get File needs an absolute path, got %r" % path)
             if p.get("copyFile") is not True:
                 # https://github.com/holzschu/a-shell/issues/1138
                 raise SimError("Shortcuts would stop with \"There was a problem running the "
@@ -782,6 +800,11 @@ class Run:
                                "asked for a copy")
             if not os.path.exists(path):
                 raise SimError("a-Shell has no file %r" % path)
+            if world.get_file_limit and os.path.getsize(path) > world.get_file_limit:
+                # a-Shell's own source: "INFile(data:) causes a crash for large files".
+                raise SimError("Shortcuts would stop with \"There was a problem running the "
+                               "shortcut\": a-Shell cannot hand over a copy this large")
             with open(path, "rb") as handle:
-                return File(handle.read(), path=path)
+                # As seen on a device: the copy is named after its whole path.
+                return File(handle.read(), path=path, name=path.replace("/", ":"))
         raise SimError("the simulator has no model for action %r" % ident)

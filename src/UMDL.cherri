@@ -41,8 +41,8 @@
 
 // Keep in step with version.json. The protocol number only changes when the
 // payload or callback format does.
-@umdlVersion = "1.4.0"
-@protocol = "4"
+@umdlVersion = "1.5.0"
+@protocol = "5"
 
 @shared = "{ShortcutInput}"
 @link = ""
@@ -50,8 +50,6 @@
 @runMode = "auto"
 @runLimit = ""
 @forceUpdate = ""
-@pick = ""
-@decision = ""
 @toolCmd = "none"
 @signInTo = ""
 @saveManifest = ""
@@ -66,10 +64,8 @@
 @cfgAlbum = "UMDL"
 @cfgThreshold = "10"
 @cfgAfter = "notify"
-@cfgMode = "simple"
 @cfgRes = "best"
 @cfgFps = "best"
-@cfgConvert = "best"
 @haveCfg = "0"
 @needsHelper = "0"
 @saveCfg = "0"
@@ -82,6 +78,7 @@
 @jobTitle = ""
 @updateVersion = ""
 @updateLink = ""
+@doneText = ""
 
 /* ------------------------------------------------------------------------
  * 1. What started this run: a callback from the helper, or something shared
@@ -110,15 +107,16 @@ if @shared beginsWith "UMDLCB:" {
             @cfgAlbum = "{cbCfg['album']}"
             @cfgThreshold = "{cbCfg['threshold']}"
             @cfgAfter = "{cbCfg['after']}"
-            @cfgMode = "{cbCfg['mode']}"
             @cfgRes = "{cbCfg['res']}"
             @cfgFps = "{cbCfg['fps']}"
-            @cfgConvert = "{cbCfg['convert']}"
             @haveCfg = "1"
         }
 
         if @cbType == "done" {
+            // Either the helper saved the files itself and says so in "msg", or it
+            // names the list of files that are left for this shortcut to save.
             @saveManifest = "{cb['m']}"
+            @doneText = "{cb['msg']}"
             @failedCount = "{cb['nf']}"
             @oversizeCount = "{cb['nb']}"
             @convertedCount = "{cb['nc']}"
@@ -150,60 +148,6 @@ if @shared beginsWith "UMDLCB:" {
                     @runMode = "first"
                 item "Cancel":
                     stop()
-            }
-        }
-
-        // Advanced mode, before the download: which version to get. The helper sends
-        // the rows; the two pictures are put in here. Each step leaves a line in
-        // the helper's log, so a log shows how far a run got.
-        if @cbType == "choose" {
-            @link = "{cb['url']}"
-            @runMode = "{cb['mode']}"
-            @runLimit = "{cb['limit']}"
-            rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
-                "command": "dash -c 'echo \"shortcut: version list received\" >> $HOME/Documents/UMDL/last.log'",
-                "openWindow": "close",
-                "keepGoing": true,
-                "ShowWhenRun": false
-            })
-            const iconGet = embedFile("assets/icons/download.png")
-            const iconChange = embedFile("assets/icons/convert.png")
-            const chooseRows = replaceText("@UMDL-ICON-GET@", "{iconGet}", "{cb['cards']}")
-            const chooseCards = replaceText("@UMDL-ICON-CONVERT@", "{iconChange}", "{chooseRows}")
-            const chooseFile = setName(chooseCards, "umdl-versions.vcf", true)
-            @chooseContacts = chooseFile.contact
-            const chooseAnswer = chooseFromList(@chooseContacts, "{cb['info']}")
-            @pick = "{chooseAnswer}"
-            rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
-                "command": "dash -c 'echo \"shortcut: version chosen\" >> $HOME/Documents/UMDL/last.log'",
-                "openWindow": "close",
-                "keepGoing": true,
-                "ShowWhenRun": false
-            })
-            // An arrow in the name means Photos cannot play that version as it is.
-            if @pick contains "→" {
-                menu "{@pick}\n\nPhotos cannot play this version. Convert it after the download?" {
-                    item "🎞️ Best quality":
-                        @decision = "best"
-                    item "🗜️ Smaller file":
-                        @decision = "small"
-                    item "📁 Keep in Files":
-                        @decision = "keep"
-                }
-            }
-        }
-
-        // Advanced mode, after the download: Photos cannot play what arrived.
-        if @cbType == "convert" {
-            @link = "{cb['url']}"
-            @toolCmd = "finish"
-            menu "{cb['info']}" {
-                item "🎞️ Best quality":
-                    @decision = "best"
-                item "🗜️ Smaller file":
-                    @decision = "small"
-                item "📁 Keep in Files":
-                    @decision = "keep"
             }
         }
 
@@ -341,10 +285,8 @@ if @haveCfg == "0" {
             @cfgAlbum = "{cfg['album']}"
             @cfgThreshold = "{cfg['threshold']}"
             @cfgAfter = "{cfg['after']}"
-            @cfgMode = "{cfg['mode']}"
             @cfgRes = "{cfg['res']}"
             @cfgFps = "{cfg['fps']}"
-            @cfgConvert = "{cfg['convert']}"
             @haveCfg = "1"
         }
     }
@@ -358,8 +300,7 @@ if @haveCfg == "0" {
     @resumeBlob = "{lastGroup}"
 }
 
-// A setting that is missing falls back to its default. Settings saved by
-// earlier versions have other words for the conversion setting, or none.
+// A setting that is missing falls back to its default.
 @probe = "[{@cfgAlbum}]"
 if @probe == "[]" {
     @cfgAlbum = "Recents"
@@ -372,9 +313,6 @@ if @probe == "[]" {
 if @probe == "[]" {
     @cfgAfter = "notify"
 }
-if @cfgMode != "advanced" {
-    @cfgMode = "simple"
-}
 @probe = "[{@cfgRes}]"
 if @probe == "[]" {
     @cfgRes = "best"
@@ -383,18 +321,6 @@ if @probe == "[]" {
 if @probe == "[]" {
     @cfgFps = "best"
 }
-if @cfgConvert == "0" {
-    @cfgConvert = "off"
-}
-if @cfgConvert == "never" {
-    @cfgConvert = "off"
-}
-if @cfgConvert != "off" {
-    if @cfgConvert != "small" {
-        @cfgConvert = "best"
-    }
-}
-
 /* ------------------------------------------------------------------------
  * 3. First run
  * ---------------------------------------------------------------------- */
@@ -487,10 +413,13 @@ if @probe != "[]" {
             "copyFile": true,
             "ShowWhenRun": false
         })
+        // a-Shell names the copy after its whole path. Give it its own name back.
+        const ownName = matchText("[^/]+$", "{photoPath}")
+        const namedFile = setName(mediaFile, "{ownName}", true)
         if @cfgAlbum == "Recents" {
-            savePhoto(mediaFile)
+            savePhoto(namedFile)
         } else {
-            savePhoto(mediaFile, @cfgAlbum)
+            savePhoto(namedFile, @cfgAlbum)
         }
         @savedCount += 1
     }
@@ -533,12 +462,17 @@ if @probe != "[]" {
     if @probe != "[]" {
         @summary = "{@summary}\n{@failedCount} failed."
     }
+    @doneText = @summary
+}
+
+@probe = "[{@doneText}]"
+if @probe != "[]" {
     @summaryTitle = "UMDL"
     @probe = "[{@jobTitle}]"
     if @probe != "[]" {
         @summaryTitle = @jobTitle
     }
-    showNotification("{@summary}", "{@summaryTitle}")
+    showNotification("{@doneText}", "{@summaryTitle}")
 
     @probe = "[{@updateVersion}]"
     if @probe != "[]" {
@@ -576,7 +510,6 @@ if @probe != "[]" {
 
 if @needsMenu == "1" {
     const iconDownload = embedFile("assets/icons/download.png")
-    const iconPencil = embedFile("assets/icons/pencil.png")
     const iconResume = embedFile("assets/icons/resume.png")
     const iconSettings = embedFile("assets/icons/settings.png")
     const iconKey = embedFile("assets/icons/key.png")
@@ -584,7 +517,7 @@ if @needsMenu == "1" {
     const iconInfo = embedFile("assets/icons/info.png")
     const iconStatus = embedFile("assets/icons/status.png")
 
-    @cards = "BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Download from clipboard;;;;\nORG;CHARSET=utf-8:The link you copied;\nPHOTO;ENCODING=b:{iconDownload}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Enter a link;;;;\nORG;CHARSET=utf-8:Type or paste;\nPHOTO;ENCODING=b:{iconPencil}\nEND:VCARD\n"
+    @cards = "BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Download from clipboard;;;;\nORG;CHARSET=utf-8:The link you copied;\nPHOTO;ENCODING=b:{iconDownload}\nEND:VCARD\n"
     @probe = "[{@resumeBlob}]"
     if @probe != "[]" {
         @cards = "{@cards}BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Resume last download;;;;\nORG;CHARSET=utf-8:Continue where it stopped;\nPHOTO;ENCODING=b:{iconResume}\nEND:VCARD\n"
@@ -605,20 +538,6 @@ if @needsMenu == "1" {
         @probe = "[{@link}]"
         if @probe == "[]" {
             alert("The clipboard holds no link.", "No link")
-            stop()
-        }
-        @hasLink = "1"
-    }
-
-    if @choice == "Enter a link" {
-        const typed = prompt("Link", "URL")
-        @typedText = "{typed}"
-        const typedLinks = getURLs(@typedText)
-        const typedFirst = getFirstItem(typedLinks)
-        @link = "{typedFirst}"
-        @probe = "[{@link}]"
-        if @probe == "[]" {
-            alert("That is not a web link.", "No link")
             stop()
         }
         @hasLink = "1"
@@ -709,17 +628,15 @@ if @needsMenu == "1" {
  * Each row shows its value. A row with two values switches when tapped; a
  * row with more opens one menu. Every change is saved at once.
  *
- * Resolution and frame rate decide which version is downloaded. Convert only
- * decides what happens to a video Photos cannot play; in advanced mode that is
- * asked each time instead.
+ * Resolution and frame rate decide which version is downloaded. There is
+ * nothing else to decide: a video Photos cannot play is converted at the best
+ * quality, and only then.
  * ---------------------------------------------------------------------- */
 
 if @openSettings == "1" {
     const iconAlbum = embedFile("assets/icons/album.png")
-    const iconMode = embedFile("assets/icons/mode.png")
     const iconResolution = embedFile("assets/icons/resolution.png")
     const iconFps = embedFile("assets/icons/fps.png")
-    const iconConvert = embedFile("assets/icons/convert.png")
     const iconStack = embedFile("assets/icons/stack.png")
     const iconFinish = embedFile("assets/icons/finish.png")
     const iconReset = embedFile("assets/icons/reset.png")
@@ -735,10 +652,6 @@ if @openSettings == "1" {
             if @cfgAlbum == "Recents" {
                 @albumDetail = "Library only"
             }
-            @modeDetail = "Simple · uses these settings"
-            if @cfgMode == "advanced" {
-                @modeDetail = "Advanced · asks each time"
-            }
             @resDetail = "Up to {@cfgRes}p"
             if @cfgRes == "best" {
                 @resDetail = "Best available"
@@ -746,13 +659,6 @@ if @openSettings == "1" {
             @fpsDetail = "Up to {@cfgFps} fps"
             if @cfgFps == "best" {
                 @fpsDetail = "Best available"
-            }
-            @convertDetail = "Best quality"
-            if @cfgConvert == "small" {
-                @convertDetail = "Smaller file"
-            }
-            if @cfgConvert == "off" {
-                @convertDetail = "Off"
             }
             @afterDetail = "Show a notification"
             if @cfgAfter == "photos" {
@@ -763,7 +669,7 @@ if @openSettings == "1" {
                 @doneDetail = "Install and finish"
             }
 
-            @settingCards = "BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Album;;;;\nORG;CHARSET=utf-8:{@albumDetail};\nPHOTO;ENCODING=b:{iconAlbum}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Mode;;;;\nORG;CHARSET=utf-8:{@modeDetail};\nPHOTO;ENCODING=b:{iconMode}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Resolution;;;;\nORG;CHARSET=utf-8:{@resDetail};\nPHOTO;ENCODING=b:{iconResolution}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Frame rate;;;;\nORG;CHARSET=utf-8:{@fpsDetail};\nPHOTO;ENCODING=b:{iconFps}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Convert;;;;\nORG;CHARSET=utf-8:{@convertDetail};\nPHOTO;ENCODING=b:{iconConvert}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Large downloads;;;;\nORG;CHARSET=utf-8:Ask above {@cfgThreshold} items;\nPHOTO;ENCODING=b:{iconStack}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:When finished;;;;\nORG;CHARSET=utf-8:{@afterDetail};\nPHOTO;ENCODING=b:{iconFinish}\nEND:VCARD\n"
+            @settingCards = "BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Album;;;;\nORG;CHARSET=utf-8:{@albumDetail};\nPHOTO;ENCODING=b:{iconAlbum}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Resolution;;;;\nORG;CHARSET=utf-8:{@resDetail};\nPHOTO;ENCODING=b:{iconResolution}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Frame rate;;;;\nORG;CHARSET=utf-8:{@fpsDetail};\nPHOTO;ENCODING=b:{iconFps}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Large downloads;;;;\nORG;CHARSET=utf-8:Ask above {@cfgThreshold} items;\nPHOTO;ENCODING=b:{iconStack}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:When finished;;;;\nORG;CHARSET=utf-8:{@afterDetail};\nPHOTO;ENCODING=b:{iconFinish}\nEND:VCARD\n"
             // Nothing to reset before setup has finished.
             if @firstRun == "0" {
                 @settingCards = "{@settingCards}BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Reset;;;;\nORG;CHARSET=utf-8:Sign out, or remove everything;\nPHOTO;ENCODING=b:{iconReset}\nEND:VCARD\n"
@@ -803,15 +709,6 @@ if @openSettings == "1" {
                 @settingTouched = "1"
             }
 
-            if @setting == "Mode" {
-                if @cfgMode == "advanced" {
-                    @cfgMode = "simple"
-                } else {
-                    @cfgMode = "advanced"
-                }
-                @settingTouched = "1"
-            }
-
             if @setting == "Resolution" {
                 menu "Highest resolution" {
                     item "Best available":
@@ -838,18 +735,6 @@ if @openSettings == "1" {
                         @cfgFps = "60"
                     item "30 fps":
                         @cfgFps = "30"
-                }
-                @settingTouched = "1"
-            }
-
-            if @setting == "Convert" {
-                menu "When Photos cannot play a video" {
-                    item "Best quality":
-                        @cfgConvert = "best"
-                    item "Smaller file":
-                        @cfgConvert = "small"
-                    item "Off":
-                        @cfgConvert = "off"
                 }
                 @settingTouched = "1"
             }
@@ -896,7 +781,7 @@ if @openSettings == "1" {
 
             if @settingTouched == "1" {
                 @settingsChanged = "1"
-                const liveCfg = {"album": "{@cfgAlbum}", "threshold": "{@cfgThreshold}", "after": "{@cfgAfter}", "mode": "{@cfgMode}", "res": "{@cfgRes}", "fps": "{@cfgFps}", "convert": "{@cfgConvert}"}
+                const liveCfg = {"album": "{@cfgAlbum}", "threshold": "{@cfgThreshold}", "after": "{@cfgAfter}", "res": "{@cfgRes}", "fps": "{@cfgFps}"}
                 const liveCfgText = text("{liveCfg}")
                 const liveCfgBlob = base64Encode(liveCfgText, "None")
                 rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
@@ -930,7 +815,7 @@ if @firstRun == "1" {
 }
 
 if @saveCfg == "1" {
-    const cfgOut = {"album": "{@cfgAlbum}", "threshold": "{@cfgThreshold}", "after": "{@cfgAfter}", "mode": "{@cfgMode}", "res": "{@cfgRes}", "fps": "{@cfgFps}", "convert": "{@cfgConvert}"}
+    const cfgOut = {"album": "{@cfgAlbum}", "threshold": "{@cfgThreshold}", "after": "{@cfgAfter}", "res": "{@cfgRes}", "fps": "{@cfgFps}"}
     const cfgOutText = text("{cfgOut}")
     const cfgOutBlob = base64Encode(cfgOutText, "None")
     rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
@@ -983,7 +868,7 @@ if @needsHelper == "1" {
     }
 }
 
-const payload = {"v": "{@umdlVersion}", "p": "{@protocol}", "name": "UMDL", "url": "{@link}", "mode": "{@runMode}", "limit": "{@runLimit}", "force_update": "{@forceUpdate}", "pick": "{@pick}", "decision": "{@decision}", "cfg": {"album": "{@cfgAlbum}", "threshold": "{@cfgThreshold}", "after": "{@cfgAfter}", "mode": "{@cfgMode}", "res": "{@cfgRes}", "fps": "{@cfgFps}", "convert": "{@cfgConvert}"}}
+const payload = {"v": "{@umdlVersion}", "p": "{@protocol}", "name": "UMDL", "url": "{@link}", "mode": "{@runMode}", "limit": "{@runLimit}", "force_update": "{@forceUpdate}", "cfg": {"album": "{@cfgAlbum}", "threshold": "{@cfgThreshold}", "after": "{@cfgAfter}", "res": "{@cfgRes}", "fps": "{@cfgFps}"}}
 const payloadText = text("{payload}")
 const payloadBlob = base64Encode(payloadText, "None")
 @blob = "{payloadBlob}"

@@ -1,7 +1,7 @@
 {
-  "shortcut": "1.4.0",
-  "helper": "1.4.1",
-  "protocol": 4,
+  "shortcut": "1.5.0",
+  "helper": "1.5.0",
+  "protocol": 5,
   "url": "https://github.com/TheKfcBandit/UMDL/releases/latest",
-  "notes": "Always downloads the best version; conversion is its own setting with two quality levels. Advanced mode lists versions with icons."
+  "notes": "One tap only: saves from a-Shell straight into Photos with the title as its name, any size. Advanced mode and Enter a link are gone."
 }

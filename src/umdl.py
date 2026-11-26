@@ -7,7 +7,6 @@ result importable by Photos, and calls the shortcut back with the outcome.
 
 Usage (the shortcut builds these commands, you never need to type them):
     python umdl.py run <payload>        download the link in the payload
-    python umdl.py finish <payload>     advanced mode: convert or keep what was downloaded
     python umdl.py setup <payload>      install the download tools and report
     python umdl.py update <payload>     force-update the download tools
     python umdl.py status <payload>     report versions, sign-ins and storage
@@ -38,9 +37,9 @@ import time
 import traceback
 import urllib.parse
 
-HELPER_VERSION = "1.4.1"
+HELPER_VERSION = "1.5.0"
 # Bumped only when the payload/callback format changes incompatibly.
-PROTOCOL = 4
+PROTOCOL = 5
 
 REPO = "TheKfcBandit/UMDL"
 RAW_BASE = "https://raw.githubusercontent.com/%s/main" % REPO
@@ -109,70 +108,30 @@ GALLERY_FIRST = (
     "newgrounds.com", "furaffinity.net", "behance.net", "lofter.com",
 )
 
-_NATIVE_V = "vcodec~='^(avc|h264|hev|hvc|h265)'"
-_NATIVE_A = "acodec~='^(mp4a|aac|alac|ac-3|ec-3)'"
-# Best stream Photos can import as-is first; anything at all last, in which
-# case make_photos_ready() remuxes or converts afterwards.
-YTDLP_FORMAT = "/".join([
-    "bv*[%s]+ba[%s]" % (_NATIVE_V, _NATIVE_A),
-    "b[%s][%s]" % (_NATIVE_V, _NATIVE_A),
-    "bv*[%s]+ba" % _NATIVE_V,
-    "b[%s]" % _NATIVE_V,
-    "b[ext=mp4]",
-    "b[ext=mov]",
-    "bv*+ba",
-    "b",
-    "ba",  # audio-only sources such as SoundCloud
-])
-
-
 RES_CHOICES = ("2160", "1440", "1080", "720", "480")
 FPS_CHOICES = ("60", "30")
-CONVERT_LEVELS = ("best", "small")
 
 
 def settings_from(cfg):
-    """The download settings in one predictable shape, whatever was stored.
-
-    "convert" is what to do with a video Photos cannot play: "best" (convert
-    at the best quality), "small" (convert to a smaller file) or "off" (keep
-    the original in Files). It has no say in which version is downloaded.
-    """
+    """The two limits on which version is downloaded, whatever was stored."""
     cfg = cfg if isinstance(cfg, dict) else {}
-    convert = str(cfg.get("convert") or "best")
-    # Values stored by earlier versions.
-    convert = {"1": "best", "needed": "best", "0": "off", "never": "off"}.get(convert, convert)
     res, fps = str(cfg.get("res") or "best"), str(cfg.get("fps") or "best")
-    return {
-        "convert": convert if convert in CONVERT_LEVELS + ("off",) else "best",
-        "res": res if res in RES_CHOICES else "best",
-        "fps": fps if fps in FPS_CHOICES else "best",
-        "advanced": str(cfg.get("mode")) == "advanced",
-    }
+    return {"res": res if res in RES_CHOICES else "best",
+            "fps": fps if fps in FPS_CHOICES else "best"}
 
 
-def ytdlp_format(policy="best", quality=None):
-    """Which formats yt-dlp should take.
-
-    "best"    the best there is. ytdlp_sort() decides what "best" means.
-    "native"  only what Photos plays as it is, unless the site has nothing else
+def ytdlp_format(quality):
+    """Which formats yt-dlp should take: the best there is. ytdlp_sort() says
+    what "best" means.
 
     A frame rate limit is applied here, as a filter with the unfiltered choice
     as its fallback: versions above the limit are passed over, whatever their
     size, unless the site has nothing else.
     """
-    chosen = YTDLP_FORMAT if policy == "native" else "bv*+ba/b/ba"
-    fps = (quality or {}).get("fps", "best")
-    if fps == "best":
-        return chosen
-    capped = []
-    for choice in chosen.split("/"):
-        parts = choice.split("+")
-        if parts[0].startswith("ba"):
-            continue  # sound only: nothing to limit
-        parts[0] += "[fps<=?%s]" % fps
-        capped.append("+".join(parts))
-    return "/".join(capped + [chosen])
+    best = "bv*+ba/b/ba"
+    if quality["fps"] == "best":
+        return best
+    return "bv*[fps<=?%(fps)s]+ba/b[fps<=?%(fps)s]/" % quality + best
 
 
 def ytdlp_sort(quality):
@@ -210,180 +169,6 @@ def codec_name(code):
         if re.match(pattern, code):
             return name
     return code.split(".")[0].upper() or "unknown"
-
-
-def has_video(fmt):
-    return str(fmt.get("vcodec") or "none") != "none"
-
-
-def has_audio(fmt):
-    return str(fmt.get("acodec") or "none") != "none"
-
-
-def is_native_video(fmt):
-    return bool(re.match(r"avc|h264|hev|hvc|h265", str(fmt.get("vcodec") or "").lower()))
-
-
-def is_native_audio(fmt):
-    return bool(re.match(r"mp4a|aac|alac|ac-3|ec-3", str(fmt.get("acodec") or "").lower()))
-
-
-def short_side(fmt):
-    width, height = to_int(fmt.get("width"), 0), to_int(fmt.get("height"), 0)
-    return min(width, height) if width and height else (height or width)
-
-
-def frame_rate(fmt):
-    try:
-        return int(round(float(fmt.get("fps") or 0)))
-    except (TypeError, ValueError):
-        return 0
-
-
-def picture(fmt):
-    """"2160p60", "1080p", or "" when the size is not known."""
-    side, fps = short_side(fmt), frame_rate(fmt)
-    if not side:
-        return ""
-    return "%dp%s" % (side, fps if fps > 30 else "")
-
-
-def describe_format(video, audio=None):
-    """"2160p60 VP9 + Opus" for a pair, "720p H.264 + AAC" for one file."""
-    parts = " ".join(x for x in (picture(video), codec_name(video.get("vcodec"))) if x)
-    sound = audio if audio is not None else (video if has_audio(video) else None)
-    if sound is not None:
-        parts += " + " + codec_name(sound.get("acodec"))
-    return parts
-
-
-def format_size(*formats):
-    total = 0
-    for fmt in formats:
-        if fmt is None:
-            continue
-        size = fmt.get("filesize") or fmt.get("filesize_approx")
-        if not size:
-            return ""
-        total += size
-    return human_size(total) if total else ""
-
-
-def plain(text):
-    """Letters and digits only, for comparing a label that has been to Shortcuts and back."""
-    return re.sub(r"[^a-z0-9]", "", str(text or "").lower())
-
-
-ICON_GET = "@UMDL-ICON-GET@"
-ICON_CONVERT = "@UMDL-ICON-CONVERT@"
-
-
-def cards_for(options):
-    """The options as the rows of a Shortcuts icon list (vCards).
-
-    The shortcut swaps the two icon markers for pictures it carries and shows
-    the result with the same action as its own menus. A row's title is what
-    comes back as the choice.
-    """
-    rows = []
-    for option in options:
-        rows.append("BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:%s;;;;\nORG;CHARSET=utf-8:%s;\n"
-                    "PHOTO;ENCODING=b:%s\nEND:VCARD\n" % (
-                        re.sub(r"[\\;,\r\n]", " ", option["title"]),
-                        re.sub(r"[\\;,\r\n]", " ", option.get("detail") or ""),
-                        ICON_CONVERT if option.get("convert") else ICON_GET))
-    return "".join(rows)
-
-
-def build_plan(formats, quality, title="", target="HEVC"):
-    """The choices advanced mode offers for one video.
-
-    Returns {"info": text for the prompt, "options": [{"title", "detail",
-    "format", "convert"}]}: the best there is, the best Photos plays without
-    conversion, and the best single file, leaving out any that would be the
-    same download. Each option names exact format ids, so what is listed is
-    what is fetched. `target` is the codec a conversion on this device makes.
-    """
-    videos = [f for f in formats or [] if isinstance(f, dict) and has_video(f) and f.get("format_id")]
-    audios = [f for f in formats or [] if isinstance(f, dict) and has_audio(f) and not has_video(f)
-              and f.get("format_id")]
-    if not videos:
-        return {"info": "", "options": []}
-
-    res_cap = to_int(quality["res"], 0) if quality["res"] != "best" else 0
-    fps_cap = to_int(quality["fps"], 0) if quality["fps"] != "best" else 0
-
-    def best_of(pool):
-        """The same choice ytdlp_format() and ytdlp_sort() lead yt-dlp to."""
-        if not pool:
-            return None
-        smooth = [f for f in pool if not fps_cap or frame_rate(f) <= fps_cap]
-        fps_sign = 1 if smooth else -1   # nothing under the limit: the lowest rate there is
-        pool = smooth or pool
-        inside = [f for f in pool if not res_cap or short_side(f) <= res_cap]
-        if not inside:
-            least = min(short_side(f) for f in pool)
-            inside = [f for f in pool if short_side(f) == least]
-        # Size first, then smoothness; between equals, one that needs no conversion.
-        return max(inside, key=lambda f: (short_side(f), fps_sign * frame_rate(f),
-                                          1 if is_native_video(f) else 0,
-                                          f.get("tbr") or f.get("vbr") or 0))
-
-    def loudest(pool):
-        return max(pool, key=lambda f: f.get("abr") or f.get("tbr") or 0) if pool else None
-
-    def sound_for(video):
-        if has_audio(video):
-            return None
-        # Sound Photos plays is copied as it is; anything else would be re-encoded.
-        return loudest([f for f in audios if is_native_audio(f)]) or loudest(audios)
-
-    def option(video, detail, note=""):
-        audio = sound_for(video)
-        convert = not is_native_video(video)
-        name = "%s · %s" % (picture(video) or "Video", codec_name(video.get("vcodec")))
-        if convert:
-            name += " → " + target
-        if note:
-            name += " · " + note
-        size = format_size(video, audio)
-        return {"title": name, "detail": detail + (" · " + size if size else ""),
-                "format": video["format_id"] + ("+" + audio["format_id"] if audio else ""),
-                "convert": convert}
-
-    options, seen = [], set()
-    for video, detail, note in (
-            (best_of(videos), "Best available", ""),
-            (best_of([f for f in videos if is_native_video(f)]), "Best without converting", ""),
-            (best_of([f for f in videos if has_audio(f)]), "Nothing to merge", "single file")):
-        if video is None:
-            continue
-        made = option(video, detail, note)
-        if made["format"] in seen:
-            continue
-        seen.add(made["format"])
-        options.append(made)
-
-    # What the site has, whatever the limits say.
-    source = max(videos, key=lambda f: (short_side(f), frame_rate(f), f.get("tbr") or 0))
-    lines = []
-    if title:
-        lines += [title, ""]
-    size = format_size(source)
-    lines.append("Best video: " + " ".join(x for x in (picture(source), codec_name(source.get("vcodec"))) if x)
-                 + (" · " + size if size else ""))
-    top = loudest(audios)
-    if top:
-        rate = to_int(top.get("abr") or top.get("tbr"), 0)
-        lines.append("Best audio: " + codec_name(top.get("acodec")) + (" · %d kbps" % rate if rate else ""))
-    merged = max([f for f in videos if has_audio(f)] or [None],
-                 key=lambda f: (short_side(f), frame_rate(f)) if f else (0, 0))
-    if merged is not None and audios:
-        lines.append("Single file: " + describe_format(merged))
-    if res_cap or fps_cap:
-        limit = " ".join(x for x in ("%sp" % res_cap if res_cap else "", "%s fps" % fps_cap if fps_cap else "") if x)
-        lines.append("Your limit: " + limit)
-    return {"info": "\n".join(lines), "options": options}
 
 
 def detect_ios():
@@ -508,15 +293,6 @@ ui = UI()
 
 class EngineError(Exception):
     """One download tool could not handle the link; the next one may."""
-
-
-class NeedChoice(Exception):
-    """Advanced mode: the user picks what to download before anything is fetched."""
-
-    def __init__(self, info, options):
-        Exception.__init__(self, "choice needed")
-        self.info = info
-        self.options = options
 
 
 class NeedConfirm(Exception):
@@ -1187,7 +963,7 @@ def ytdlp_engine(ctx):
 
     quality = ctx["quality"]
     opts = {
-        "format": ctx.get("format") or ytdlp_format(ctx["policy"], quality),
+        "format": ytdlp_format(quality),
         "format_sort": ytdlp_sort(quality),
         "merge_output_format": "mp4",
         "outtmpl": os.path.join(ctx["dir"], "%(id).64s.%(ext)s"),
@@ -1251,31 +1027,6 @@ def ytdlp_engine(ctx):
 
     if is_playlist and ctx["mode"] == "auto" and count > ctx["threshold"]:
         raise NeedConfirm(count if exact else None, title)
-
-    if quality["advanced"] and not ctx.get("picked"):
-        plan = None
-        if is_playlist:
-            plan = {"info": "%s\n\n%s items. One choice applies to all." % (
-                        title or "Playlist", count if exact else "Several"),
-                    "options": [
-                        {"title": "Best available", "detail": "Whatever the format",
-                         "policy": "best", "convert": False},
-                        {"title": "Best without converting", "detail": "Only what Photos plays",
-                         "policy": "native", "convert": False},
-                    ]}
-        else:
-            try:
-                with yt_dlp.YoutubeDL(dict(opts, format="bv*+ba/b/ba")) as ydl:
-                    info = ydl.process_ie_result(copy.deepcopy(raw), download=False)
-                plan = build_plan((info or {}).get("formats"), quality, title, conversion_target())
-            except Exception as exc:
-                log("could not list the formats (%s); using the settings" % exc)
-        # Asked whenever there is something to choose between.
-        if plan and len(plan["options"]) > 1:
-            write_json(os.path.join(ctx["dir"], "plan.json"), plan)
-            log("offered: " + " | ".join("%s [%s]" % (o["title"], o.get("format") or o.get("policy"))
-                                         for o in plan["options"]))
-            raise NeedChoice(plan["info"], plan["options"])
 
     ui.start("Starting download")
     try:
@@ -1479,10 +1230,51 @@ window.__umdl = "";
     var text = await reply.text();
     var data = null;
     try { data = JSON.parse(text); } catch (e) { data = null; }
+    var ascii = function (value) {
+      // Plain ASCII, so nothing between here and Python can garble it.
+      return JSON.stringify(value).replace(/[\u007f-￿]/g, function (c) {
+        return "\\u" + ("0000" + c.charCodeAt(0).toString(16)).slice(-4);
+      });
+    };
     if (!Array.isArray(data)) {
+      // Reddit will not give out the post's data. Read the page a visitor's
+      // browser is shown instead: the post element carries what is needed.
+      var page = await fetch(link.replace(/^https?:\/\/[^\/]+/, ""),
+                             {credentials: "include", headers: {"Accept": "text/html"}});
+      var html = await page.text();
+      var start = html.indexOf("<shreddit-post");
+      if (start >= 0) {
+        var end = html.indexOf("</shreddit-post>", start);
+        var post = html.slice(start, end > 0 ? end : start + 400000);
+        var tag = post.slice(0, post.indexOf(">") + 1);
+        var attr = function (name) {
+          var m = tag.match(new RegExp("\\s" + name + '="([^"]*)"'));
+          return !m ? "" : m[1].replace(/&quot;/g, '"').replace(/&#x27;|&#39;/g, "'")
+                               .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+        };
+        var seen = {id: attr("id").replace(/^t3_/, ""), title: attr("post-title"), umdl: ["none", ""]};
+        var href = attr("content-href");
+        var video = post.match(/https:\/\/v\.redd\.it\/([A-Za-z0-9]+)/);
+        var files = [], had = {}, each;
+        var image = /https:\/\/(?:i|preview)\.redd\.it\/([A-Za-z0-9_-]+\.(?:jpe?g|png|gif|webp))/g;
+        while ((each = image.exec(post))) {
+          // The preview host serves resized copies, sometimes under a longer name.
+          var name = each[1].replace(/^.*-v\d+-/, "");
+          if (!had[name]) { had[name] = 1; files.push("https://i.redd.it/" + name); }
+        }
+        if (video) {
+          seen.umdl = ["video", "https://v.redd.it/" + video[1] + "/DASHPlaylist.mpd"];
+        } else if (files.length) {
+          seen.umdl = ["files", files];
+        } else if (/^https?:\/\//.test(href) && !/^https?:\/\/([a-z0-9-]+\.)?(reddit\.com|redd\.it)\//.test(href)) {
+          seen.umdl = ["link", href];
+        }
+        window.__umdl = "OK " + ascii(seen);
+        return;
+      }
       var said = data && data.message ? String(data.message)
-                                      : text.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
-      window.__umdl = "HTTP " + reply.status + " " + said.slice(0, 160);
+        : html.replace(/<(style|script)[\s\S]*?<\/\1>/g, " ").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+      window.__umdl = "HTTP " + reply.status + ", page " + page.status + ": " + said.slice(0, 140);
       return;
     }
     var keep = ["id", "title", "url", "url_overridden_by_dest", "is_video", "is_gallery",
@@ -1497,10 +1289,7 @@ window.__umdl = "";
     if (post.crosspost_parent_list && post.crosspost_parent_list[0]) {
       found.crosspost_parent_list = [pick(post.crosspost_parent_list[0])];
     }
-    // Plain ASCII, so nothing between here and Python can garble it.
-    window.__umdl = "OK " + JSON.stringify(found).replace(/[\u007f-\uffff]/g, function (c) {
-      return "\\u" + ("0000" + c.charCodeAt(0).toString(16)).slice(-4);
-    });
+    window.__umdl = "OK " + ascii(found);
   } catch (e) {
     window.__umdl = "ERR " + e;
   }
@@ -1595,6 +1384,12 @@ def reddit_targets(post):
     Returns ("video", manifest link), ("files", [direct links]) or
     ("link", another site's link).
     """
+    seen = post.get("umdl")
+    if isinstance(seen, list) and len(seen) == 2:
+        # Read off the post's page by the browser, when Reddit withholds its data.
+        if seen[0] in ("video", "files", "link") and seen[1]:
+            return seen[0], seen[1]
+        raise EngineError("This Reddit post has no photo or video.")
     parents = post.get("crosspost_parent_list") or []
     if parents and isinstance(parents[0], dict):
         post = parents[0]  # a crosspost: the media belongs to the original
@@ -1779,10 +1574,13 @@ def probe_media(path):
 
 
 def describe_media(info):
-    """"VP9 1080p60 + Opus" for a file that has been probed."""
-    fmt = {"width": info["width"], "height": info["height"], "fps": info["fps"],
-           "vcodec": info["v"], "acodec": info["a"] or "none"}
-    return describe_format(fmt)
+    """"1080p60 VP9 + Opus" for a file that has been probed."""
+    side = min(info["width"], info["height"]) or info["height"] or info["width"]
+    size = "%dp" % side if side else ""
+    if size and info["fps"] > 40:
+        size += "%d" % round(info["fps"])
+    text = " ".join(x for x in (size, codec_name(info["v"])) if x)
+    return text + (" + " + codec_name(info["a"]) if info["a"] else "")
 
 
 _ENCODERS = None
@@ -1797,21 +1595,15 @@ def encoders():
     return _ENCODERS
 
 
-def conversion_target():
-    """The codec a conversion on this device will most likely produce."""
-    have = encoders()
-    return "HEVC" if not have or "hevc_videotoolbox" in have else "H.264"
-
-
 # Bits per second that keep a picture of this height clean at 30 frames a second
 # in HEVC. Used only as a floor, and only when the encoder cannot be asked for
 # a quality level directly.
 BITRATE_FLOOR = ((2160, 24000000), (1440, 14000000), (1080, 8000000), (720, 5000000), (0, 2500000))
 
 
-def conversion_attempts(info, have, level="best"):
+def conversion_attempts(info, have):
     """Ways to re-encode a video for Photos, best first. Each is (codec name,
-    ffmpeg arguments). `level` is "best", or "small" for about half the size.
+    ffmpeg arguments).
 
     The picture keeps its size and frame rate. HEVC from the device's own
     encoder comes first: it holds 4K, 60 frames a second and 10-bit colour, and
@@ -1825,21 +1617,18 @@ def conversion_attempts(info, have, level="best"):
         floor = int(floor * 1.5)
     source = info["vbitrate"] or info["bitrate"]
     rate = int(min(80000000, max(floor, source * 1.1)))
-    small = level == "small"
-    if small:
-        rate = int(max(floor * 0.5, min(rate * 0.5, source * 0.6 or rate)))
     deep = "10" in info["pix_fmt"]
     hevc = ["-c:v", "hevc_videotoolbox", "-tag:v", "hvc1"] + (
         ["-profile:v", "main10", "-pix_fmt", "p010le"] if deep else ["-pix_fmt", "yuv420p"])
     attempts = []
     if not have or "hevc_videotoolbox" in have:
-        attempts.append(("HEVC", hevc + ["-q:v", "55" if small else "75"]))
+        attempts.append(("HEVC", hevc + ["-q:v", "75"]))
         attempts.append(("HEVC", hevc + ["-b:v", str(rate)]))
     if not have or "h264_videotoolbox" in have:
         attempts.append(("H.264", ["-c:v", "h264_videotoolbox", "-profile:v", "high",
                                    "-b:v", str(int(rate * 1.6)), "-pix_fmt", "yuv420p"]))
     if not have or "libx264" in have:
-        attempts.append(("H.264", ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23" if small else "17",
+        attempts.append(("H.264", ["-c:v", "libx264", "-preset", "veryfast", "-crf", "17",
                                    "-pix_fmt", "yuv420p"]))
     return attempts
 
@@ -1915,7 +1704,7 @@ def photos_verdict(path):
 
 
 def replace_with(path, made):
-    """Put the converted file in the original's place: 001.webm becomes 001.mp4."""
+    """Put the new file in the original's place: 001.webm becomes 001.mp4."""
     final = os.path.splitext(path)[0] + ".mp4"
     remove(path)
     try:
@@ -1925,48 +1714,336 @@ def replace_with(path, made):
     return final
 
 
-def make_photos_ready(path, convert, notes=None):
-    """Return a path Photos can import, or None to keep the file in Files.
-
-    Cheapest fix first: leave alone, then rewrap without re-encoding, then
-    re-encode, if `convert` names a level ("best" or "small"; True means
-    "best"). Each conversion is noted as "VP9 → HEVC".
-    """
-    verdict, info = photos_verdict(path)
-    if verdict == "ready":
-        return path
-    if verdict == "files":
-        return None
-
-    audio_ok = info["a"] is None or info["a"] in PHOTOS_ACODECS
+def repack(path, info):
+    """The same picture in an MP4 wrapper, without re-encoding it. Sound Photos
+    plays is copied too; other sound becomes AAC. Returns the new path or None."""
     target = os.path.splitext(path)[0] + "_photos.mp4"
-    audio_args = ["-c:a", "copy"] if audio_ok else ["-c:a", "aac", "-b:a", "256k"]
-    tail = ["-map", "0:v:0", "-map", "0:a:0?", "-movflags", "+faststart"]
+    audio_ok = info["a"] is None or info["a"] in PHOTOS_ACODECS
+    args = ["-i", path, "-c:v", "copy"] + (["-tag:v", "hvc1"] if info["v"] == "hevc" else [])
+    args += (["-c:a", "copy"] if audio_ok else ["-c:a", "aac", "-b:a", "256k"])
+    args += ["-map", "0:v:0", "-map", "0:a:0?", "-movflags", "+faststart"]
+    ui.start("Repacking for Photos")
+    if ffmpeg(args, target):
+        ui.done()
+        return replace_with(path, target)
+    ui.fail()
+    return None
 
-    if verdict == "repack":
-        ui.start("Repacking for Photos")
-        tag = ["-tag:v", "hvc1"] if info["v"] == "hevc" else []
-        if ffmpeg(["-i", path, "-c:v", "copy"] + tag + audio_args + tail, target):
-            ui.done()
-            return replace_with(path, target)
-        ui.fail()
-        return None
 
-    if not convert:
-        return None
-
+def convert(path, info, notes):
+    """Re-encode the picture for Photos, same size and frame rate. Each
+    conversion is noted as "VP9 → HEVC". Returns the new path or None."""
+    target = os.path.splitext(path)[0] + "_photos.mp4"
+    audio_ok = info["a"] is None or info["a"] in PHOTOS_ACODECS
+    tail = (["-c:a", "copy"] if audio_ok else ["-c:a", "aac", "-b:a", "256k"])
+    tail += ["-map", "0:v:0", "-map", "0:a:0?", "-movflags", "+faststart"]
     source = describe_media(info)
     ui.start("Converting %s for Photos" % source)
-    level = convert if convert in CONVERT_LEVELS else "best"
-    for codec, video_args in conversion_attempts(info, encoders(), level):
-        if ffmpeg(["-i", path] + video_args + audio_args + tail, target, info.get("seconds") or 0):
+    for codec, video_args in conversion_attempts(info, encoders()):
+        if ffmpeg(["-i", path] + video_args + tail, target, info.get("seconds") or 0):
             ui.done(codec)
             log("converted %s to %s with %s" % (source, codec, " ".join(video_args)))
-            if notes is not None:
-                notes.append("%s → %s" % (codec_name(info["v"]), codec))
+            notes.append("%s → %s" % (codec_name(info["v"]), codec))
             return replace_with(path, target)
     ui.fail("kept the original in Files")
     return None
+
+
+def make_photos_ready(path, notes):
+    """By the list of formats Photos is known to play: return a path it can
+    import, or None to keep the file in Files. Used when Photos itself cannot
+    be asked. Cheapest fix first: leave alone, repack, convert."""
+    verdict, info = photos_verdict(path)
+    if verdict == "ready":
+        return path
+    if verdict == "repack":
+        return repack(path, info)
+    if verdict == "convert":
+        return convert(path, info, notes)
+    return None
+
+
+# ------------------------------------------------- saving straight to Photos
+#
+# a-Shell is allowed to add to the Photos library, so the helper can save a
+# file itself, from inside a-Shell, through the system's own interface
+# (PhotoKit, reached with ctypes). Nothing then has to travel through
+# Shortcuts: no size limit, the file keeps a proper name, and its date is the
+# day it was downloaded. Photos is also the judge of what it can play: a file
+# is offered as it is, and converted only if Photos says no.
+#
+# None of this can be run anywhere but on a device, so it is fenced in. Before
+# each step the step's name is written to a file. If a-Shell stops in the
+# middle, the next run finds the name, says so in the log, and goes back to
+# handing files to Shortcuts until the helper changes or Update tools is run.
+
+GUARD_FILE = os.path.join(WORKSPACE, "photos.step")
+
+
+class Refused(Exception):
+    """Photos would not take the file."""
+
+
+class PhotosLibrary:
+    ADD_ONLY, READ_WRITE = 1, 2
+
+    def __init__(self, album):
+        import ctypes
+        self.c = ctypes
+        self.objc = ctypes.CDLL("/usr/lib/libobjc.A.dylib")
+        ctypes.CDLL("/System/Library/Frameworks/Photos.framework/Photos")
+        self.objc.objc_getClass.restype = ctypes.c_void_p
+        self.objc.objc_getClass.argtypes = [ctypes.c_char_p]
+        self.objc.sel_registerName.restype = ctypes.c_void_p
+        self.objc.sel_registerName.argtypes = [ctypes.c_char_p]
+        self.objc.objc_autoreleasePoolPush.restype = ctypes.c_void_p
+        self.objc.objc_autoreleasePoolPop.argtypes = [ctypes.c_void_p]
+        self.album = album if album and album != "Recents" else ""
+        self.level = self.ADD_ONLY
+        self.collection = None
+        self.keep = []  # blocks and their callbacks must outlive the calls that use them
+
+    # -- talking to Objective-C
+
+    def cls(self, name):
+        found = self.objc.objc_getClass(name.encode("ascii"))
+        if not found:
+            raise RuntimeError("no class " + name)
+        return found
+
+    def send(self, target, selector, *args, returns="object", types=()):
+        c = self.c
+        restype = c.c_void_p if returns == "object" else returns
+        call = c.CFUNCTYPE(restype, c.c_void_p, c.c_void_p, *types)(("objc_msgSend", self.objc))
+        return call(target, self.objc.sel_registerName(selector.encode("ascii")), *args)
+
+    def text(self, value):
+        return self.send(self.cls("NSString"), "stringWithUTF8String:", value.encode("utf-8"),
+                         types=(self.c.c_char_p,))
+
+    def python(self, ns_string):
+        if not ns_string:
+            return ""
+        raw = self.send(ns_string, "UTF8String", returns=self.c.c_char_p)
+        return raw.decode("utf-8", "replace") if raw else ""
+
+    def block(self, function, *types):
+        """An Objective-C block that calls a Python function."""
+        c = self.c
+
+        class Descriptor(c.Structure):
+            _fields_ = [("reserved", c.c_ulong), ("size", c.c_ulong)]
+
+        class Literal(c.Structure):
+            _fields_ = [("isa", c.c_void_p), ("flags", c.c_int), ("reserved", c.c_int),
+                        ("invoke", c.c_void_p), ("descriptor", c.c_void_p)]
+
+        invoke = c.CFUNCTYPE(None, c.c_void_p, *types)(function)
+        descriptor = Descriptor(0, c.sizeof(Literal))
+        isa = c.addressof(c.c_void_p.in_dll(c.CDLL(None), "_NSConcreteGlobalBlock"))
+        literal = Literal(isa, 1 << 28, 0, c.cast(invoke, c.c_void_p).value, c.addressof(descriptor))
+        self.keep += [invoke, descriptor, literal]
+        return c.addressof(literal)
+
+    # -- permission and album
+
+    def status(self):
+        return self.send(self.cls("PHPhotoLibrary"), "authorizationStatusForAccessLevel:", self.level,
+                         returns=self.c.c_long, types=(self.c.c_long,))
+
+    def ask(self):
+        answered = threading.Event()
+
+        def done(_block, _status):
+            answered.set()
+
+        self.send(self.cls("PHPhotoLibrary"), "requestAuthorizationForAccessLevel:handler:",
+                  self.level, self.block(done, self.c.c_long),
+                  returns=None, types=(self.c.c_long, self.c.c_void_p))
+        answered.wait(180)
+        return self.status()
+
+    def permitted(self):
+        """True once the owner has allowed this. 3 is allowed, 4 allowed for chosen photos."""
+        state = self.status()
+        if state == 0:
+            ui.start("Asking for access to Photos")
+            state = self.ask()
+            ui.done() if state in (3, 4) else ui.fail("not allowed")
+        return state in (3, 4)
+
+    def find_album(self):
+        if not self.album or self.level != self.READ_WRITE:
+            return None
+        c = self.c
+        found = self.send(self.cls("PHAssetCollection"), "fetchAssetCollectionsWithType:subtype:options:",
+                          1, 2, None, types=(c.c_long, c.c_long, c.c_void_p))
+        count = self.send(found, "count", returns=c.c_ulong) if found else 0
+        for index in range(count):
+            album = self.send(found, "objectAtIndex:", index, types=(c.c_ulong,))
+            if self.python(self.send(album, "localizedTitle")) == self.album:
+                return self.send(album, "retain")
+        return None
+
+    def where(self):
+        return self.album if self.level == self.READ_WRITE and self.album else ""
+
+    # -- adding a file
+
+    def add(self, path, name):
+        """Add one photo or video under `name`, dated now. Raises Refused."""
+        guard("add " + name[:60])
+        try:
+            try:
+                self.add_once(path, name)
+            except Refused as no:
+                if not self.where():
+                    raise
+                # It may be the album that was refused, not the file.
+                log("photos: %s; trying without the album" % no)
+                self.album = ""
+                self.add_once(path, name)
+        finally:
+            guard(None)
+
+    def add_once(self, path, name):
+        c = self.c
+        pool = self.objc.objc_autoreleasePoolPush()
+        try:
+            kind = 1 if ext_of(path) in IMAGE_EXTS else 2
+            link = self.send(self.cls("NSURL"), "fileURLWithPath:", self.text(path), types=(c.c_void_p,))
+            original = self.text(name)
+            now = self.send(self.cls("NSDate"), "date")
+            title = self.text(self.album) if self.where() else None
+            trouble = []
+
+            def changes(_block):
+                try:
+                    request = self.send(self.cls("PHAssetCreationRequest"), "creationRequestForAsset")
+                    options = self.send(self.send(self.cls("PHAssetResourceCreationOptions"), "alloc"), "init")
+                    self.send(options, "setOriginalFilename:", original, returns=None, types=(c.c_void_p,))
+                    self.send(request, "addResourceWithType:fileURL:options:", kind, link, options,
+                              returns=None, types=(c.c_long, c.c_void_p, c.c_void_p))
+                    self.send(request, "setCreationDate:", now, returns=None, types=(c.c_void_p,))
+                    if title:
+                        if self.collection:
+                            album = self.send(self.cls("PHAssetCollectionChangeRequest"),
+                                              "changeRequestForAssetCollection:", self.collection,
+                                              types=(c.c_void_p,))
+                        else:
+                            album = self.send(self.cls("PHAssetCollectionChangeRequest"),
+                                              "creationRequestForAssetCollectionWithTitle:", title,
+                                              types=(c.c_void_p,))
+                        placeholder = self.send(request, "placeholderForCreatedAsset")
+                        if album and placeholder:
+                            self.send(album, "addAssets:",
+                                      self.send(self.cls("NSArray"), "arrayWithObject:", placeholder,
+                                                types=(c.c_void_p,)),
+                                      returns=None, types=(c.c_void_p,))
+                except Exception as exc:  # nothing may escape into the system's thread
+                    trouble.append("%s: %s" % (type(exc).__name__, exc))
+
+            error = c.c_void_p()
+            library = self.send(self.cls("PHPhotoLibrary"), "sharedPhotoLibrary")
+            done = self.send(library, "performChangesAndWait:error:", self.block(changes), c.byref(error),
+                             returns=c.c_bool, types=(c.c_void_p, c.c_void_p))
+            if trouble:
+                raise Refused(trouble[0])
+            if not done:
+                reason = self.python(self.send(error, "localizedDescription")) if error.value else ""
+                raise Refused(reason or "Photos gave no reason")
+            if title and not self.collection:
+                self.collection = self.find_album()  # just created: use it for the next file
+        finally:
+            self.objc.objc_autoreleasePoolPop(pool)
+
+
+class TestLibrary:
+    """Stands in for Photos in the tests: a folder, and a list of what it "plays"."""
+
+    def __init__(self, folder, album):
+        self.folder = folder
+        self.album = album if album and album != "Recents" else ""
+        self.plays = set((os.environ.get("UMDL_TEST_PHOTOS_PLAYS") or "h264,hevc").split(","))
+
+    def where(self):
+        return self.album
+
+    def add(self, path, name):
+        if ext_of(path) not in IMAGE_EXTS:
+            info = probe_media(path)
+            if ext_of(path) not in PHOTOS_CONTAINERS or info["v"] not in self.plays:
+                raise Refused("unsupported format")
+        target = os.path.join(self.folder, self.album or "Library")
+        os.makedirs(target, exist_ok=True)
+        shutil.copyfile(path, os.path.join(target, name))
+        with open(os.path.join(self.folder, "added.txt"), "a", encoding="utf-8") as handle:
+            handle.write("%s\t%s\t%s\n" % (self.album or "Library", name, time.strftime("%Y-%m-%d")))
+
+
+def guard(step):
+    """Note the step about to be taken, or clear the note with None."""
+    if step is None:
+        remove(GUARD_FILE)
+        return
+    with open(GUARD_FILE, "w", encoding="utf-8") as handle:
+        handle.write(step)
+
+
+def open_library(album):
+    """Photos, if the helper can save to it directly on this device; else None."""
+    folder = os.environ.get("UMDL_TEST_PHOTOS")
+    if folder:
+        return TestLibrary(folder, album)
+    if not IOS:
+        return None
+    state = read_json(STATE_FILE, {})
+    if os.path.exists(GUARD_FILE):
+        with open(GUARD_FILE, "r", encoding="utf-8") as handle:
+            state["photos_off"] = {"step": handle.read().strip()[:80], "helper": HELPER_VERSION}
+        write_json(STATE_FILE, state)
+        guard(None)
+    off = state.get("photos_off") or {}
+    if off.get("helper") == HELPER_VERSION:
+        log("photos: saving from a-Shell stopped at \"%s\" before; handing files to Shortcuts" % off.get("step"))
+        return None
+    try:
+        guard("load")
+        library = PhotosLibrary(album)
+        pool = library.objc.objc_autoreleasePoolPush()
+        try:
+            guard("permission")
+            bundle = library.send(library.cls("NSBundle"), "mainBundle")
+
+            def declared(key):
+                return bool(library.send(bundle, "objectForInfoDictionaryKey:", library.text(key),
+                                         types=(library.c.c_void_p,)))
+
+            if not declared("NSPhotoLibraryAddUsageDescription"):
+                log("photos: this a-Shell may not add to Photos; handing files to Shortcuts")
+                return None
+            if library.album and declared("NSPhotoLibraryUsageDescription"):
+                library.level = library.READ_WRITE  # an album needs more than "add only"
+            if not library.permitted():
+                if library.level == library.READ_WRITE:
+                    library.level = library.ADD_ONLY
+                    if not library.permitted():
+                        log("photos: access was not allowed; handing files to Shortcuts")
+                        return None
+                else:
+                    log("photos: access was not allowed; handing files to Shortcuts")
+                    return None
+            guard("album")
+            library.collection = library.find_album()
+        finally:
+            library.objc.objc_autoreleasePoolPop(pool)
+        log("photos: saving from a-Shell, %s" % ("album " + library.where() if library.where() else "library only"))
+        return library
+    except Exception as exc:
+        log("photos: cannot save from a-Shell (%s: %s); handing files to Shortcuts" % (type(exc).__name__, exc))
+        return None
+    finally:
+        guard(None)
 
 
 def unique_path(folder, name):
@@ -1979,38 +2056,93 @@ def unique_path(folder, name):
     return candidate
 
 
-def finalize(ctx, files):
-    """Sort downloads into Photos imports and files kept in the Files app."""
-    photos, kept = [], []
-    titles = ctx["titles"]
+def stage(ctx, files):
+    """Give each download a plain working name, and the name it will carry
+    afterwards: its title, or the name it was uploaded under."""
     out_dir = os.path.join(ctx["dir"], "out")
     remove(out_dir)
     os.makedirs(out_dir)
+    items, used = [], set()
     for index, original in enumerate(files, 1):
-        title = titles.get(os.path.basename(original)) or ""
-        # Plain sequential names: no spaces or symbols for ffmpeg or Shortcuts to trip on.
+        base = os.path.basename(original)
+        title = safe_title(ctx["titles"].get(base) or "", os.path.splitext(base)[0])
+        stem, copy_number = title, 1
+        while stem.lower() in used:
+            copy_number += 1
+            stem = "%s %d" % (title, copy_number)
+        used.add(stem.lower())
+        # Plain sequential names while working: nothing for ffmpeg to trip on.
         staged = os.path.join(out_dir, "%03d.%s" % (index, ext_of(original) or "bin"))
         os.replace(original, staged)
-        allowed = ctx["convert"] if ctx["convert"] in CONVERT_LEVELS + (True,) else False
-        ready = make_photos_ready(staged, allowed, ctx.setdefault("converted", []))
-        if ready:
-            try:
-                too_big = os.path.getsize(ready) > MAX_PHOTOS_BYTES
-            except OSError:
-                too_big = False
-            if not too_big:
-                photos.append(ready)
-                continue
-            # Too large for a-Shell to hand to Shortcuts: keep it in Files.
+        items.append({"path": staged, "stem": stem})
+    return items
+
+
+def place(ctx, item, library):
+    """Get one file to Photos. Returns (outcome, path): "saved" (it is in
+    Photos), "ready" (Shortcuts will save it) or "kept" (it stays in Files)."""
+    path = item["path"]
+    verdict, info = photos_verdict(path)
+    if verdict == "files":
+        return "kept", path
+
+    def named(file_path):
+        return "%s.%s" % (item["stem"], ext_of(file_path) or "bin")
+
+    if library is None:
+        ready = make_photos_ready(path, ctx["converted"])
+        if not ready:
+            return "kept", path
+        try:
+            too_big = os.path.getsize(ready) > MAX_PHOTOS_BYTES
+        except OSError:
+            too_big = False
+        if too_big:
+            # More than a-Shell can hand to Shortcuts in one piece.
             ctx["oversize"] = ctx.get("oversize", 0) + 1
-            staged = ready
-        os.makedirs(SAVED_DIR, exist_ok=True)
-        fallback = os.path.splitext(os.path.basename(original))[0]
-        name = "%s.%s" % (safe_title(title, fallback), ext_of(staged) or "bin")
-        target = unique_path(SAVED_DIR, name)
-        shutil.move(staged, target)
-        kept.append(os.path.basename(target))
-    return photos, kept
+            return "kept", ready
+        folder = os.path.splitext(ready)[0]
+        os.makedirs(folder, exist_ok=True)
+        final = os.path.join(folder, named(ready))
+        os.replace(ready, final)
+        return "ready", final
+
+    # Photos is the judge. Offer the file as it is, in a wrapper Photos reads;
+    # convert only if it says no.
+    if info and ext_of(path) not in PHOTOS_CONTAINERS:
+        path = repack(path, info) or path
+    try:
+        library.add(path, named(path))
+        return "saved", path
+    except Refused as no:
+        log("Photos would not take %s as it is: %s" % (named(path), no))
+    if info and info.get("v"):
+        converted = convert(path, info, ctx["converted"])
+        if converted:
+            try:
+                library.add(converted, named(converted))
+                return "saved", converted
+            except Refused as no:
+                log("Photos would not take %s converted either: %s" % (named(converted), no))
+                return "kept", converted
+    return "kept", path
+
+
+def summary(saved, album, converted, kept, oversize, failed):
+    """What the notification says when the helper saved the files itself."""
+    where = "the %s album" % album if album else "Photos"
+    lines = ["Nothing was added to Photos." if not saved
+             else "Saved to %s." % where if saved == 1
+             else "Saved %d items to %s." % (saved, where)]
+    if converted:
+        lines.append("%d converted (%s)." % (len(converted), converted[0]))
+    if kept:
+        lines.append("%d kept in Files (a-Shell, UMDL, Saved)." % kept)
+    if oversize:
+        lines.append("%d over 1 GB, kept in Files." % oversize)
+    if failed:
+        lines.append("%d failed." % failed)
+    return "\n".join(lines)
 
 
 # ------------------------------------------------------------------ commands
@@ -2081,38 +2213,11 @@ def cmd_run(payload, blob):
         pass
 
     quality = settings_from(cfg)
-    # Which version to download and what to do with one Photos cannot play are
-    # separate questions. Simple mode answers both from the settings.
-    policy = "best"
-    convert = quality["convert"] if quality["convert"] in CONVERT_LEVELS else False
-    chosen, picked = "", False
-    if quality["advanced"]:
-        # Advanced mode asks both. Nothing is converted without an answer:
-        # given with the version picked, or asked for once the file is here.
-        convert = "ask"
-        pick = plain(payload.get("pick"))
-        for option in (read_json(os.path.join(job_dir, "plan.json"), {}).get("options") or []):
-            if pick and plain(option.get("title")) == pick:
-                picked = True
-                policy = option.get("policy") or "best"
-                if option.get("format"):
-                    chosen = "%s/%s" % (option["format"], ytdlp_format(policy, quality))
-        decision = str(payload.get("decision") or "")
-        if decision in CONVERT_LEVELS:
-            convert = decision
-        elif decision == "keep":
-            convert = False
-        if pick and not picked:
-            log("the choice %r matches nothing that was offered" % payload.get("pick"))
-    log("settings: %s  policy=%s  convert=%s%s" % (
-        " ".join("%s=%s" % item for item in sorted(quality.items())), policy, convert,
-        "  picked=%s" % (chosen or policy) if picked else ""))
-
+    log("limits: resolution %s, frame rate %s" % (quality["res"], quality["fps"]))
     ctx = {
-        "url": url, "dir": job_dir, "mode": mode, "limit": limit,
-        "threshold": threshold, "convert": convert, "quality": quality, "policy": policy,
-        "format": chosen, "picked": picked,
-        "titles": {}, "title": "", "failed": 0,
+        "url": url, "dir": job_dir, "mode": mode, "limit": limit, "threshold": threshold,
+        "quality": quality, "album": str(cfg.get("album") or "Recents"),
+        "titles": {}, "title": "", "failed": 0, "converted": [],
     }
     files, errors = [], []
     blocked = False
@@ -2129,11 +2234,6 @@ def cmd_run(payload, blob):
                 "t": "confirm", "url": url, "thr": str(threshold),
                 "n": str(ask.count) if ask.count else "",
                 "title": safe_title(ask.title, "")[:60],
-            })
-        except NeedChoice as ask:
-            return callback(payload, {
-                "t": "choose", "url": url, "info": ask.info, "cards": cards_for(ask.options),
-                "mode": mode, "limit": str(limit) if mode == "limit" else "",
             })
         except EngineError as exc:
             errors.append(str(exc))
@@ -2163,101 +2263,71 @@ def cmd_run(payload, blob):
         return callback(payload, {"t": "error", "kind": kind, "msg": message,
                                   "url": url, "updated": "1" if updated else ""})
 
-    if ctx["convert"] == "ask":
-        waiting = conversions_pending(files)
-        if waiting:
-            # Advanced mode: say what is here and what it would become, and ask.
-            write_json(os.path.join(job_dir, "job.json"), {
-                "files": files, "titles": ctx["titles"], "title": ctx.get("title") or "",
-                "failed": ctx["failed"], "upv": latest["v"] if latest else "",
-                "upurl": latest["url"] if latest else ""})
-            return callback(payload, {"t": "convert", "url": url, "n": str(len(waiting)),
-                                      "info": conversion_question(ctx.get("title"), waiting, len(files))})
-        ctx["convert"] = False
     return deliver(payload, ctx, files, manifest, latest)
 
 
-def conversions_pending(files):
-    """The videos among these files that Photos cannot play without re-encoding."""
-    found = []
-    for path in files:
-        verdict, info = photos_verdict(path)
-        if verdict == "convert":
-            found.append((path, info))
-    return found
-
-
-def conversion_question(title, waiting, total):
-    """What advanced mode shows before converting: the source, and the result."""
-    path, info = waiting[0]
-    attempts = conversion_attempts(info, encoders())
-    codec = attempts[0][0] if attempts else "H.264"
-    result = describe_format({"width": info["width"], "height": info["height"], "fps": info["fps"],
-                              "vcodec": codec.replace(".", "").lower(),
-                              "acodec": "aac" if info["a"] else "none"})
-    try:
-        size = " · " + human_size(os.path.getsize(path))
-    except OSError:
-        size = ""
-    lines = [safe_title(title, "")[:60], ""] if title else []
-    if total == 1:
-        lines.append("Photos cannot play this video.")
-    else:
-        lines.append("Photos cannot play %d of these %d files." % (len(waiting), total))
-    lines += ["", "Source: %s%s" % (describe_media(info), size), "Converts to: " + result]
-    return "\n".join(lines)
-
-
 def deliver(payload, ctx, files, manifest, latest=None):
-    """Make the files Photos-ready, write the manifest and hand back to the shortcut."""
+    """Get the files into Photos, or ready for Shortcuts to do it, and report."""
     url = ctx["url"]
-    photos, kept = finalize(ctx, files)
-    write_json(manifest, {"photos": photos, "kept": kept, "url": url})
-    converted = ctx.get("converted") or []
+    items = stage(ctx, files)
+    library = open_library(ctx["album"])
+    saved, ready, kept = 0, [], []
+    if library:
+        ui.start("Saving to Photos")
+    for item in items:
+        outcome = None
+        if library:
+            try:
+                outcome, path = place(ctx, item, library)
+            except Exception as exc:
+                log("photos: saving from a-Shell failed (%s: %s); handing files to Shortcuts"
+                    % (type(exc).__name__, exc))
+                ui.fail()
+                library = None
+        if outcome is None:
+            outcome, path = place(ctx, item, None)
+        if outcome == "saved":
+            saved += 1
+        elif outcome == "ready":
+            ready.append(path)
+        else:
+            os.makedirs(SAVED_DIR, exist_ok=True)
+            target = unique_path(SAVED_DIR, "%s.%s" % (item["stem"], ext_of(path) or "bin"))
+            shutil.move(path, target)
+            kept.append(os.path.basename(target))
+    if library:
+        ui._label = "Saving to Photos"
+        ui.done("%d item%s" % (saved, "" if saved == 1 else "s"))
+    converted = ctx["converted"]
     result = {
-        "t": "done", "m": manifest, "np": str(len(photos)), "nk": str(len(kept)),
+        "t": "done", "m": "", "np": str(len(ready)), "nk": str(len(kept)),
         "nf": str(ctx["failed"]) if ctx["failed"] else "",
         "nb": str(ctx["oversize"]) if ctx.get("oversize") else "",
         "nc": str(len(converted)) if converted else "",
         "conv": converted[0] if converted else "",
         "title": safe_title(ctx.get("title"), "")[:60],
     }
-    state = read_json(STATE_FILE, {})
-    state["last_run"] = {"at": time.time(), "result": "saved %d, kept %d" % (len(photos), len(kept))}
-    write_json(STATE_FILE, state)
-    if photos:
+    if ready:
+        # Shortcuts saves these. Until it has, they count as unsaved.
+        write_json(manifest, {"photos": ready, "kept": kept, "url": url})
+        result["m"] = manifest
         with open(PENDING_FILE, "w", encoding="utf-8") as handle:
             handle.write(manifest)
+    else:
+        # Everything is where it belongs: say so, and leave nothing behind.
+        result["msg"] = summary(saved, library.where() if library else "", converted, len(kept),
+                                ctx.get("oversize", 0), ctx["failed"])
+        shutil.rmtree(ctx["dir"], ignore_errors=True)
+    log("saved %d from a-Shell, %d for Shortcuts to save, %d kept in Files" % (saved, len(ready), len(kept)))
+    state = read_json(STATE_FILE, {})
+    state["last_run"] = {"at": time.time(),
+                         "result": "saved %d, kept %d" % (saved + len(ready), len(kept))}
+    write_json(STATE_FILE, state)
     if latest:
         result["upv"] = latest["v"]
         result["upurl"] = latest["url"]
     ui.write("\n  %s\n" % ui.c("92", "Finished. Returning to Shortcuts."))
     return callback(payload, result)
-
-
-def cmd_finish(payload):
-    """Advanced mode, last step: the files are already here and the user has
-    said how to convert the ones Photos cannot play ("best", "small"), or to
-    keep them as they are ("keep")."""
-    url = clean_url(str(payload.get("url") or ""))
-    job_dir = os.path.join(JOBS_DIR, job_id_for(url))
-    job = read_json(os.path.join(job_dir, "job.json"), {})
-    files = [path for path in job.get("files") or [] if os.path.exists(path)]
-    if not url or not files:
-        return callback(payload, {"t": "info", "title": "Nothing to finish",
-                                  "msg": "That download is no longer in a-Shell. Download it again."})
-    cfg = payload.get("cfg") or {}
-    decision = str(payload.get("decision") or "")
-    ui.header(hostname(url) or "download")
-    log("finishing %s  decision=%s" % (url, decision))
-    ctx = {
-        "url": url, "dir": job_dir, "convert": decision if decision in CONVERT_LEVELS else False,
-        "quality": settings_from(cfg), "titles": job.get("titles") or {},
-        "title": job.get("title") or "", "failed": to_int(job.get("failed"), 0),
-    }
-    remove(os.path.join(job_dir, "job.json"))
-    latest = {"v": job["upv"], "url": job.get("upurl") or RELEASES_URL} if job.get("upv") else None
-    return deliver(payload, ctx, files, os.path.join(job_dir, "manifest.json"), latest)
 
 
 def cmd_setup(payload):
@@ -2285,8 +2355,17 @@ def cmd_update(payload):
     except InstallError as exc:
         return callback(payload, {"t": "error", "kind": "install", "msg": str(exc), "url": ""})
     check_project_updates(state, str(payload.get("v") or "0"), force=True)
+    state.pop("photos_off", None)  # an update is also the way to try saving from a-Shell again
     write_json(STATE_FILE, state)
     versions = tool_versions()
+    # This helper keeps running to the end of the update. What will run next
+    # time is whatever is in the file now.
+    try:
+        with open(os.path.abspath(__file__), "r", encoding="utf-8") as handle:
+            found = re.search(r'^HELPER_VERSION = "([^"]+)"', handle.read(), re.M)
+        versions["helper"] = found.group(1) if found else HELPER_VERSION
+    except OSError:
+        pass
     title = "Download tools updated" if ok else "The update could not be completed"
     return callback(payload, {"t": "info", "title": title, "msg": describe_versions(versions)})
 
@@ -2464,7 +2543,7 @@ def main(argv):
         except Exception:
             pass
     use_site_dirs(read_json(STATE_FILE, {}).get("site_dirs"))
-    commands = ("run", "finish", "setup", "update", "status", "signin", "logout", "reset")
+    commands = ("run", "setup", "update", "status", "signin", "logout", "reset")
     if command not in commands or to_int(payload.get("p"), PROTOCOL) != PROTOCOL:
         # A shortcut from another version is talking to this helper.
         callback(payload, {"t": "error", "kind": "outdated", "url": "",
@@ -2479,8 +2558,6 @@ def main(argv):
             cmd_update(payload)
         elif command == "status":
             cmd_status(payload)
-        elif command == "finish":
-            cmd_finish(payload)
         elif command == "reset":
             cmd_reset(payload)
         elif command == "signin":

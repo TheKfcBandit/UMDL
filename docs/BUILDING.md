@@ -115,13 +115,11 @@ On an iPhone or iPad with a-Shell installed and UMDL not yet set up:
 - [ ] Share a YouTube link to UMDL and choose **Quick setup**. Nothing else is asked, the tools install, the video lands in the UMDL album.
 - [ ] Share a second link. No questions, saved, notification shown.
 - [ ] Open UMDL from the Shortcuts app. The main menu appears at once, with icons, and no other message first.
-- [ ] Open Status. The "Converts with" line lists `hevc_videotoolbox`.
-- [ ] Settings: change Resolution, then Frame rate. The list comes back after each with the new value. Tap Mode and When finished; each switches without a menu. **Done** closes it.
-- [ ] Share a 4K YouTube link in Simple mode. It downloads, converts, and plays in Photos at 2160p; the notification says "1 converted". Note how long the conversion took, and copy the log: the "converted … with …" line shows which encoder step ran.
+- [ ] The first download asks to let a-Shell add to Photos. Allow it. The video is in the album, named by its title, dated today.
+- [ ] Share a long video, 30 minutes or more. It is saved; nothing is kept in Files.
+- [ ] Share a 4K YouTube link. It is saved at 2160p and the notification says "1 converted". Copy the log from Status: the "converted … with …" line shows which encoder step ran.
 - [ ] Set Resolution to 1080p and share the same link. No conversion; the saved video is 1080p.
-- [ ] Set Convert to **Smaller file**, Resolution back to Best available, and share it again. The result is clearly smaller.
-- [ ] Set Mode to Advanced and share the same link. A list with icons shows the versions; the prompt shows best video, best audio and single file. Choosing the row with an arrow asks how to convert; each row downloads what it says.
-- [ ] In Advanced mode, share a link whose only version is VP9 or AV1. No list; after the download the question shows the source and the result. Try all three answers.
+- [ ] Settings: change Resolution, then Frame rate. The list comes back after each with the new value. **Done** closes it.
 - [ ] Share a post with several images from X, Instagram or Reddit.
 - [ ] Share a playlist with more than 10 videos. The menu appears; **First 10** saves ten.
 - [ ] Share an audio link (SoundCloud). The file appears in Files under a-Shell › UMDL › Saved.

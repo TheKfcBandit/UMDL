@@ -41,8 +41,8 @@
 
 // Keep in step with version.json. The protocol number only changes when the
 // payload or callback format does.
-@umdlVersion = "1.4.0"
-@protocol = "4"
+@umdlVersion = "1.5.0"
+@protocol = "5"
 
 @shared = "{ShortcutInput}"
 @link = ""
@@ -50,8 +50,6 @@
 @runMode = "auto"
 @runLimit = ""
 @forceUpdate = ""
-@pick = ""
-@decision = ""
 @toolCmd = "none"
 @signInTo = ""
 @saveManifest = ""
@@ -66,10 +64,8 @@
 @cfgAlbum = "UMDL"
 @cfgThreshold = "10"
 @cfgAfter = "notify"
-@cfgMode = "simple"
 @cfgRes = "best"
 @cfgFps = "best"
-@cfgConvert = "best"
 @haveCfg = "0"
 @needsHelper = "0"
 @saveCfg = "0"
@@ -82,6 +78,7 @@
 @jobTitle = ""
 @updateVersion = ""
 @updateLink = ""
+@doneText = ""
 
 /* ------------------------------------------------------------------------
  * 1. What started this run: a callback from the helper, or something shared
@@ -110,15 +107,16 @@ if @shared beginsWith "UMDLCB:" {
             @cfgAlbum = "{cbCfg['album']}"
             @cfgThreshold = "{cbCfg['threshold']}"
             @cfgAfter = "{cbCfg['after']}"
-            @cfgMode = "{cbCfg['mode']}"
             @cfgRes = "{cbCfg['res']}"
             @cfgFps = "{cbCfg['fps']}"
-            @cfgConvert = "{cbCfg['convert']}"
             @haveCfg = "1"
         }
 
         if @cbType == "done" {
+            // Either the helper saved the files itself and says so in "msg", or it
+            // names the list of files that are left for this shortcut to save.
             @saveManifest = "{cb['m']}"
+            @doneText = "{cb['msg']}"
             @failedCount = "{cb['nf']}"
             @oversizeCount = "{cb['nb']}"
             @convertedCount = "{cb['nc']}"
@@ -150,60 +148,6 @@ if @shared beginsWith "UMDLCB:" {
                     @runMode = "first"
                 item "Cancel":
                     stop()
-            }
-        }
-
-        // Advanced mode, before the download: which version to get. The helper sends
-        // the rows; the two pictures are put in here. Each step leaves a line in
-        // the helper's log, so a log shows how far a run got.
-        if @cbType == "choose" {
-            @link = "{cb['url']}"
-            @runMode = "{cb['mode']}"
-            @runLimit = "{cb['limit']}"
-            rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
-                "command": "dash -c 'echo \"shortcut: version list received\" >> $HOME/Documents/UMDL/last.log'",
-                "openWindow": "close",
-                "keepGoing": true,
-                "ShowWhenRun": false
-            })
-            const iconGet = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEUKhP/9/v8AfP9KpP/A3/9vt/+SyP80mP+42//G4v9grv8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA9PvMMAAAAMHRSTlP//////////////wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACG2DDAAAABIklEQVR42u2Y2xKDIAxEMcjF/v8HVwUEUasDSWec2fPYhxwt2t1UKQAAAACAE4hIdLwz1gka6DPMWDmDG1a0lIFMEHgxgQ2CSUygpe8gCkYIIIAAgv8LtpQ8CFjys0jJSsCTn2VK7gVM+RlT0lAtIJ78TCm5GkpBmt+bPiklV0Mh2Ob35mcetBiSoPqY6RbmUTpddJ4/sXWV5TzjXJ/nW8Y2tEyOV53ns7zThaGCq0ReGfhK6rmBswSfGXhL9tHAXeJrA/+SsDdILCGlQWbJyQapJSoZ5Ja0YLD03jVWfhF/518T9/Sdqb6h59RDtbqn+bl1w0May9d1VNY0lq+isdzQWL7o8VfUWr6e3sLUsdJ478ffeG+k3zP8OAEAAABAKfUFuW8IProbi9oAAAAASUVORK5CYII="
-            const iconChange = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEVdW+X9/f5gXuaHhuzV1PhmZed2dOnn5vupqPG6ufSVlO5OTOSAfuvHxvbg3/oAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADeEmLFAAAAMHRSTlP///////////////////8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABd9rBbAAABNElEQVR42u2X4W7DIAyEY4MhJO3e/3ELiKbqVhaE40mT7pP61xeMfVeWBQAAAAAAgH8P25aXYPz9QqvtIYTIi6VCFqDoDA9RBIiSToHrjz/RBMgHlYLIyQkym+IQayTf5SlAiecUeFlpjBh2xTUOsbKxwF2mWnQfrb/NzpAfKq+Z1Jvrc/TfaJu5TZDOLbjL0yrYzIxEu8Vn4SVqH3qrH4Jh4OQqjtz3YiUyL6uf6KfAcmF7yr45o2nJVbc6j0YCecoTNQH5vA+s61WIzRDcPpF65+15RU7sJlucM+v6baN+7efqb+OBc5u6hzQuMDdj+3HDp6nPyhk9/VexsG7LSm79Em6KTGg+Ua5xt3mKHLvQ2+S6zUozCl+GZlclJJkKdALnYolg/OQzfrECAAAAAADwFzwAOmkHhGpYdQIAAAAASUVORK5CYII="
-            const chooseRows = replaceText("@UMDL-ICON-GET@", "{iconGet}", "{cb['cards']}")
-            const chooseCards = replaceText("@UMDL-ICON-CONVERT@", "{iconChange}", "{chooseRows}")
-            const chooseFile = setName(chooseCards, "umdl-versions.vcf", true)
-            @chooseContacts = chooseFile.contact
-            const chooseAnswer = chooseFromList(@chooseContacts, "{cb['info']}")
-            @pick = "{chooseAnswer}"
-            rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
-                "command": "dash -c 'echo \"shortcut: version chosen\" >> $HOME/Documents/UMDL/last.log'",
-                "openWindow": "close",
-                "keepGoing": true,
-                "ShowWhenRun": false
-            })
-            // An arrow in the name means Photos cannot play that version as it is.
-            if @pick contains "→" {
-                menu "{@pick}\n\nPhotos cannot play this version. Convert it after the download?" {
-                    item "🎞️ Best quality":
-                        @decision = "best"
-                    item "🗜️ Smaller file":
-                        @decision = "small"
-                    item "📁 Keep in Files":
-                        @decision = "keep"
-                }
-            }
-        }
-
-        // Advanced mode, after the download: Photos cannot play what arrived.
-        if @cbType == "convert" {
-            @link = "{cb['url']}"
-            @toolCmd = "finish"
-            menu "{cb['info']}" {
-                item "🎞️ Best quality":
-                    @decision = "best"
-                item "🗜️ Smaller file":
-                    @decision = "small"
-                item "📁 Keep in Files":
-                    @decision = "keep"
             }
         }
 
@@ -341,10 +285,8 @@ if @haveCfg == "0" {
             @cfgAlbum = "{cfg['album']}"
             @cfgThreshold = "{cfg['threshold']}"
             @cfgAfter = "{cfg['after']}"
-            @cfgMode = "{cfg['mode']}"
             @cfgRes = "{cfg['res']}"
             @cfgFps = "{cfg['fps']}"
-            @cfgConvert = "{cfg['convert']}"
             @haveCfg = "1"
         }
     }
@@ -358,8 +300,7 @@ if @haveCfg == "0" {
     @resumeBlob = "{lastGroup}"
 }
 
-// A setting that is missing falls back to its default. Settings saved by
-// earlier versions have other words for the conversion setting, or none.
+// A setting that is missing falls back to its default.
 @probe = "[{@cfgAlbum}]"
 if @probe == "[]" {
     @cfgAlbum = "Recents"
@@ -372,9 +313,6 @@ if @probe == "[]" {
 if @probe == "[]" {
     @cfgAfter = "notify"
 }
-if @cfgMode != "advanced" {
-    @cfgMode = "simple"
-}
 @probe = "[{@cfgRes}]"
 if @probe == "[]" {
     @cfgRes = "best"
@@ -383,18 +321,6 @@ if @probe == "[]" {
 if @probe == "[]" {
     @cfgFps = "best"
 }
-if @cfgConvert == "0" {
-    @cfgConvert = "off"
-}
-if @cfgConvert == "never" {
-    @cfgConvert = "off"
-}
-if @cfgConvert != "off" {
-    if @cfgConvert != "small" {
-        @cfgConvert = "best"
-    }
-}
-
 /* ------------------------------------------------------------------------
  * 3. First run
  * ---------------------------------------------------------------------- */
@@ -487,10 +413,13 @@ if @probe != "[]" {
             "copyFile": true,
             "ShowWhenRun": false
         })
+        // a-Shell names the copy after its whole path. Give it its own name back.
+        const ownName = matchText("[^/]+$", "{photoPath}")
+        const namedFile = setName(mediaFile, "{ownName}", true)
         if @cfgAlbum == "Recents" {
-            savePhoto(mediaFile)
+            savePhoto(namedFile)
         } else {
-            savePhoto(mediaFile, @cfgAlbum)
+            savePhoto(namedFile, @cfgAlbum)
         }
         @savedCount += 1
     }
@@ -533,12 +462,17 @@ if @probe != "[]" {
     if @probe != "[]" {
         @summary = "{@summary}\n{@failedCount} failed."
     }
+    @doneText = @summary
+}
+
+@probe = "[{@doneText}]"
+if @probe != "[]" {
     @summaryTitle = "UMDL"
     @probe = "[{@jobTitle}]"
     if @probe != "[]" {
         @summaryTitle = @jobTitle
     }
-    showNotification("{@summary}", "{@summaryTitle}")
+    showNotification("{@doneText}", "{@summaryTitle}")
 
     @probe = "[{@updateVersion}]"
     if @probe != "[]" {
@@ -576,7 +510,6 @@ if @probe != "[]" {
 
 if @needsMenu == "1" {
     const iconDownload = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEUKhP/9/v8AfP9KpP/A3/9vt/+SyP80mP+42//G4v9grv8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA9PvMMAAAAMHRSTlP//////////////wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACG2DDAAAABIklEQVR42u2Y2xKDIAxEMcjF/v8HVwUEUasDSWec2fPYhxwt2t1UKQAAAACAE4hIdLwz1gka6DPMWDmDG1a0lIFMEHgxgQ2CSUygpe8gCkYIIIAAgv8LtpQ8CFjys0jJSsCTn2VK7gVM+RlT0lAtIJ78TCm5GkpBmt+bPiklV0Mh2Ob35mcetBiSoPqY6RbmUTpddJ4/sXWV5TzjXJ/nW8Y2tEyOV53ns7zThaGCq0ReGfhK6rmBswSfGXhL9tHAXeJrA/+SsDdILCGlQWbJyQapJSoZ5Ja0YLD03jVWfhF/518T9/Sdqb6h59RDtbqn+bl1w0May9d1VNY0lq+isdzQWL7o8VfUWr6e3sLUsdJ478ffeG+k3zP8OAEAAABAKfUFuW8IProbi9oAAAAASUVORK5CYII="
-    const iconPencil = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEVdW+X9/f5gXuZ7eupjYebW1fnAv/WHhuyop/G2tfOUk+7Hxvbn5/tRT+QAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA87qeUAAAAMHRSTlP//////////////////wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABT2Q8YAAAA7ElEQVR42u2Y2w7CIBBE2QUECv7/74qJqQVqTFrGaJzz0rczlEvD1BhCCCGEEEJ+Hq0g9c0D4g8xBodKUGO9VMqCSXDGygNIwsYv4sB+idNfofWLnx3Q+acH9H5JcwMGv9ipAaM/gf0X7PzTTz/99NP/F34F+43N4PEH7PjVRKi/BmSovwZ4qL9uUqy/3aOA8atZtve3rv21HAxIq7+8a3t6Zo19vpe9zdLU8tcQ47ELsJaSU7B9RXJeRg4lOPec89en71wLGRdQr2lmwO4XcC9gYpmtxyP7nqllGfkDZI3ojpl+IJQQQgghX84NFOEGlcO4PHYAAAAASUVORK5CYII="
     const iconResume = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEX/lQD//vz/jQD/qTP/6cz/s0z/xHP/26n/4rr/yoP/1Zr/8Nv/vGD/oR3/r0QAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA98tO+AAAAMHRSTlP///////////////////8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABd9rBbAAABeklEQVR42u1Y267DIAzLBSgt3f7/c08vNN2qsvNAIm1S/DrJKTE4zgAcDofD4fhS8Eim/DRjNK1AEyKbHiEgoqkECz8GUwlWTGYy0LAVwGRWASuYDCXYK9h0KEkBdaFp60mWAjhoNomA0xDwHXpCE4xX8g1KnrHQYwMqQlMMLX6cNAqkJv3ISuZ5iyGCigL3/CHVW9v9/S/yhjHCrsbEoHRBKQp9fq7frNiaHUXe1MYaS2JSpD8bJNZJP2XN4pxmw6UY+fJ1tljFoKND4XfHe7DtkFzSBxgXAC/wn8hmWZ2y8TU9vDQ3X/qjz7pl2nBTo97h8zEi1kWhJ1lIoLh/y/XHohHVP1yBLic57G4xVGqdroDKtlHehyadKb7PCl/WjfFMWgSz2o4gTVrj1rMeK51huKj5RdUi56Ae39vZXSvO5BZ90YpLjf1m0HM9vjlE0B3V8VIizMopddtiJcknBoMZsb4zjjE+wIL9rGL7f53D4XA4HA6H42vxB3CSBr/H0xu8AAAAAElFTkSuQmCC"
     const iconSettings = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEWNjZL+/v6Tk5ioqKzm5ue2trnX19mbm6DFxce+vsHf3+EAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA8ZHqjAAAAMHRSTlP//////////////wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACG2DDAAAABiElEQVR42u1Yi66CMAyFvjbu/3+wAl7ZZgO4UqNJT9RIxJadvjsMgUAgEAgEfg1wfyHC8sVHPsp4h6CPBhh4fIB9NOD4BLpQRJsCcqFoLHAdRavbNAw9Odp+7TRrWtyGUFeAC2mS+k2Opds0FBVO1W3ytAnkVyPzdpk6FUghEZjKE1CG4loucJt9gDWwjoDfqSCdV5DMuWEfZM9uHgzVrr4H7k8WfIIlYksyamNBchZq+bHkO66fdRWFf5VOU30vn1Zm8QDz51SFcUcn8F/fqX5SUE9G73cCoPgPQXWDKL4Epgho/g+2aKCjhKkdgUyJWloSJ0vSVhjKLcNo4chdgUoRHPnZO3WNjixoNPKJ89vcVA20+oZsCzQtVRRmhuqI1DM0aMmO51S3visKk2XsqZiQhwzIVxRkteDIhMhyYcHxLpneRd+9bfFuvNxbx9/vrt0HkGqEwia8CO0jVDMElkMZpUuGQPcx1n8Q914lfGQZ8sF1jvtCyn+l5r0U9F9rBgKBQCAQcMQNrFEKlhcUZ94AAAAASUVORK5CYII="
     const iconKey = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEWvUt7+/f6rSdy+c+T05/qzW+DCeuXlyPTeuvHq0vbOleu5aOLWpu7gu/LJiummPtoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAItKT7AAAAMHRSTlP/////////////////////AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACpwcFTAAABW0lEQVR42u2YwXKEIBBEoWVAQM3//21wV0txraQqTh9SNe+0XpqVeQygc4ZhGIZhGMb/AA1qfi1TJI6AxTdG2ggY/IsF3HyfwM33Gdx8X8DNDw7UfIpGXf46Aqj5zSPdWTrPP0OkU/6Icful2DDO/7+1ull7gKs/SG9Vaf44aSOEASx/mqGI0YHnTxIHxvzPe3U1De38dIqGblPQ57dnFUPXTV3ktbkP1+6mYSikpFbOkKa6fHRPPDYUmPwnR3d+aihc+jH/KM9fpyf/lv9Qnrv8WTH/bv41V5Xc5Ku2/bI3nSISs/4ZC5tBQbDKsj8p7ozhfKpC3V6hQrsE0iu1qA9wcVaxyqFLlKC+uefd/DXya+pnTHOdpQrIRNC0Hss3U07quGmlmsvgqCunU9ydgdSvMhgCNX8t9KkOgXHjbpvu/H6LtDjSZRWuxjgI85ME+4OHYRiGYRiGocA31g4H4eUHy/0AAAAASUVORK5CYII="
@@ -584,7 +517,7 @@ if @needsMenu == "1" {
     const iconInfo = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEUwsMf9/v4nrMRkw9XL6/Go3udbwNJBtsyH0d635Ovc8vUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB3bVn6AAAAMHRSTlP//////////////wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACG2DDAAAAAoklEQVR42u2YWw7DMAjACHl07f0PvKzttv9J7lTJPgBWICCSCBERERH5gZyg4aPW4BQZvUx6JBW/lZ0GGbKXk57MAcoH5AhZv4J6TwGdIrzI/DXFG40fFfywu2JaB5qhXGaV18HVeAH7eBesh2DD2uDdySNhAZWjbAoUKFCgQIECBXdYWy7ci7An1DjiP7j1um5o/FcZRo2kf6RCRERE5A88AcTyA2ARwwv1AAAAAElFTkSuQmCC"
     const iconStatus = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEUxrOX8/v7L6vlqw+xQuemT0/I8seep3PS14faDze/d8fsao+Nhv+wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABt4JAtAAAAMHRSTlP/////////////////AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAC8AjCNAAABFUlEQVR42u2XUQ+CMAyEWdfBBv7/3ythjFWGMSD3oLnvycTZc+2Vlq4jhBBCCCGE/B8axUPju5kEFHALCovvs8AAE5AsMIIvgMtRLAIBaKEFwQiETQCTo3oB5yDNloxARAiMRsDhPBpgRZDVPyijriX2k9xp1L4vn6ahPCTS2xzV0yeML4UtM2qNOo8HMUdif7WxbINJNaruvz+Vub6NPxjdOh72/+ALgeXnjy1Hvj3hLz08Xy7QVaNKK3DOQ3IYfxWWtgJuPNt/6g2662nNxRBz6N6eS/mCaYKNZtxoCAeFgY0eBe5fwOlcOySBFyTUhqTQElujwtbgAC2xaebffVHIPsK9J+Q9Dxr/yg5BCCGEEELIR56JxgSo7rBKDAAAAABJRU5ErkJggg=="
 
-    @cards = "BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Download from clipboard;;;;\nORG;CHARSET=utf-8:The link you copied;\nPHOTO;ENCODING=b:{iconDownload}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Enter a link;;;;\nORG;CHARSET=utf-8:Type or paste;\nPHOTO;ENCODING=b:{iconPencil}\nEND:VCARD\n"
+    @cards = "BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Download from clipboard;;;;\nORG;CHARSET=utf-8:The link you copied;\nPHOTO;ENCODING=b:{iconDownload}\nEND:VCARD\n"
     @probe = "[{@resumeBlob}]"
     if @probe != "[]" {
         @cards = "{@cards}BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Resume last download;;;;\nORG;CHARSET=utf-8:Continue where it stopped;\nPHOTO;ENCODING=b:{iconResume}\nEND:VCARD\n"
@@ -605,20 +538,6 @@ if @needsMenu == "1" {
         @probe = "[{@link}]"
         if @probe == "[]" {
             alert("The clipboard holds no link.", "No link")
-            stop()
-        }
-        @hasLink = "1"
-    }
-
-    if @choice == "Enter a link" {
-        const typed = prompt("Link", "URL")
-        @typedText = "{typed}"
-        const typedLinks = getURLs(@typedText)
-        const typedFirst = getFirstItem(typedLinks)
-        @link = "{typedFirst}"
-        @probe = "[{@link}]"
-        if @probe == "[]" {
-            alert("That is not a web link.", "No link")
             stop()
         }
         @hasLink = "1"
@@ -709,17 +628,15 @@ if @needsMenu == "1" {
  * Each row shows its value. A row with two values switches when tapped; a
  * row with more opens one menu. Every change is saved at once.
  *
- * Resolution and frame rate decide which version is downloaded. Convert only
- * decides what happens to a video Photos cannot play; in advanced mode that is
- * asked each time instead.
+ * Resolution and frame rate decide which version is downloaded. There is
+ * nothing else to decide: a video Photos cannot play is converted at the best
+ * quality, and only then.
  * ---------------------------------------------------------------------- */
 
 if @openSettings == "1" {
     const iconAlbum = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEX/Nl7//P3/OGD/K1X/RGn/aYf/y9X/g5z/tMP/Wnv/ma3/rb3/2+L/6O3/1t7/jqT/sL8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABjb0JWAAAAMHRSTlP//////////////////////wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABKBZhFAAABa0lEQVR42u2X2XKDMAxFbcl4YSn9/6+tAIekLXE8svzAjM5Lwgy+F8mbZIyiKIqiKIqi3AUo0q7e/kZxtEHjigCaBgdAN37ZIvOUsEF/WOxnVm4MpG+rGBF4+XdLnYEdWA6AY6W+9TwDM9caWMeYBspQjh9Ky3Rh5+g02IYicfkW+nYDRw/B+3B5aAgZTNvvdJFnGQMMx5/wX0XIwL9djHcx6J2i7pP8ukz7GNByJw556GKwbzFSW+Of+0vM4BCjyf5+OmwBSRoApu3pjAGEI8j6pwPdFnSRyRmc+tlhz1dCuUlG97xdNod9881yy9TAa/USMW/uEY1UBL+roykfHpQkmZ0M76qvWcbgcZxelURR4jSNhXpC4tKf+lReD4Ml2l4GsFQXXolT/wLGWv2Z2XykWoPALK9xrdOPyG5yqurrCOwuiloQ/zH/wTR0adTiuaFIMtjUZ9JgLNLy+TV9eHsnriiKoiiKotyFH8MNDUvrUGYjAAAAAElFTkSuQmCC"
-    const iconMode = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEWvUt7+/f6rSdzr1PfDfebWp+7lyPTGhOfz5vq6auK+cuTctfHPmOuzW+CmPtrhv/MAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABR3/AEAAAAMHRSTlP/////////////////////AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACpwcFTAAABFElEQVR42u2V6w7CIAxGoVx30/d/W3Esc6bMOKCJJt/5Pz5Kux6lAAAAAAAA+C+IZE+nZRHMoMEZreNkhSLI6Q2vJBJo0jtmIcH7rwnUt7WJYT04umcbEvONilQcr2YXbBjv2+NTLsXYYBmzGyoSzOth4tpc8vqckVqeflq/pvAhwDcFuBxgPwRc7v7W3OPXx3llhMtNoNGbhI+5hEQuwBQJVDul27E+2Hx/121M95y32YkCm+I4r9en8auEvYY4kowNZpPXhZIyQtpI1g5KUmptgwJJQ9Jiki5vtRNJ1zqZUZR0s5MZXNJtTmZwSfu+AVzSbU4+UfxxXqudzChLusHJjLKke/5okDQkDQAAAAAAwI/yAKRlCYPA0aJWAAAAAElFTkSuQmCC"
     const iconResolution = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEUxrOX7/f4+sednwuzJ6fhSuuqz4fWU1PLc8fuGzvCo3PUdpeRgv+sAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACe/qQSAAAAMHRSTlP/////////////////AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAC8AjCNAAAA60lEQVR42u2XwRLCIAxEC0moVf//e60zWqBCzZD0oLPv1mHJAoWWnSYAAAAAAAB8ibF+KhiuKYkzIaRcaQ4lTIP1ww5u119Zhgx4XybIa30+GsLIMjXKULdFfAzeTemcGVy2YUZ2NKCNagOQPDeoRDEb6FQGA1HtZYNBPHsGMLC+5Gg+yeShapM050Cpag+Oy8+DTdU7ReSnAj9xVbGpWszVVcWm6vQsrio21Z9+i1jVlWEAg69d77ejhCN2A0XCsRmoEo6TwUHCcTLwTTgT6RPOdex/sGgTzmD9tRCVNBKONYkDAAAAAACQeQCWqgW0cNEKHwAAAABJRU5ErkJggg=="
     const iconFps = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEX/lQD//v3/jQD/vmX/pzH/1Jn/xXP/zYf/uVv/3q//47z/5cEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA8//chAAAAMHRSTlP///////////////8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA8iIx5AAAAxklEQVR42u2XQRLCIAwAS6AU9f//1aljqTaAY3JRd8fTHjaQC3WaAAAAAAA8EHlHfZ5POScZKUO/hBuL9JWBFFaydJXhAvleC1E6yjJgCa85RTmsaJ9TlMsVtpyiTBPicUJkAhOY8AsTijSV04TUVvbn7em1UZTpfX7UtgdTUR79uqLkuKJdbJam8um31Xecnz79v+uXY7849iflsJ7nr38GakxRHh/XNaYohxXN0lXmK1wGykQ5nfNYWe6w/kYKAAAAAMCDKxZrBr1jpwzHAAAAAElFTkSuQmCC"
-    const iconConvert = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEVdW+X9/f5gXuaHhuzV1PhmZed2dOnn5vupqPG6ufSVlO5OTOSAfuvHxvbg3/oAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADeEmLFAAAAMHRSTlP///////////////////8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABd9rBbAAABNElEQVR42u2X4W7DIAyEY4MhJO3e/3ELiKbqVhaE40mT7pP61xeMfVeWBQAAAAAAgH8P25aXYPz9QqvtIYTIi6VCFqDoDA9RBIiSToHrjz/RBMgHlYLIyQkym+IQayTf5SlAiecUeFlpjBh2xTUOsbKxwF2mWnQfrb/NzpAfKq+Z1Jvrc/TfaJu5TZDOLbjL0yrYzIxEu8Vn4SVqH3qrH4Jh4OQqjtz3YiUyL6uf6KfAcmF7yr45o2nJVbc6j0YCecoTNQH5vA+s61WIzRDcPpF65+15RU7sJlucM+v6baN+7efqb+OBc5u6hzQuMDdj+3HDp6nPyhk9/VexsG7LSm79Em6KTGg+Ua5xt3mKHLvQ2+S6zUozCl+GZlclJJkKdALnYolg/OQzfrECAAAAAADwFzwAOmkHhGpYdQIAAAAASUVORK5CYII="
     const iconStack = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEX/lAD//v3/jgD/sEH/473/qC//yHz/vmX/yoD/6cr/1p3/2KH/8NoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADMVdtuAAAAMHRSTlP/////////////////AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAC8AjCNAAAAg0lEQVR42u3USRKAIAxEURII4HD/84q61VgFWuXivz1pBu0QAAAAAOxUvx1vOdsZ4Qb17kKLNOVYnkWmdE1k7gwwOViLyuJKfQeo5+rajiAP7OuAqINXtPjz1/FHTt78ycY/02Dxlr3zo+kt+og2pU1pU9qUNgVtSpvSprQpAAAA8CcbYRcH23+VprkAAAAASUVORK5CYII="
     const iconFinish = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEUzxlj8/v1a0Xiu6LxDy2XU89uE3Zpt1og8yWDC7s1g032U4ai568YfwUiN36IAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADZ5XGAAAAAMHRSTlP///////////////////8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABd9rBbAAAA1klEQVR42u2XWQ6DMAxEsU0WCu39j1upbZQAQXzg4afzDvDGLBk5w0AIIYQQQgj5H0as3UQmBfrlQ4IFhG+AoPzLzy8PjN+KH/SOql8ywj9Xf0T4Y/W/wP75CfCn6jfE/HqfPyCabGz8GdFkwWn+gybLweuAlZOqR/PLtZ7OfY95+dtPqV3/5QqdOgnmWUDN314Som/BpW1C9C7QzTMACmiVACmgNqGyYHrNreDOEnz9+wRv/y4BsIuuEiCLqIL9TQJszVXghnXPRQB/lSGEEEIIIYSc8Aa+OwN51z07VwAAAABJRU5ErkJggg=="
     const iconReset = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEX/RTr//f3/Oy//dGz/zsv/UUf/09D/TEL/6un/uLT/bGT/npj/jIb/LyL/YFf/wb3/4N4AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAqdfc0AAAAMHRSTlP//////////////////////wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABKBZhFAAABBUlEQVR42u2Y6QqDMBCEk82xUXu9/9NWoVWaAzSMhdL5fkggsJNj3GxiDCGEEEII+TNEg6zMbbjAlGz00S9En+yg4PFPNsNj56ApF7AjVCEU8a2DCsiQx09g55j7Z/x4Qzhqc878yQQAjiqd06LTURXntOhzVNgdv9NRpXNa9DpK/b74j+5/Tka3B9Pv0y1/Vvqu7b7DOq6yWPGCyxOX+toPoGwkrrW7E0ZBmmZKelaqxqbsbwk4E0zMW1ABee/GR4sCFKAABShwUEDXsHqGwLiOezxnBkvBnrd+5Mh8HY81wql1F7DyatTxUXHX8NplZ1ABPlSURTv4uUIK+D5ECCGEEHKIJ2TGCeWfM7REAAAAAElFTkSuQmCC"
@@ -735,10 +652,6 @@ if @openSettings == "1" {
             if @cfgAlbum == "Recents" {
                 @albumDetail = "Library only"
             }
-            @modeDetail = "Simple · uses these settings"
-            if @cfgMode == "advanced" {
-                @modeDetail = "Advanced · asks each time"
-            }
             @resDetail = "Up to {@cfgRes}p"
             if @cfgRes == "best" {
                 @resDetail = "Best available"
@@ -746,13 +659,6 @@ if @openSettings == "1" {
             @fpsDetail = "Up to {@cfgFps} fps"
             if @cfgFps == "best" {
                 @fpsDetail = "Best available"
-            }
-            @convertDetail = "Best quality"
-            if @cfgConvert == "small" {
-                @convertDetail = "Smaller file"
-            }
-            if @cfgConvert == "off" {
-                @convertDetail = "Off"
             }
             @afterDetail = "Show a notification"
             if @cfgAfter == "photos" {
@@ -763,7 +669,7 @@ if @openSettings == "1" {
                 @doneDetail = "Install and finish"
             }
 
-            @settingCards = "BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Album;;;;\nORG;CHARSET=utf-8:{@albumDetail};\nPHOTO;ENCODING=b:{iconAlbum}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Mode;;;;\nORG;CHARSET=utf-8:{@modeDetail};\nPHOTO;ENCODING=b:{iconMode}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Resolution;;;;\nORG;CHARSET=utf-8:{@resDetail};\nPHOTO;ENCODING=b:{iconResolution}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Frame rate;;;;\nORG;CHARSET=utf-8:{@fpsDetail};\nPHOTO;ENCODING=b:{iconFps}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Convert;;;;\nORG;CHARSET=utf-8:{@convertDetail};\nPHOTO;ENCODING=b:{iconConvert}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Large downloads;;;;\nORG;CHARSET=utf-8:Ask above {@cfgThreshold} items;\nPHOTO;ENCODING=b:{iconStack}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:When finished;;;;\nORG;CHARSET=utf-8:{@afterDetail};\nPHOTO;ENCODING=b:{iconFinish}\nEND:VCARD\n"
+            @settingCards = "BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Album;;;;\nORG;CHARSET=utf-8:{@albumDetail};\nPHOTO;ENCODING=b:{iconAlbum}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Resolution;;;;\nORG;CHARSET=utf-8:{@resDetail};\nPHOTO;ENCODING=b:{iconResolution}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Frame rate;;;;\nORG;CHARSET=utf-8:{@fpsDetail};\nPHOTO;ENCODING=b:{iconFps}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Large downloads;;;;\nORG;CHARSET=utf-8:Ask above {@cfgThreshold} items;\nPHOTO;ENCODING=b:{iconStack}\nEND:VCARD\nBEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:When finished;;;;\nORG;CHARSET=utf-8:{@afterDetail};\nPHOTO;ENCODING=b:{iconFinish}\nEND:VCARD\n"
             // Nothing to reset before setup has finished.
             if @firstRun == "0" {
                 @settingCards = "{@settingCards}BEGIN:VCARD\nVERSION:3.0\nN;CHARSET=utf-8:Reset;;;;\nORG;CHARSET=utf-8:Sign out, or remove everything;\nPHOTO;ENCODING=b:{iconReset}\nEND:VCARD\n"
@@ -803,15 +709,6 @@ if @openSettings == "1" {
                 @settingTouched = "1"
             }
 
-            if @setting == "Mode" {
-                if @cfgMode == "advanced" {
-                    @cfgMode = "simple"
-                } else {
-                    @cfgMode = "advanced"
-                }
-                @settingTouched = "1"
-            }
-
             if @setting == "Resolution" {
                 menu "Highest resolution" {
                     item "Best available":
@@ -838,18 +735,6 @@ if @openSettings == "1" {
                         @cfgFps = "60"
                     item "30 fps":
                         @cfgFps = "30"
-                }
-                @settingTouched = "1"
-            }
-
-            if @setting == "Convert" {
-                menu "When Photos cannot play a video" {
-                    item "Best quality":
-                        @cfgConvert = "best"
-                    item "Smaller file":
-                        @cfgConvert = "small"
-                    item "Off":
-                        @cfgConvert = "off"
                 }
                 @settingTouched = "1"
             }
@@ -896,7 +781,7 @@ if @openSettings == "1" {
 
             if @settingTouched == "1" {
                 @settingsChanged = "1"
-                const liveCfg = {"album": "{@cfgAlbum}", "threshold": "{@cfgThreshold}", "after": "{@cfgAfter}", "mode": "{@cfgMode}", "res": "{@cfgRes}", "fps": "{@cfgFps}", "convert": "{@cfgConvert}"}
+                const liveCfg = {"album": "{@cfgAlbum}", "threshold": "{@cfgThreshold}", "after": "{@cfgAfter}", "res": "{@cfgRes}", "fps": "{@cfgFps}"}
                 const liveCfgText = text("{liveCfg}")
                 const liveCfgBlob = base64Encode(liveCfgText, "None")
                 rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
@@ -930,7 +815,7 @@ if @firstRun == "1" {
 }
 
 if @saveCfg == "1" {
-    const cfgOut = {"album": "{@cfgAlbum}", "threshold": "{@cfgThreshold}", "after": "{@cfgAfter}", "mode": "{@cfgMode}", "res": "{@cfgRes}", "fps": "{@cfgFps}", "convert": "{@cfgConvert}"}
+    const cfgOut = {"album": "{@cfgAlbum}", "threshold": "{@cfgThreshold}", "after": "{@cfgAfter}", "res": "{@cfgRes}", "fps": "{@cfgFps}"}
     const cfgOutText = text("{cfgOut}")
     const cfgOutBlob = base64Encode(cfgOutText, "None")
     rawAction("AsheKube.app.a-Shell.ExecuteCommandIntent", {
@@ -983,7 +868,7 @@ if @needsHelper == "1" {
     }
 }
 
-const payload = {"v": "{@umdlVersion}", "p": "{@protocol}", "name": "UMDL", "url": "{@link}", "mode": "{@runMode}", "limit": "{@runLimit}", "force_update": "{@forceUpdate}", "pick": "{@pick}", "decision": "{@decision}", "cfg": {"album": "{@cfgAlbum}", "threshold": "{@cfgThreshold}", "after": "{@cfgAfter}", "mode": "{@cfgMode}", "res": "{@cfgRes}", "fps": "{@cfgFps}", "convert": "{@cfgConvert}"}}
+const payload = {"v": "{@umdlVersion}", "p": "{@protocol}", "name": "UMDL", "url": "{@link}", "mode": "{@runMode}", "limit": "{@runLimit}", "force_update": "{@forceUpdate}", "cfg": {"album": "{@cfgAlbum}", "threshold": "{@cfgThreshold}", "after": "{@cfgAfter}", "res": "{@cfgRes}", "fps": "{@cfgFps}"}}
 const payloadText = text("{payload}")
 const payloadBlob = base64Encode(payloadText, "None")
 @blob = "{payloadBlob}"

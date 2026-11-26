@@ -35,42 +35,31 @@ flowchart TD
     Q --> R["Count the items at the link"]
     R --> S{"More than the ask-first limit?"}
     S -- yes --> T["Callback: confirm"]
-    S -- no --> MD{"Mode"}
-    MD -- "Simple" --> U["Download the best version within the limits"]
-    MD -- "Advanced, nothing picked yet" --> PL["List the site's versions within the limits"]
-    PL -- "several" --> CH["Callback: choose"]
-    PL -- "one" --> U
-    MD -- "Advanced, version picked" --> U
-    U --> V{"Every video playable or repackable?"}
-    V -- yes --> W["Repack where needed, write manifest, callback: done"]
-    V -- "no, and decided" --> DC{"Decision"}
-    DC -- "best or small" --> CV["Convert to HEVC"] --> W
-    DC -- "off or keep" --> KF["Keep in Files"] --> W
-    V -- "no, Advanced and undecided" --> CQ["Callback: convert"]
+    S -- no --> U["Download the best version within the limits"]
+    U --> SV{"Can a-Shell save to Photos?"}
+    SV -- yes --> PH["Offer each file to Photos; convert only on a refusal"]
+    PH --> W["Callback: done, with what was saved"]
+    SV -- no --> HO["Prepare each file by the format list, write manifest"]
+    HO --> W2["Callback: done, with the manifest"]
     U -- nothing downloaded --> X["Callback: error"]
 
     T --> D
-    CH --> D
-    CQ --> D
     W --> D
+    W2 --> D
     X --> D
 
     D --> Y{"Callback type"}
     Y -- setup --> AE["Say that UMDL is ready"]
     Y -- confirm --> Z["Menu: all, first N, first only, cancel"] --> O
-    Y -- choose --> ZC["List: the versions on offer"]
-    ZC -- "plays in Photos" --> O
-    ZC -- "needs converting" --> ZQ["Menu: best quality, smaller file, keep in Files"] --> O
-    Y -- convert --> ZV["The same menu, with source and result"] --> FN["a-Shell: helper 'finish'"]
-    FN --> DC
     Y -- error --> AA["Menu: try again, update and retry, sign in, copy details"]
     AA --> O
     Y -- "info, status" --> AB["Show the message"]
-    Y -- done --> AC["Read manifest, save each file to the album"]
-    AC --> AD["Delete working files, notify, offer shortcut update"]
+    Y -- "done, saved" --> AD["Notify, offer shortcut update"]
+    Y -- "done, manifest" --> AC["Read manifest, rename and save each file to the album, delete working files"]
+    AC --> AD
 ```
 
-Version 1.3 added the **Mode** branch and the two callbacks it needs, `choose` and `convert`. Version 1.4 separated the two decisions in it: which version to download depends only on the resolution and frame rate limits, and what to do with a file Photos cannot play is decided afterwards, by the Convert setting in simple mode and by a question in advanced mode. The part from "Mode" to "Save to Photos" is drawn on its own in [BEHAVIOR.md](BEHAVIOR.md#which-version-is-downloaded).
+Version 1.5 removed the mode branch of 1.3 and 1.4 and moved saving into a-Shell. The saving part is drawn on its own in [BEHAVIOR.md](BEHAVIOR.md#saving).
 
 The first-run part of this chart is drawn in full in [BEHAVIOR.md](BEHAVIOR.md#first-run), which also describes every screen.
 
@@ -97,11 +86,9 @@ python umdl.py run <base64 JSON>
 | `mode` | `auto` (ask above the limit), `all`, `limit`, `first` |
 | `limit` | Item count for `mode: limit` |
 | `force_update` | `1` to upgrade the tools before downloading |
-| `pick` | Advanced mode: the title of the row chosen. Empty on the first request. The helper compares letters and digits only, so a title survives whatever Shortcuts does to its symbols |
-| `decision` | Advanced mode: `best`, `small` or `keep`. Sent with `pick` when the version chosen needs converting, and with `finish` |
-| `cfg` | The settings: `album`, `threshold`, `after`, `mode` (`simple`, `advanced`), `res` (`best` or a height), `fps` (`best`, `60`, `30`), `convert` (`best`, `small`, `off`; values stored by earlier versions are mapped) |
+| `cfg` | The settings: `album`, `threshold`, `after`, `res` (`best` or a height), `fps` (`best`, `60`, `30`) |
 
-Other commands take the same payload: `finish` (the second half of an advanced-mode download), `setup`, `update`, `status`, `signin` (the page to open travels in `url`), `logout`, `reset`. A command the helper does not know, or a payload with another protocol number, is answered with an `outdated` error.
+Other commands take the same payload: `setup`, `update`, `status`, `signin` (the page to open travels in `url`), `logout`, `reset`. A command the helper does not know, or a payload with another protocol number, is answered with an `outdated` error.
 
 ## The callback (helper to shortcut)
 
@@ -113,10 +100,8 @@ Every callback includes `cfg`, echoed from the payload, so the shortcut does not
 
 | `t` | Other fields | The shortcut then |
 |---|---|---|
-| `done` | `m` manifest path, `np` Photos count, `nk` kept-in-Files count, `nf` failed count, `nb` count kept in Files for being over 1 GB, `nc` converted count and `conv` what was converted ("VP9 → HEVC"), `title`, and `upv` and `upurl` when a newer release exists | Saves and notifies |
+| `done` | Either `msg`, the sentence to show when the helper saved everything itself; or `m`, the path of a manifest of files left for the shortcut to save, with `nk`, `nf`, `nb`, `nc`, `conv` for its summary. Always `title`, and `upv` and `upurl` when a newer release exists | Notifies, after saving what the manifest lists |
 | `confirm` | `url`, `n` item count or empty when only "more than" is known, `thr`, `title` | Asks how much to download |
-| `choose` | `url`, `info` what the site offers, `cards` the rows to list, `mode` and `limit` carried over from a `confirm` | Lists the versions, asks how to convert if the one chosen needs it, then sends `run` again with `pick` and `decision` |
-| `convert` | `url`, `n`, `info` the source and what it would become | Asks, then sends `finish` with `decision` |
 | `error` | `kind`, `msg`, `url` | Explains and offers fixes |
 | `setup` | `ver` | Says that UMDL is ready |
 | `info` | `title`, `msg` | Shows the message |
@@ -128,9 +113,19 @@ One result does not come from the helper. When the helper script cannot be downl
 
 The file list is not in the callback. It is in the manifest (`jobs/<id>/manifest.json`), which the shortcut reads with a background `cat`, so a 500-item download does not need a 500-item URL. Each file is then fetched with a-Shell's "Get File".
 
-## Getting files out of a-Shell
+## Saving
 
-"Get File" has two modes. By default a-Shell hands Shortcuts a reference to the file. On iOS 27.2 that mode stops the shortcut with "There was a problem running the shortcut" ([a-Shell issue 1138](https://github.com/holzschu/a-shell/issues/1138)). With `copyFile` set, a-Shell reads the file into memory and hands over the data, which works on 27.2 but times out somewhere between 500 MB and 2 GB. UMDL always sets `copyFile`, and the helper keeps any file over 1 GB in Files instead of listing it for Photos.
+a-Shell's Info.plist has declared `NSPhotoLibraryAddUsageDescription` since 2021, so its process may add to the Photos library. The helper does, with PhotoKit called through `ctypes` (`PhotosLibrary`): one `PHAssetCreationRequest` per file, with `originalFilename` set to the title, `creationDate` set to now, and the album added in the same change. `performChangesAndWait:error:` reports whether Photos took the file, which makes Photos itself the test of what it can play: the file is offered as it is, and converted only on a refusal.
+
+Album access needs more than add-only permission. If the app also declares `NSPhotoLibraryUsageDescription` and an album is set, full access is asked for; otherwise, or if that is refused, files go to the library.
+
+None of this can run off a device, so it is fenced:
+
+- `open_library()` returns nothing unless the declarations are present and access is granted.
+- Before each step, the step's name is written to `photos.step`, and removed after. If a-Shell stops in between, the next run finds the name, records it with the helper's version, and saves through Shortcuts until a different helper is installed.
+- Any error from the calls ends direct saving for that run, and the files go through Shortcuts.
+
+**Through Shortcuts** is what every version before 1.5 did. a-Shell's "Get File" has two modes. By default it hands Shortcuts a reference to the file; on iOS 27.2 that stops the shortcut ([a-Shell issue 1138](https://github.com/holzschu/a-shell/issues/1138)). With `copyFile` set, a-Shell reads the file into memory first, which works on 27.2 but stops on large files; a-Shell's source says of that line, "causes a crash for large files". So this path keeps anything over 1 GB in Files, and that limit is a guess. The copy is named after its whole path, so each file sits in a folder of its own under its final name, and the shortcut renames the copy to the last part of the path before saving.
 
 Background commands have a similar trap. a-Shell reports the action as failed when the last command exits with an error, unless `keepGoing` is set, and Shortcuts then stops in the same wordless way. Every background command UMDL sends sets `keepGoing`, and reads the output to decide what happened.
 
@@ -153,8 +148,7 @@ Everything is under `~/Documents/UMDL`, visible in the Files app as *a-Shell ›
 | `jobs/<id>/` | Working folder for one link. `<id>` is derived from the link, so sharing the same link again resumes |
 | `jobs/<id>/out/` | Finished files with plain names (`001.mp4`) |
 | `jobs/<id>/manifest.json` | What to save to Photos and what was kept |
-| `jobs/<id>/plan.json` | Advanced mode: the versions that were offered, so the label that comes back can be matched to a format |
-| `jobs/<id>/job.json` | Advanced mode: the downloaded files waiting for the convert-or-keep answer |
+| `photos.step` | The step of saving to Photos that is under way. Left behind only if a-Shell stopped during it |
 | `pending` | Path of a manifest that has not been saved to Photos yet |
 | `last.b64` | The payload of a download in progress; left behind only if it was interrupted |
 | `last.log` | Log of the last run |
@@ -162,46 +156,22 @@ Everything is under `~/Documents/UMDL`, visible in the Files app as *a-Shell ›
 
 ## Quality
 
-Two decisions, kept apart: which version to download, and what to do with a file Photos cannot play.
-
-**Which version.** The format string is always `bv*+ba/b/ba`, the best there is. What "best" means is given to yt-dlp as sort fields, `lang, res, fps, vcodec:h265, acodec:aac`:
+The format string is always `bv*+ba/b/ba`, the best there is. What "best" means is given to yt-dlp as sort fields, `lang, res, fps, vcodec:h265, acodec:aac`:
 
 - `res` and `fps` first, so size and smoothness decide before anything else. A resolution limit turns `res` into `res:1080`, which yt-dlp reads as "the largest up to this, and the smallest above it only when nothing fits".
-- `vcodec:h265` and `acodec:aac` after them. These rank H.265, then H.264, above VP9 and AV1, and AAC above Opus, but only between versions already equal in size and frame rate. A version Photos plays is therefore preferred when it costs nothing, and never at the price of a smaller picture.
+- `vcodec:h265` and `acodec:aac` after them. These rank H.265, then H.264, above VP9 and AV1, and AAC above Opus, but only between versions already equal in size and frame rate.
 - `lang` leads so that the sound stays in the original language whatever its codec.
 
-A frame rate limit cannot be a sort field: placed after `res` it would never apply where a site's larger versions are all 60 frames a second, and placed before it would prefer 30 frames over 25 before looking at size. It is a filter with a fallback instead: `bv*[fps<=?30]+ba/b[fps<=?30]/bv*+ba/b/ba`.
+A frame rate limit cannot be a sort field: placed after `res` it would never apply where a site's larger versions are all 60 frames a second. It is a filter with a fallback instead: `bv*[fps<=?30]+ba/b[fps<=?30]/bv*+ba/b/ba`.
 
-The conversion setting appears nowhere in this. One other format string exists, `YTDLP_FORMAT`, which admits only what Photos plays unless the site has nothing else; it is used when advanced mode's "Best without converting" is chosen for a link with several videos.
+A conversion, when Photos refuses a file, never changes the picture's size or frame rate. `conversion_attempts` returns the ffmpeg arguments to try, in order, limited to the encoders `ffmpeg -encoders` reports:
 
-**Advanced mode** replaces the format string with the exact formats behind the row that was picked, followed by the string above as a fallback in case the site's list changed between the two requests. The plan is built from yt-dlp's format list by the same rule, written out in `build_plan`: a frame rate limit first, then the largest picture within the resolution limit, the higher frame rate, a codec Photos plays, the higher bitrate; and for sound AAC if the site has it, otherwise the highest bitrate. Each row carries exact format ids, so what is listed is what is fetched. The codec after the arrow is the one this device's ffmpeg will produce.
-
-The rows travel as vCard text, the format the shortcut's own icon menus use. Where a picture belongs the helper writes a marker, `@UMDL-ICON-GET@` or `@UMDL-ICON-CONVERT@`, and the shortcut puts in the icon it carries. The list is then shown by the same actions as the main menu, which are known to work on a device; the first version of this list was built from a JSON array and was never seen in the one device test it had.
-
-**After the download** every video is inspected with ffprobe, because what a site says and what it serves can differ:
-
-| Found | Verdict | Action |
-|---|---|---|
-| H.264 or HEVC, compatible audio, MP4 or MOV | ready | Used as is |
-| Right video codec, wrong container or audio | repack | Rewrapped; video is copied, audio re-encoded to AAC 256 kbit/s only where Photos cannot play it |
-| HEVC tagged `hev1` | repack | Retagged `hvc1`, which Apple players require |
-| Any other video codec | convert | By the decision: `best`, `small`, or kept in Files |
-| No video stream | files | Kept in Files |
-
-The decision comes from the Convert setting in simple mode. In advanced mode it comes from the question asked with the version, or, when no version was asked about or the file turned out differently, from a `convert` callback after the download.
-
-A conversion never changes the picture's size or frame rate. `conversion_attempts` returns the ffmpeg arguments to try, in order, limited to the encoders `ffmpeg -encoders` reports. For `best`:
-
-1. `hevc_videotoolbox -q:v 75 -tag:v hvc1`. The device's hardware encoder in constant-quality mode, so the bitrate follows the picture. `main10` and `p010le` are added for a 10-bit source.
-2. `hevc_videotoolbox -b:v <rate>`. The same encoder by bitrate, for an ffmpeg build without the quality mode, which iOS builds may be. The rate is 1.1 times the source's, with a floor by resolution and a ceiling of 80 Mbit/s.
+1. `hevc_videotoolbox -q:v 75 -tag:v hvc1`, with `main10` and `p010le` for a 10-bit source.
+2. `hevc_videotoolbox -b:v <rate>`, for an ffmpeg build without the quality mode, which iOS builds may be.
 3. `h264_videotoolbox -profile:v high -b:v <1.6 × rate>`.
-4. `libx264 -crf 17 -preset veryfast`. Software, slow, visually lossless.
+4. `libx264 -crf 17 -preset veryfast`.
 
-For `small` the same four with quality 55, about half the bitrate, and `-crf 23`. The first that produces a file wins and is named in the log and in the notification. HEVC comes first because it is the only one of these that carries 4K at 60 frames a second and 10-bit colour at a size worth keeping, and every device that runs a-Shell plays it.
-
-Progress is read from a file ffmpeg writes (`-progress <file>`), not from its output, because reading the output of a running command is not something a-Shell is known to allow. If ffmpeg fails with that option, the same step is tried once more without it.
-
-HDR is not sought out. Where a site has both, the sort prefers the plain VP9 version to the HDR one of the same size, because whether the colour information survives the hardware encoder has not been checked on a device.
+Progress is read from a file ffmpeg writes (`-progress <file>`), not from its output.
 
 ## Which tool goes first
 
@@ -246,7 +216,6 @@ Bump `protocol` only when the payload or callback changes incompatibly. A helper
 - **File names are `001.mp4`, not titles.** a-Shell has no fork/exec, so commands are passed as one string. Names without spaces or symbols cannot be mis-parsed. Titles are restored for files kept in Files.
 - **The shortcut is linear, with flags.** Each section runs if its flag is set, and shared steps (saving settings, launching a-Shell) appear once near the end.
 - **Settings is a counted loop.** Shortcuts has no "repeat until". The list sits in a "Repeat 40 times" whose body is skipped once **Done** is tapped, which is what keeps the list on screen between changes without a second level of menus.
-- **Advanced mode opens a-Shell twice.** Listing a site's versions needs Python, and the question has to be asked in Shortcuts. The first visit lists and returns; the second downloads.
 - **"Open App" then a one-second wait before each foreground command.** Copied from SW-DLT, where it makes the hand-off to a-Shell reliable.
 - **Emptiness is never tested with "has any value".** On a device an empty text counts as a value, so that test is true when it looks like it should be false. The shortcut wraps the text in brackets and compares with `[]`. A test fails the build if a "has any value" condition appears.
 - **Dictionary conversions are guarded.** Shortcuts stops with an error if asked to turn non-JSON text into a dictionary, so anything that came over the network or from disk is checked for an expected key first.
