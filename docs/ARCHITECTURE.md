@@ -53,7 +53,7 @@ flowchart TD
     X --> D
 
     D --> Y{"Callback type"}
-    Y -- setup --> AE["Say that UMDL is ready"]
+    Y -- setup --> AE["Say that Ready"]
     Y -- confirm --> Z["Menu: all, first N, first only, cancel"] --> O
     Y -- choose --> ZC["Menu: Higher quality available.<br/>Converted, as it is, cancel"] --> O
     Y -- error --> AA["Menu: try again, update and retry, sign in, copy details"]
@@ -128,7 +128,7 @@ Every callback includes `cfg`, echoed from the payload, so the shortcut does not
 | `confirm` | `url`, `n` item count or empty when only "more than" is known, `thr`, `title` | Asks how much to download |
 | `choose` | `url`, `title`, `best` and `native`, the two sizes as text ("2160p60 HDR", "1080p60") | Asks **Higher quality available**, then runs the helper again with `convert` |
 | `error` | `kind`, `msg`, `url` | Explains and offers fixes |
-| `setup` | `ver` | Says that UMDL is ready |
+| `setup` | `ver` | Says that Ready |
 | `info` | `title`, `msg` | Shows the message |
 | `status` | `msg` | Shows the report and offers to copy it with the log |
 
@@ -213,16 +213,50 @@ The size in "Converting 2160p60 VP9 + Opus" comes from `tier()`, which names a p
 
 ## Which tool goes first
 
-- A site known for image or mixed posts (X, Instagram, Reddit, Bluesky, Imgur, Pixiv and others): gallery-dl, then yt-dlp.
+- A site in `SOURCES`: whatever the table names. Reddit is the one entry, and it names the browser route below.
+- A site known for image or mixed posts (X, Instagram, Bluesky, Imgur, Pixiv and others): gallery-dl, then yt-dlp.
 - Any other site yt-dlp has an extractor for: yt-dlp, then gallery-dl if it also knows the site.
 - A site only gallery-dl knows: gallery-dl, then yt-dlp's generic extractor.
 - Neither: yt-dlp's generic extractor, which looks for media in the page.
 
 The second tool runs only if the first produced nothing. If both fail, the first tool's error is the one shown.
 
-Reddit gets one more attempt. Both tools read a post from `www.reddit.com/…/.json`, and Reddit refuses that to many networks with "You've been blocked by network security", signed in or not; yt-dlp words the same refusal as "Your IP address is unable to access the Reddit API". The block page points to Reddit's API as the alternative, so when gallery-dl is blocked the helper runs it again with `-o api=oauth -o refresh-token=`, which makes it request a public API token and read the post from `oauth.reddit.com`. The empty `refresh-token` matters: without it gallery-dl 1.32.21 stops with an `AttributeError` before making any request.
+## Reddit, read from its page
 
-On the test device that was refused as well, so there is a last route that does not depend on Reddit accepting a download tool at all. a-Shell has a real browser: the web view behind `internalbrowser`, which is also where the sign-in lives. a-Shell's `jsc` command runs JavaScript in that web view. The helper sends the web view to `www.reddit.com/robots.txt` (a page of the site that runs no scripts), runs a short script there that follows the share link and fetches the post's JSON as the signed-in browser, polls for the answer, and sends the web view back with `history.back()`. From the answer it takes only where the media is: a DASH manifest on `v.redd.it` for a video, which goes to yt-dlp; original files on `i.redd.it` for photos and galleries, which go to gallery-dl as direct links; or a link to another site, which goes through the normal tool order. Those hosts are plain file servers and take no part in the block. `jsc` does not wait for a script's promises, so the script stores its answer in the page and a second script reads it. On iOS 27.2 `jsc` also refuses to hand back a script's own value ("JavaScript execution returned a result of an unsupported type"), so every script sends its result through the message handler a-Shell gives page scripts for printing, `window.webkit.messageHandlers.aShell.postMessage("print:…")`, and ends in `void 0`. The script itself is tested in Node against canned answers (`tests/test_reddit_js.py`).
+Both tools read a Reddit post from `www.reddit.com/…/.json`. Around 9 October 2026 Reddit began answering those addresses with "You've been blocked by network security" for everyone: any network, signed in or not, with or without a browser's TLS fingerprint, and even when a browser navigates to them. gallery-dl's and yt-dlp's trackers carry the reports. New API applications are no longer granted to individuals, so the API is not a way round for a tool users install themselves. What Reddit still serves is the post's page, and only to a client that runs its scripts: a plain request for the page gets a checking page.
+
+The first device log of 1.7.0 showed the whole of it at once: gallery-dl blocked while resolving the share link; yt-dlp not recognising the `/s/` share form and failing as a generic site; and the browser route, which asked for the `.json` and then fetched the page with `fetch()`, refused on both. A `fetch()` is not a visit.
+
+So the helper makes a visit. a-Shell's `jsc` command runs JavaScript in the web view behind `internalbrowser`, the one a sign-in happens in. `reddit_post_from_browser`:
+
+1. reads where the web view is and how deep its history is;
+2. if it is not on `www.reddit.com`, sets `location.href` to `https://www.reddit.com/robots.txt`, a page that runs nothing and that no app claims, and waits for it;
+3. sets `location.href` to the post's page (`reddit_page()`: the path as shared, on `www.reddit.com`). From a page of the same site this is an ordinary link, which iOS leaves in the browser; opened from elsewhere it could start the Reddit app, as YouTube's did;
+4. runs `REDDIT_LOOK` every half second for up to 40 seconds. It answers `OK` and a small JSON object once a `<shreddit-post>` element is on the page, and until then describes the page (address, state, title, first words), which is what the log shows when a post never appears;
+5. goes back to where the web view was: `history.go(depth - history.length)`.
+
+`umdlRead(html)` is given the post element as the browser writes it out and reads: `id`, `post-title`, `post-type` and `content-href` from the element's own attributes; a `v.redd.it/<id>` anywhere inside, which becomes `https://v.redd.it/<id>/DASHPlaylist.mpd`; and image names on `i.redd.it` or `preview.redd.it`, each rewritten to the original on `i.redd.it`. Only the post element is read, so avatars and pictures in comments are not picked up. The result is one of `video` (to yt-dlp), `files` (to gallery-dl as direct links), `link` (another site, through the normal order) or `none`.
+
+`jsc` does not wait for promises and, on iOS 27.2, refuses to hand back a script's value, so every script reports through `window.webkit.messageHandlers.aShell.postMessage("print:…")` and ends in `void 0`.
+
+None of this can be tried against Reddit from where UMDL is built: Reddit is blocked there. The reader runs in Node against pages modelled on Reddit's markup (`tests/reddit_pages.py`, `tests/test_reddit_js.py`), and the flow tests use a stand-in browser that executes the helper's scripts. Whether Reddit serves the page to a-Shell's web view, and whether its media hosts accept the tools, are for the device to say; the log records each step.
+
+## Hardware decoding: what is and is not reachable
+
+A conversion reads the source and writes HEVC. Writing is always hardware (`hevc_videotoolbox`). Reading depends on the source:
+
+| Source | Hardware on an iPhone | Reachable from a-Shell | Measured |
+|---|---|---|---|
+| H.264, HEVC | Yes | Not needed: Photos takes them | |
+| AV1 | iPhone 15 Pro and later | Yes. VideoToolbox gives it to any app | 2160p60 HDR, 127 s of video in 103 s |
+| VP9 | On some chips; Apple does not say which | No. VideoToolbox gives VP9 only to apps holding `com.apple.developer.coremedia.allow-alternate-video-decoder-selection`, which Apple grants to few. a-Shell cannot add it: an app re-signed with an entitlement its profile lacks does not install | 2% after several minutes at 2160p, in software |
+
+Routes round the VP9 limit that were looked at:
+
+- **AV1 instead.** Done: `plan_versions` takes AV1 over VP9 at the same size and frame rate. YouTube has AV1 for most 4K videos; the slow case is left to those it has only in VP9.
+- **WebKit's decoder, through WebCodecs.** WebKit's own processes hold the permission a-Shell lacks, and Safari has had `VideoDecoder` and `VideoEncoder` since 16.4, VP9 included. a-Shell's web view could in principle decode VP9 and encode HEVC itself, with a demuxer and an MP4 writer in JavaScript and the file passed through `jsc` in pieces. That is a transcoder of its own, and it would lose 10-bit HDR unless the encoder there accepts it. Before any of that, one fact is needed: whether the web view decodes VP9 in hardware on a given phone. Status now asks it (`CODEC_PROBE`, the "Web view" line).
+- **AVFoundation from Python.** Same decoder, same entitlement.
+- **Not converting.** **Save to › Files**, or **Conversion › Never**.
 
 ## YouTube in a web view
 
@@ -238,7 +272,7 @@ In a stand-alone runtime this creates a variable. In a web view `globalThis` is 
 
 `tame_solver()` wraps the method of yt-dlp that assembles the script (`EJSBaseJCP._construct_stdin`) and, for a runtime whose name says it is a web view, renames the target of such assignments to `umdlLocation`. Reads of `location` are untouched. The player code then sees the web view's real location, `about:blank`, which is also what it saw before: the navigation was asynchronous and the challenges were solved before it took effect. If a later yt-dlp moves that method, the wrap finds nothing, says so in the log, and changes nothing.
 
-The same hazard applies to any script UMDL itself runs in a-Shell's web view. The Reddit route's `location.href = "https://www.reddit.com/robots.txt"` is the one case; whether iOS treats that path as a link for the Reddit app is not known.
+The same hazard applies to any script UMDL itself runs in a-Shell's web view, which is why the Reddit route enters the site through `robots.txt` first; that step did not start the Reddit app on the test device.
 
 ## Staying current
 

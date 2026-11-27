@@ -8,7 +8,7 @@
 
 UMDL is a free and open-source Shortcut. Downloads run on your own device with [yt-dlp](https://github.com/yt-dlp/yt-dlp) and [gallery-dl](https://github.com/mikf/gallery-dl) inside the free [a-Shell](https://apps.apple.com/app/a-shell/id1473805438) app. Nothing you share is sent to a UMDL server, because there isn't one.
 
-> **Status: 1.7.0.** Confirmed on a device with earlier versions: setup, sign-in, private posts from Instagram and X, YouTube, saving from a-Shell straight into Photos, and a 4K conversion. New in 1.7 and not yet run on a device: saving to Files, and the question about quality. Reddit is refused on the test network. [docs/BEHAVIOR.md](docs/BEHAVIOR.md) keeps the list. Please [report](https://github.com/TheKfcBandit/UMDL/issues) what you find.
+> **Status: 1.8.0.** Confirmed on a device: setup, sign-in, private posts from Instagram and X, YouTube up to 4K60 HDR with the quality question, saving from a-Shell straight into Photos. New in 1.8 and not yet run on a device: Reddit, read from the post's page. [docs/BEHAVIOR.md](docs/BEHAVIOR.md) keeps the list. Please [report](https://github.com/TheKfcBandit/UMDL/issues) what you find.
 
 ## Install
 
@@ -29,43 +29,44 @@ In any app, tap **Share**, then **UMDL**. a-Shell opens, downloads, and saves to
 - **Posts with several photos or videos** are saved whole.
 - **Playlists, albums and profiles** with more than 10 items ask first: everything, the first 10, or just the first. You can change the number.
 - **Audio and other files** Photos has no place for are kept in the Files app under *a-Shell › UMDL › Saved*. Everything goes there, untouched, if you set **Save to** to Files.
-- **An interrupted download** carries on. Each one works in *a-Shell › UMDL › Working*; share the link again, or choose **Resume last download**, and what was already downloaded is not downloaded twice.
+- **An interrupted download** carries on. Each one works in *a-Shell › UMDL › Working*; share the link again, or choose **Resume**, and what was already downloaded is not downloaded twice.
 
 Open UMDL on its own, without sharing anything, for the menu:
 
 | Menu item | What it does |
 |---|---|
-| Download from clipboard | Downloads the link you copied last |
-| Resume last download | Appears when a download was interrupted, and carries on from where it stopped |
+| Download | Downloads the link you copied last |
+| Resume | Appears when a download was interrupted, and carries on from where it stopped |
 | Settings | Where to save, resolution, frame rate, conversion, the ask-first limit, what happens when a download finishes, reset |
-| Sign in to a site | For private posts. UMDL confirms when the sign-in is saved |
+| Sign in | Private posts. UMDL confirms when the sign-in is saved |
 | Status | Which sites are signed in, tool versions, storage, and a button to copy the log |
 | Update tools | Installs the newest yt-dlp and gallery-dl now |
-| About UMDL | Version, update check, project page |
+| About | Version, update check, project page |
 
 Every screen, choice and message is described in [docs/BEHAVIOR.md](docs/BEHAVIOR.md).
 
 ## Quality
 
-UMDL downloads the best version a site has. Two settings limit that, and both start at **Best available**:
+UMDL downloads the best version a site has. Two settings limit that, and both start at **Best**:
 
 | Setting | Choices |
 |---|---|
-| Resolution | Best available, or up to 2160p, 1440p, 1080p, 720p, 480p |
-| Frame rate | Best available, or up to 60 or 30 fps |
+| Resolution | Best, or up to 2160p, 1440p, 1080p, 720p, 480p |
+| Frame rate | Best, or up to 60 or 30 fps |
 
-The file is then offered to Photos as it is. Most sites serve H.264, which Photos plays, so most downloads are saved untouched. If Photos refuses a file, the picture is converted to HEVC by your device's hardware at the best quality, same size and frame rate, HDR kept, and saved. The notification says so: "1 converted (AV1 → HEVC)."
+The file is then offered to Photos as it is. Most sites serve H.264, which Photos plays, so most downloads are saved untouched. If Photos refuses a file, the picture is converted to HEVC by your device's hardware at the best quality, same size and frame rate, HDR kept, and saved. The notification says so: "Converted AV1 → HEVC."
 
 Between versions of the same size and frame rate, UMDL takes the one that costs least afterwards. That never costs quality: a 4K version is taken over a 1080p one whatever its format.
 
 **YouTube above 1080p always needs a conversion for Photos.** It has only AV1 and VP9 up there, and Photos takes neither. So UMDL asks:
 
 > **Higher quality available**
-> 2160p60 has to be converted for Photos, which can take a while. 1080p60 is saved as it is.
+> 🎞️ 2160p60 · Converted
+> ⚡ 1080p60 · Native
 
-Settings › *Conversion* makes either answer the rule: **Always, for the best quality**, or **Never, take what Photos plays**.
+Native is the best version Photos plays without converting. Settings › *Conversion* makes either answer the rule: **Always**, or **Never**.
 
-How long is "a while"? On an iPhone 15 Pro or later, about as long as the video runs: those chips read AV1, and UMDL takes AV1 for that reason. A two-minute 4K60 HDR video took two minutes on an iPhone 16 Pro Max. Videos YouTube has only in VP9, and older iPhones, are much slower, because iOS reserves its VP9 decoder for apps Apple has granted it to. Either way a conversion only moves while a-Shell is on screen.
+How long does a conversion take? On an iPhone 15 Pro or later, less than the video runs: those chips read AV1, and UMDL takes AV1 for that reason. A two-minute 4K60 HDR video took 103 seconds on an iPhone 16 Pro Max. Videos YouTube has only in VP9, and older iPhones, are much slower, because iOS reserves its VP9 decoder for apps Apple has granted it to. Either way a conversion only moves while a-Shell is on screen.
 
 To skip all of this, set **Save to** to Files: the best version is kept exactly as downloaded, and nothing is converted.
 
@@ -73,7 +74,7 @@ To skip all of this, set **Save to** to Files: the best version is kept exactly 
 
 ## Signing in
 
-Some posts need an account, and some sites (Reddit and Instagram among them) often refuse downloads that are not signed in. Choose **Sign in to a site** in the menu: a-Shell opens the site's sign-in page in its own browser. Sign in as usual. As soon as the site has stored the sign-in, UMDL brings you back to Shortcuts and says **Signed in to** *site*.
+Some posts need an account, and some sites (Instagram among them) often refuse downloads that are not signed in. Reddit shows some posts only to a signed-in visitor. Choose **Sign in** in the menu: a-Shell opens the site's sign-in page in its own browser. Sign in as usual. As soon as the site has stored the sign-in, UMDL brings you back to Shortcuts and says **Signed in to** *site*.
 
 **Status** in the menu lists which sites are signed in at any time.
 
@@ -94,8 +95,8 @@ Other things worth knowing:
 
 - **"There was a problem running the shortcut."** Versions before 1.6 could stop this way after a download, at the hand-over of the file from a-Shell to Shortcuts. Update UMDL: since 1.6 no file is handed over.
 - **Is it set up properly?** Open **Status**. It shows the tool versions, whether GitHub can be reached, which sites are signed in, and the result of the last download. **Copy** puts all of it, and the log, on the clipboard.
-- **You are left in a-Shell, or you left it.** Keep a-Shell in the foreground while it works; iOS pauses it otherwise. Coming back to a-Shell lets it carry on. If iOS closed it meanwhile, share the same link again or choose **Resume last download**: the files already downloaded are in *a-Shell › UMDL › Working* and are used as they are.
-- **"Nothing was added to Photos."** The notification's last line says why, and the files are in the Files app under *a-Shell › UMDL › Saved*. If it says a-Shell is not allowed to add to Photos, allow it in the Settings app under a-Shell, Photos.
+- **You are left in a-Shell, or you left it.** Keep a-Shell in the foreground while it works; iOS pauses it otherwise. Coming back to a-Shell lets it carry on. If iOS closed it meanwhile, share the same link again or choose **Resume**: the files already downloaded are in *a-Shell › UMDL › Working* and are used as they are.
+- **"Not saved to Photos."** The notification's last line says why, and the files are in the Files app under *a-Shell › UMDL › Saved*. If it says a-Shell is not allowed to add to Photos, allow it in the Settings app under a-Shell, Photos.
 - **A conversion is slow.** See [Quality](#quality). Settings › *Conversion* › **Never** avoids it; so does saving to Files.
 - **"Setup incomplete."** The helper or the download tools could not be downloaded. The message says which, and why. Check the connection and run UMDL again; it continues from where it stopped.
 - **Items are in the library but not in the album.** Saving to an album needs fuller access to Photos than adding to the library. Allow it in the Settings app under a-Shell, Photos.

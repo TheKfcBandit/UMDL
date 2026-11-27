@@ -1,7 +1,7 @@
 {
-  "shortcut": "1.7.0",
-  "helper": "1.7.0",
-  "protocol": 7,
+  "shortcut": "1.8.0",
+  "helper": "1.8.0",
+  "protocol": 8,
   "url": "https://github.com/TheKfcBandit/UMDL/releases/latest",
-  "notes": "Save straight to Files. A choice when the best version would have to be converted. Titles as names again, and faster conversion."
+  "notes": "Reddit works again, read from the post's page. Shorter wording everywhere."
 }

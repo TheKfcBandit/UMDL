@@ -24,6 +24,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tests"))
 
+import reddit_pages  # noqa: E402
 from shortcut_sim import ASHELL, PREFIX, SimError, World  # noqa: E402
 
 
@@ -46,8 +47,8 @@ TOOLS = ["yt-dlp", "gallery-dl", "yt-dlp-ejs", "yt-dlp-apple-webkit-jsi"]
 # First run: the shortcut installs the two required tools in the a-Shell window,
 # then the helper's first daily check brings everything up to date.
 FIRST_RUN_PIP = ["yt-dlp gallery-dl", " ".join(TOOLS)]
-MAIN_MENU = ["Download from clipboard", "Settings", "Sign in to a site",
-             "Status", "Update tools", "About UMDL"]
+MAIN_MENU = ["Download", "Settings", "Sign in",
+             "Status", "Update tools", "About"]
 SETTINGS_MENU = ["Save to", "Resolution", "Frame rate", "Conversion", "Large downloads",
                  "When finished", "Reset", "Done"]
 
@@ -141,7 +142,7 @@ class Onboarding(Flow):
         self.assertEqual(w.pip_log(), FIRST_RUN_PIP)        # tools installed with no further input
         self.assertEqual(self.helper_commands(w), ["run"])  # straight into the download
         self.assertEqual(w.photos, [("My clip.mp4", "UMDL", os.path.getsize(self.clip))])
-        self.assertEqual(self.notifications(w), [("My clip", "Saved to the UMDL album.")])
+        self.assertEqual(self.notifications(w), [("My clip", "Saved to UMDL.")])
         self.assertEqual(self.alerts(w), [])
         self.assertEqual(self.jobs_left(w), [])
 
@@ -151,7 +152,7 @@ class Onboarding(Flow):
         w.share(None)
         self.assertEqual(self.helper_commands(w), ["setup"])
         self.assertEqual(w.pip_log(), FIRST_RUN_PIP)
-        self.assertEqual([a[0] for a in self.alerts(w)], ["UMDL is ready"])
+        self.assertEqual([a[0] for a in self.alerts(w)], ["Ready"])
         self.assertEqual(len(w.seen("menu")), 1)
         self.assertEqual(w.seen("list"), [])               # the main menu is not shown during setup
         self.assertEqual(w.photos, [])
@@ -160,7 +161,7 @@ class Onboarding(Flow):
         w = self.world
         w.set_scenario(self.one_video())
         w.script(("menu", "Custom setup"),
-                 ("list", "Save to"), ("menu", "An album"), ("ask", "Clips"),
+                 ("list", "Save to"), ("menu", "Album"), ("ask", "Clips"),
                  ("list", "Resolution"), ("menu", "1080p"),
                  ("list", "Frame rate"), ("menu", "30 fps"),
                  ("list", "Done"))
@@ -168,8 +169,8 @@ class Onboarding(Flow):
         first = w.seen("list")[0]
         self.assertEqual(first[1], "Settings")
         self.assertEqual(first[2], [row for row in SETTINGS_MENU if row != "Reset"])   # nothing to reset yet
-        self.assertEqual(first[4][-1], "Install and finish")
-        self.assertEqual(w.seen("menu")[1][1:3], ("Save to", ["🖼️ An album", "📚 Library only", "📁 Files"]))
+        self.assertEqual(first[4][-1], "Install")
+        self.assertEqual(w.seen("menu")[1][1:3], ("Save to", ["🖼️ Album", "📚 Library", "📁 Files"]))
         self.assertEqual(w.albums, ["Clips"])
         self.assertEqual(w.read_config(), dict(CONFIG, res="1080", fps="30"))
         self.assertEqual(self.helper_commands(w), ["run"])
@@ -185,19 +186,19 @@ class Onboarding(Flow):
 
     def test_custom_setup_with_an_existing_album_or_none(self):
         w = self.world
-        w.script(("menu", "Custom setup"), ("list", "Save to"), ("menu", "An album"),
+        w.script(("menu", "Custom setup"), ("list", "Save to"), ("menu", "Album"),
                  ("ask", "Holiday"), ("list", "Done"))
         w.share(None)
         self.assertEqual(w.read_config(), dict(DEFAULTS, album="Holiday"))
 
         w = self.new_world()
-        w.script(("menu", "Custom setup"), ("list", "Save to"), ("menu", "Library only"), ("list", "Done"))
+        w.script(("menu", "Custom setup"), ("list", "Save to"), ("menu", "Library"), ("list", "Done"))
         w.share(None)
         self.assertEqual(w.read_config(), dict(DEFAULTS, album="Recents"))
 
     def test_an_empty_album_name_falls_back(self):
         w = self.world
-        w.script(("menu", "Custom setup"), ("list", "Save to"), ("menu", "An album"), ("ask", ""),
+        w.script(("menu", "Custom setup"), ("list", "Save to"), ("menu", "Album"), ("ask", ""),
                  ("list", "Done"))
         w.share(None)
         self.assertEqual(w.read_config()["album"], "UMDL")
@@ -216,8 +217,8 @@ class Onboarding(Flow):
         w.set_offline(True)
         w.script(("menu", "Quick setup"))
         w.share(VIDEO)
-        self.assertEqual(self.alerts(w), [("Setup incomplete", "The helper could not be downloaded. "
-                                           "Check the connection, then run UMDL again.")])
+        self.assertEqual(self.alerts(w), [("Setup incomplete", "Helper download failed. "
+                                           "Check the connection and run UMDL again.")])
         self.assertEqual(w.helper_runs, [])
         self.assertEqual(w.photos, [])
         # The next attempt keeps the answers already given and finishes the job.
@@ -303,7 +304,7 @@ class OneTap(Flow):
     def test_shared_text_without_a_link_opens_the_main_menu(self):
         w = self.world
         w.install(CONFIG)
-        w.script(("list", "About UMDL"), ("menu", "Done"))
+        w.script(("list", "About"), ("menu", "Done"))
         w.share("just some words")
         self.assertEqual(w.seen("list")[0][2], MAIN_MENU)
         self.assertEqual(w.helper_runs, [])
@@ -331,7 +332,7 @@ class OneTap(Flow):
         w.set_scenario(self.one_video(title=title))
         w.share(VIDEO)
         self.assertEqual(w.photos[0][1], album)
-        self.assertEqual(self.notifications(w)[0][1], "Saved to the %s album." % album)
+        self.assertEqual(self.notifications(w)[0][1], "Saved to %s." % album)
         self.assertEqual(w.helper_runs[0][1]["cfg"]["album"], album)
 
     def test_gallery_post_saves_every_image(self):
@@ -341,7 +342,7 @@ class OneTap(Flow):
                         "gallery": {"found": True, "count": 4, "sample": self.jpg}})
         w.share("https://x.com/someone/status/123")
         self.assertEqual([p[0] for p in w.photos], ["pic 0.jpg", "pic 1.jpg", "pic 2.jpg", "pic 3.jpg"])
-        self.assertEqual(self.notifications(w)[0][1], "Saved 4 items to the Clips album.")
+        self.assertEqual(self.notifications(w)[0][1], "4 saved to Clips.")
 
     def test_audio_is_kept_in_files(self):
         if not shutil.which("ffprobe"):
@@ -354,8 +355,8 @@ class OneTap(Flow):
         w.share("https://audio.test/s")
         self.assertEqual(w.photos, [])
         self.assertEqual(self.notifications(w)[0][1],
-                         "Nothing was added to Photos.\n"
-                         "1 kept in Files (a-Shell, UMDL, Saved).")
+                         "Not saved to Photos.\n"
+                         "1 kept in Files.")
         self.assertEqual(os.listdir(os.path.join(w.workspace, "Saved")), ["Song.m4a"])
 
     def test_partial_download_saves_what_arrived_and_says_what_did_not(self):
@@ -369,18 +370,7 @@ class OneTap(Flow):
         w.share("https://video.test/playlist/2")
         self.assertEqual(len(w.photos), 2)
         self.assertEqual(self.notifications(w)[0],
-                         ("Set", "Saved 2 items to the Clips album.\n1 failed."))
-
-    def test_reddit_link_blocked_on_the_website_is_fetched_through_the_api(self):
-        w = self.world
-        w.install(CONFIG)
-        w.set_cookies([(".reddit.com", "reddit_session")])
-        w.set_scenario({"ytdlp": {"suitable": True, "error": "HTTP Error 403: Blocked"},
-                        "gallery": {"found": True, "count": 2, "sample": self.jpg,
-                                    "blocked_unless_api": "\"You've been blocked by network security.\""}})
-        w.share("https://www.reddit.com/r/pics/s/AbCdEfGhIj")
-        self.assertEqual(len(w.photos), 2)
-        self.assertEqual(w.seen("menu") + w.seen("alert"), [])
+                         ("Set", "2 saved to Clips.\n1 failed."))
 
     def test_tools_removed_behind_umdls_back_are_reinstalled_on_the_way(self):
         w = self.world
@@ -409,11 +399,11 @@ class OneTap(Flow):
         w.install(CONFIG)
         w.set_scenario(self.one_video())
         w.set_version_json(dict(VERSION, shortcut="9.9.9", helper=VERSION["helper"]))
-        w.script(("menu", "Get the update"))
+        w.script(("menu", "Update"))
         w.share(VIDEO)
         self.assertEqual(len(w.photos), 1)
         prompt = w.seen("menu")[0][1]
-        self.assertEqual(prompt, "UMDL 9.9.9 is available. Installed: %s."
+        self.assertEqual(prompt, "UMDL 9.9.9 available\n\nInstalled: %s"
                          % VERSION["shortcut"])
         self.assertEqual(w.seen("openurl")[-1][1], VERSION["url"])
 
@@ -431,7 +421,7 @@ class OneTap(Flow):
     def test_unreadable_callback_falls_back_to_the_main_menu(self):
         w = self.world
         w.install(CONFIG)
-        w.script(("list", "About UMDL"), ("menu", "Done"))
+        w.script(("list", "About"), ("menu", "Done"))
         w.share("UMDLCB:bm90IGpzb24")
         self.assertEqual(w.seen("list")[0][2], MAIN_MENU)
         self.assertEqual(w.photos, [])
@@ -444,71 +434,68 @@ class OneTap(Flow):
             source = handle.read()
         with open(path, "w") as handle:
             handle.write(source.replace("PROTOCOL = %d" % VERSION["protocol"], "PROTOCOL = 99"))
-        w.script(("menu", "Get the latest version"))
+        w.script(("menu", "Update"))
         w.share(VIDEO)
         self.assertIn("out of date", w.seen("menu")[0][1])
         self.assertEqual(w.seen("openurl")[0][1], VERSION["url"])
 
 
+@unittest.skipUnless(shutil.which("node"), "needs Node.js to stand in for a-Shell's browser")
 class RedditThroughTheBrowser(Flow):
-    """docs/BEHAVIOR.md, "Reddit". Reddit turns both download tools away; the
-    post is read through a-Shell's own browser instead."""
+    """docs/BEHAVIOR.md, "Reddit". Reddit shows a post only to a browser, so
+    the post is opened in a-Shell's and read off the page."""
 
     SHARE = "https://www.reddit.com/r/me_irl/s/cUdJnFfPwD"
-    BLOCK = "\"You've been blocked by network security.\""
+    HOME_PAGE = "https://localhost:8443/wasm.html"
 
-    def blocked(self, browser, **ytdlp):
+    def reddit(self, browser, **ytdlp):
+        # The tools would be refused if they were asked about the post itself.
         scenario = {"ytdlp": dict({"suitable": True, "error": "HTTP Error 403: Blocked"}, **ytdlp),
-                    "gallery": {"found": True, "sample": self.jpg, "blocked_unless_api": self.BLOCK,
-                                "api_fail": self.BLOCK}}
+                    "gallery": {"found": True, "sample": self.jpg}}
         if browser is not None:
             scenario["browser"] = browser
         return scenario
 
-    def gallery_post(self, count):
-        ids = ["img%02d" % i for i in range(count)]
-        return {"id": "1abcde", "title": "Holiday photos", "is_gallery": True,
-                "url": "https://www.reddit.com/gallery/1abcde",
-                "gallery_data": {"items": [{"media_id": i} for i in ids]},
-                "media_metadata": {i: {"status": "valid", "m": "image/jpg", "s": {
-                    "u": "https://preview.redd.it/%s.jpg?width=1080&s=abc" % i}} for i in ids}}
-
     def test_photo_post_is_saved_with_no_question(self):
         w = self.world
         w.install(CONFIG)
-        w.set_cookies([(".reddit.com", "reddit_session")])
-        w.set_scenario(self.blocked({"post": self.gallery_post(3)}))
+        w.set_scenario(self.reddit({"page": reddit_pages.gallery(3)}))
         w.share(self.SHARE)
         self.assertEqual(len(w.photos), 3)
         self.assertEqual(w.seen("menu") + w.seen("alert"), [])
-        self.assertEqual(self.notifications(w), [("Holiday photos", "Saved 3 items to the Clips album.")])
-        # The browser went to Reddit, asked for the shared link, and was put back.
-        self.assertEqual(w.browser_visits(), ["https://www.reddit.com/robots.txt", "fetch " + self.SHARE])
-        self.assertEqual(w.browser_page(), "https://localhost:8443/wasm.html")
-        # The originals were fetched, not the resized previews.
+        self.assertEqual(self.notifications(w), [("Holiday photos", "3 saved to Clips.")])
+        # The browser went to Reddit, then to the post as a link within the site, and was put back.
+        self.assertEqual(w.browser_visits(), ["https://www.reddit.com/robots.txt", self.SHARE])
+        self.assertEqual(w.browser_page(), self.HOME_PAGE)
+        # The originals were fetched, not the resized previews, and nothing from the comments.
         self.assertEqual(w.direct_links(), [["https://i.redd.it/img00.jpg", "https://i.redd.it/img01.jpg",
                                              "https://i.redd.it/img02.jpg"]])
+        self.assertIn("Reading post", w.helper_output)
+        self.assertNotIn("Reading link", w.helper_output)    # the tools were never asked about the post
+
+    def test_single_image_is_fetched_once(self):
+        w = self.world
+        w.install(CONFIG)
+        w.set_scenario(self.reddit({"page": reddit_pages.IMAGE}))
+        w.share("https://www.reddit.com/r/me_irl/comments/1abcde/a_picture/?utm_source=share")
+        self.assertEqual(w.direct_links(), [["https://i.redd.it/qyvi7xrehmwh1.jpeg"]])
+        self.assertEqual(w.browser_visits()[-1], "https://www.reddit.com/r/me_irl/comments/1abcde/a_picture/")
+        self.assertEqual(self.notifications(w), [("A picture", "Saved to Clips.")])
 
     def test_video_post_goes_to_yt_dlp_with_its_manifest(self):
         w = self.world
         w.install(CONFIG)
-        manifest = "https://v.redd.it/abc123/DASHPlaylist.mpd?a=1&v=1&f=sd"
-        post = {"id": "1abcde", "title": "Cat falls off shelf", "is_video": True,
-                "url": "https://v.redd.it/abc123",
-                "secure_media": {"reddit_video": {"dash_url": manifest, "hls_url": "h", "fallback_url": "f"}}}
-        w.set_scenario(self.blocked({"post": post}, urls={"DASHPlaylist": {
+        w.set_scenario(self.reddit({"page": reddit_pages.VIDEO}, urls={"v.redd.it/abc123/DASHPlaylist.mpd": {
             "raw": {"_type": "video", "id": "DASHPlaylist", "title": "DASHPlaylist"},
             "files": [["DASHPlaylist.mp4", self.clip, "DASHPlaylist"]]}}))
         w.share(self.SHARE)
-        self.assertEqual(len(w.photos), 1)
-        self.assertEqual(self.notifications(w), [("Cat falls off shelf", "Saved to the Clips album.")])
+        self.assertEqual([name for name, _, _ in w.photos], ["Cat falls off shelf.mp4"])
+        self.assertEqual(self.notifications(w), [("Cat falls off shelf", "Saved to Clips.")])
 
     def test_post_that_links_elsewhere_is_downloaded_from_there(self):
         w = self.world
         w.install(CONFIG)
-        post = {"id": "1abcde", "title": "Great clip", "url": "https://clips.test/watch/9",
-                "url_overridden_by_dest": "https://clips.test/watch/9"}
-        w.set_scenario(self.blocked({"post": post}, urls={"clips.test": {
+        w.set_scenario(self.reddit({"page": reddit_pages.LINK}, urls={"clips.test": {
             "raw": {"_type": "video", "id": "9", "title": "Nine"},
             "files": [["9.mp4", self.clip, "Nine"]]}}))
         w.share(self.SHARE)
@@ -517,50 +504,70 @@ class RedditThroughTheBrowser(Flow):
     def test_large_gallery_still_asks_first(self):
         w = self.world
         w.install(CONFIG)
-        w.set_scenario(self.blocked({"post": self.gallery_post(12)}))
+        w.set_scenario(self.reddit({"page": reddit_pages.gallery(12)}))
         w.script(("menu", "First 10"))
         w.share(self.SHARE)
-        self.assertEqual(w.seen("menu")[0][1], "Holiday photos\n\n12 items.")
+        self.assertEqual(w.seen("menu")[0][1], "Holiday photos\n\n12 items")
         self.assertEqual(len(w.photos), 10)
 
-    def test_browser_is_returned_to_the_page_it_was_showing(self):
+    def test_the_page_is_waited_for_while_reddit_checks_the_browser(self):
         w = self.world
         w.install(CONFIG)
-        here = "https://www.instagram.com/accounts/login/"       # left open after a sign-in
-        w.set_scenario(self.blocked({"post": self.gallery_post(1), "start": here}))
+        w.set_scenario(self.reddit({"page": reddit_pages.gallery(1), "challenge": 3}))
         w.share(self.SHARE)
         self.assertEqual(len(w.photos), 1)
-        self.assertEqual(w.browser_page(), here)
 
-    def test_refusal_in_the_browser_too_is_reported_as_reddits(self):
+    def test_browser_is_returned_to_the_page_it_was_showing(self):
+        for here, first_stop in (("https://www.instagram.com/accounts/login/", ["https://www.reddit.com/robots.txt"]),
+                                 ("https://www.reddit.com/r/me_irl/", [])):     # already on Reddit: no detour
+            w = self.new_world()
+            w.install(CONFIG)
+            w.set_scenario(self.reddit({"page": reddit_pages.gallery(1), "start": here}))
+            w.share(self.SHARE)
+            self.assertEqual(len(w.photos), 1, here)
+            self.assertEqual(w.browser_visits(), first_stop + [self.SHARE], here)
+            self.assertEqual(w.browser_page(), here)
+
+    def test_a_block_is_reported_as_reddits_and_not_blamed_on_the_account(self):
         w = self.world
         w.install(CONFIG)
         w.set_cookies([(".reddit.com", "reddit_session")])
-        w.set_scenario(self.blocked({"http": "403 " + self.BLOCK}))
+        w.set_scenario(self.reddit({"blocked": True}))
         w.script(("menu", "Cancel"))
         w.share(self.SHARE)
-        prompt = w.seen("menu")[0][1]
-        self.assertIn("Reddit refused this device or network: " + self.BLOCK, prompt)
+        self.assertEqual(w.seen("menu")[0][1], "Download failed\n\nReddit blocked a-Shell's browser.\n\n"
+                                               "Updating tools fixes most failures.")
         self.assertEqual(w.photos, [])
-        self.assertEqual(w.browser_page(), "https://localhost:8443/wasm.html")   # put back all the same
+        self.assertEqual(w.browser_page(), self.HOME_PAGE)       # put back all the same
 
-    def test_post_without_media_and_a_browser_that_never_answers(self):
-        for browser in ({"post": {"id": "1abcde", "title": "A question", "is_self": True,
-                                  "url": "https://www.reddit.com/r/me_irl/comments/1abcde/a_question/"}},
-                        {"silent": True}, None):
+    def test_a_post_reddit_does_not_show_points_to_signing_in_only_when_signed_out(self):
+        for cookies, text in (([], "Reddit did not show the post. Sign in to Reddit.\n\nSign in, then retry."),
+                              ([(".reddit.com", "reddit_session")],
+                               "Reddit did not show the post.\n\nUpdating tools fixes most failures.")):
             w = self.new_world()
             w.install(CONFIG)
-            w.set_scenario(self.blocked(browser))
+            w.set_cookies(cookies)
+            w.set_scenario(self.reddit({"silent": True}))
             w.script(("menu", "Cancel"))
             w.share(self.SHARE)
-            self.assertIn("Download failed", w.seen("menu")[0][1])
+            self.assertEqual(w.seen("menu")[0][1], "Download failed\n\n" + text)
+
+    def test_post_without_media_and_a_browser_that_never_answers(self):
+        for browser, said in (({"page": reddit_pages.TEXT}, "No photo or video in this post."),
+                              (None, "a-Shell's browser did not answer")):
+            w = self.new_world()
+            w.install(CONFIG)
+            w.set_scenario(self.reddit(browser))
+            w.script(("menu", "Cancel"))
+            w.share(self.SHARE)
+            self.assertIn("Download failed\n\n" + said, w.seen("menu")[0][1])
             self.assertEqual(w.photos, [])
 
     def test_other_sites_never_involve_the_browser(self):
         w = self.world
         w.install(CONFIG)
         w.set_scenario({"ytdlp": {"error": "HTTP Error 403: Blocked"}, "gallery": {"found": False},
-                        "browser": {"post": self.gallery_post(1)}})
+                        "browser": {"page": reddit_pages.gallery(1)}})
         w.script(("menu", "Cancel"))
         w.share(VIDEO)
         self.assertEqual(w.browser_visits(), [])
@@ -618,7 +625,7 @@ class Quality(WithVersions):
         self.assertEqual(w.recorded_options()[-1]["format"], "401+140/bv*+ba/b/ba")   # the same size and rate
         w.script(("list", "Status"), ("menu", "Done"))
         w.share(None)
-        self.assertIn("AV1: taken over VP9, it converts faster", self.alerts(w)[-1][1].split("\n"))
+        self.assertIn("AV1: preferred over VP9", self.alerts(w)[-1][1].split("\n"))
 
     def test_each_limit_works_on_its_own(self):
         expected = {
@@ -640,7 +647,7 @@ class Quality(WithVersions):
         w = self.world
         w.install(dict(CONFIG, mode="advanced", convert="off"))     # saved by 1.3 or 1.4
         w.set_scenario(self.many_versions())
-        w.script(("menu", "converted"))
+        w.script(("menu", "Converted"))
         w.share(VIDEO)
         self.assertEqual(w.seen("list"), [])                         # no list of versions
         self.assertIn("Higher quality available", w.seen("menu")[0][1])   # that "convert" is no preference
@@ -654,24 +661,22 @@ class HigherQuality(WithVersions):
         w = self.world
         w.install(CONFIG)
         w.set_scenario(self.many_versions())
-        w.script(("menu", "converted"))
+        w.script(("menu", "Converted"))
         w.share(VIDEO)
         _, prompt, items = w.seen("menu")[0][:3]
-        self.assertEqual(prompt, "Higher quality available\n\nMy clip\n\n2160p60 has to be converted for Photos, "
-                                 "which can take a while. 360p is saved as it is.\n\n"
-                                 "Settings, Conversion makes either the rule.")
-        self.assertEqual(items, ["🎞️ 2160p60, converted", "⚡ 360p, as it is", "Cancel"])
+        self.assertEqual(prompt, "Higher quality available\n\nMy clip")
+        self.assertEqual(items, ["🎞️ 2160p60 · Converted", "⚡ 360p · Native", "Cancel"])
         self.assertEqual([(c, p["convert"]) for c, p in w.helper_runs], [("run", ""), ("run", "yes")])
         self.assertEqual(w.recorded_options()[-1]["format"], "315+140/bv*+ba/b/ba")
         self.assertEqual(len(w.photos), 1)
         self.assertEqual(len(w.seen("menu")), 1)                     # asked once
         self.assertIn("reading: kept from before the question", self.log_of(w))   # and the link read once
 
-    def test_as_it_is_takes_the_best_photos_plays(self):
+    def test_native_takes_the_best_photos_plays(self):
         w = self.world
         w.install(CONFIG)
         w.set_scenario(self.many_versions())
-        w.script(("menu", "as it is"))
+        w.script(("menu", "Native"))
         w.share(VIDEO)
         self.assertEqual(w.helper_runs[-1][1]["convert"], "no")
         self.assertTrue(w.recorded_options()[-1]["format"].startswith("18/bv*[vcodec~="))
@@ -734,7 +739,7 @@ class ToFiles(WithVersions):
         self.assertEqual(w.seen("menu"), [])
         self.assertEqual(w.recorded_options()[-1]["format"], "315+140/bv*+ba/b/ba")
         self.assertEqual((w.photos, w.kept_files()), ([], ["My clip.mp4"]))
-        self.assertEqual(self.notifications(w), [("My clip", "Saved to Files (a-Shell, UMDL, Saved).")])
+        self.assertEqual(self.notifications(w), [("My clip", "Saved to Files.")])
 
     def test_a_format_photos_cannot_play_is_not_converted(self):
         w = self.world
@@ -752,7 +757,7 @@ class ToFiles(WithVersions):
                                   "files": [["a.mp4", self.clip, "One"], ["b.mp4", self.clip, "Two"]]},
                         "gallery": {"found": False}})
         w.share(VIDEO)
-        self.assertEqual(self.notifications(w), [("Pair", "Saved 2 items to Files (a-Shell, UMDL, Saved).")])
+        self.assertEqual(self.notifications(w), [("Pair", "2 saved to Files.")])
 
     def test_open_when_finished_shows_the_folder_in_files(self):
         w = self.world
@@ -773,7 +778,7 @@ class Saving(WithVersions):
         w.share(VIDEO)
         today = time.strftime("%Y-%m-%d")
         self.assertEqual([entry[:3] for entry in w.library()], [("Clips", "AMD's Gaslighting Part 2.mp4", today)])
-        self.assertEqual(self.notifications(w), [("AMD's Gaslighting Part 2", "Saved to the Clips album.")])
+        self.assertEqual(self.notifications(w), [("AMD's Gaslighting Part 2", "Saved to Clips.")])
         self.assertEqual(self.jobs_left(w), [])
         self.assertEqual(w.seen("menu") + w.seen("alert"), [])
 
@@ -793,7 +798,7 @@ class Saving(WithVersions):
             "files": [["a.mp4", self.clip, "Same"], ["b.mp4", self.clip, "Same"]]}})
         w.share(VIDEO)
         self.assertEqual([entry[1] for entry in w.library()], ["Same.mp4", "Same 2.mp4"])
-        self.assertEqual(self.notifications(w), [("Set", "Saved 2 items to the Clips album.")])
+        self.assertEqual(self.notifications(w), [("Set", "2 saved to Clips.")])
 
     @unittest.skipUnless(shutil.which("ffmpeg"), "needs ffmpeg")
     def test_photos_is_asked_first_and_a_file_it_takes_is_not_converted(self):
@@ -803,7 +808,7 @@ class Saving(WithVersions):
         w.set_scenario(self.old_clip())
         w.share(VIDEO)
         self.assertEqual([entry[1] for entry in w.library()], ["Old clip.mp4"])
-        self.assertEqual(self.notifications(w), [("Old clip", "Saved to the Clips album.")])
+        self.assertEqual(self.notifications(w), [("Old clip", "Saved to Clips.")])
         self.assertNotIn("converted", self.log_of(w) if os.path.exists(
             os.path.join(w.workspace, "last.log")) else "")
 
@@ -815,7 +820,7 @@ class Saving(WithVersions):
         w.share(VIDEO)
         self.assertEqual([entry[1] for entry in w.library()], ["Old clip.mp4"])
         title, text = self.notifications(w)[0]
-        self.assertRegex(text, r"^Saved to the Clips album\.\n1 converted \(VP[89] → (HEVC|H\.264)\)\.$")
+        self.assertRegex(text, r"^Saved to Clips\.\nConverted VP[89] → (HEVC|H\.264)\.$")
         log = self.log_of(w)
         self.assertIn("Photos would not take Old clip.mp4 as it is", log)
         self.assertLess(log.index("Photos would not take"), log.index("converted "))    # in that order
@@ -856,9 +861,9 @@ class Saving(WithVersions):
         w.share(VIDEO)
         self.assertEqual(w.photos, [])
         self.assertEqual(w.kept_files(), ["My clip.mp4"])
-        self.assertEqual(self.notifications(w), [("My clip", "Nothing was added to Photos.\n"
-            "1 kept in Files (a-Shell, UMDL, Saved).\n"
-            "a-Shell is not allowed to add to Photos. Allow it in Settings, a-Shell, Photos.")])
+        self.assertEqual(self.notifications(w), [("My clip", "Not saved to Photos.\n"
+            "1 kept in Files.\n"
+            "a-Shell has no Photos access. Allow it in Settings › a-Shell › Photos.")])
 
     def test_nothing_ever_travels_through_shortcuts(self):
         actions = {a["WFWorkflowActionIdentifier"] for a in self.world.plist["WFWorkflowActions"]}
@@ -873,8 +878,8 @@ class Saving(WithVersions):
         w.share(VIDEO)
         self.assertEqual(w.library(), [])
         self.assertEqual(w.kept_files(), ["Song.m4a"])
-        self.assertEqual(self.notifications(w), [("Song", "Nothing was added to Photos.\n"
-                                                  "1 kept in Files (a-Shell, UMDL, Saved).")])
+        self.assertEqual(self.notifications(w), [("Song", "Not saved to Photos.\n"
+                                                  "1 kept in Files.")])
 
 
 class LargeDownloads(Flow):
@@ -893,16 +898,16 @@ class LargeDownloads(Flow):
         w.script(("menu", "First 10"))
         w.share("https://video.test/playlist/1")
         menu = w.seen("menu")[0]
-        self.assertEqual(menu[1], "Mix\n\n37 items.")
-        self.assertEqual(menu[2], ["⬇️ Download all", "⬇️ First 10",
+        self.assertEqual(menu[1], "Mix\n\n37 items")
+        self.assertEqual(menu[2], ["⬇️ All", "⬇️ First 10",
                                    "⬇️ First only", "Cancel"])
         self.assertEqual([(c, p["mode"], p["limit"]) for c, p in w.helper_runs],
                          [("run", "auto", ""), ("run", "limit", "10")])
         self.assertEqual(len(w.photos), 10)
-        self.assertEqual(self.notifications(w)[0], ("Mix", "Saved 10 items to the Clips album."))
+        self.assertEqual(self.notifications(w)[0], ("Mix", "10 saved to Clips."))
 
     def test_download_all_first_only_and_cancel(self):
-        for choice, mode, saved in (("Download all", "all", 12),
+        for choice, mode, saved in (("All", "all", 12),
                                     ("First only", "first", 1),
                                     ("Cancel", None, 0)):
             w = self.new_world()
@@ -929,7 +934,7 @@ class LargeDownloads(Flow):
                         "gallery": {"found": True, "count": 40, "sample": self.jpg}})
         w.script(("menu", "Cancel"))
         w.share("https://x.com/someone/media")
-        self.assertEqual(w.seen("menu")[0][1], "More than 10 items.")
+        self.assertEqual(w.seen("menu")[0][1], "10+ items")
 
 
 class Errors(Flow):
@@ -947,18 +952,18 @@ class Errors(Flow):
         w.share(VIDEO)
         menu = w.seen("menu")[0]
         self.assertEqual(menu[1], "Download failed\n\nSign in to confirm your age\n\n"
-                                  "Sign in to the site, then try again.")
-        self.assertEqual(menu[2], ["🔄 Try again", "🛠️ Update tools and retry",
-                                   "🔑 Sign in", "📋 Copy details", "Cancel"])
+                                  "Sign in, then retry.")
+        self.assertEqual(menu[2], ["🔄 Retry", "🛠️ Update tools, retry",
+                                   "🔑 Sign in", "📋 Copy log", "Cancel"])
         self.assertEqual(w.photos, [])
 
     def test_each_kind_of_failure_gets_its_own_advice(self):
         cases = {
-            "HTTP Error 500": "Updating the tools fixes most failures.",
+            "HTTP Error 500": "Updating tools fixes most failures.",
             "getaddrinfo failed": "Check the connection.",
-            "Video unavailable": "The post may be private, removed or region-locked.",
-            "This video is DRM protected": "Copy-protected media cannot be downloaded.",
-            "Unsupported URL": "This site may not be supported.",
+            "Video unavailable": "Private, removed or region-locked.",
+            "This video is DRM protected": "Copy-protected.",
+            "Unsupported URL": "Site may not be supported.",
         }
         for message, advice in cases.items():
             w = self.new_world()
@@ -968,35 +973,11 @@ class Errors(Flow):
             w.share(VIDEO)
             self.assertTrue(w.seen("menu")[0][1].endswith(advice), message)
 
-    def test_a_block_while_signed_in_is_not_blamed_on_the_account(self):
-        w = self.world
-        w.install(CONFIG)
-        w.set_cookies([(".reddit.com", "reddit_session")])
-        blocked = "\"You've been blocked by network security.\""
-        w.set_scenario({"ytdlp": {"suitable": True, "error": "HTTP Error 403: Blocked"},
-                        "gallery": {"found": True, "blocked_unless_api": blocked,
-                                    "api_fail": "\"403: Blocked\""}})
-        w.script(("menu", "Cancel"))
-        w.share("https://www.reddit.com/r/pics/s/AbCdEfGhIj")
-        prompt = w.seen("menu")[0][1]
-        self.assertIn("Reddit refused this device or network: " + blocked, prompt)
-        self.assertIn("Being signed in did not help.", prompt)
-        self.assertNotIn("Sign in to the site", prompt)
-        # Not signed in: the usual advice stands.
-        w = self.new_world()
-        w.install(CONFIG)
-        w.set_scenario({"ytdlp": {"suitable": True, "error": "HTTP Error 403: Blocked"},
-                        "gallery": {"found": True, "blocked_unless_api": blocked,
-                                    "api_fail": "\"403: Blocked\""}})
-        w.script(("menu", "Cancel"))
-        w.share("https://www.reddit.com/r/pics/s/AbCdEfGhIj")
-        self.assertTrue(w.seen("menu")[0][1].endswith("Sign in to the site, then try again."))
-
     def test_try_again_succeeds_once_the_site_recovers(self):
         w = self.world
         w.install(CONFIG)
         w.set_scenario(self.failing("HTTP Error 500"))
-        w.script(("menu", "Try again"))
+        w.script(("menu", "Retry"))
         w.run(VIDEO)
         w.set_scenario(self.one_video())
         w.share(w.callbacks.pop(0))
@@ -1007,7 +988,7 @@ class Errors(Flow):
         w = self.world
         w.install(CONFIG)
         w.set_scenario(self.failing("Unable to extract player response"))
-        w.script(("menu", "Update tools and retry"), ("menu", "Cancel"))
+        w.script(("menu", "Update tools, retry"), ("menu", "Cancel"))
         w.share(VIDEO)
         self.assertEqual([p["force_update"] for _, p in w.helper_runs], ["", "1"])
         self.assertEqual(w.pip_log(), [" ".join(TOOLS)] * 2)  # the daily check, then the forced one
@@ -1026,13 +1007,13 @@ class Errors(Flow):
         w = self.world
         w.install(CONFIG)
         w.set_scenario(self.failing("Unsupported URL: " + VIDEO))
-        w.script(("menu", "Copy details"))
+        w.script(("menu", "Copy log"))
         w.share(VIDEO)
         head, log = w.clipboard.split("\n\nLog\n")
         self.assertEqual(head, "UMDL %s\n%s\nunsupported: Unsupported URL: %s"
                          % (VERSION["shortcut"], VIDEO, VIDEO))
         self.assertIn("mode=auto", log)                     # the helper's own log of that run
-        self.assertEqual(self.notifications(w), [("UMDL", "Details copied.")])
+        self.assertEqual(self.notifications(w), [("UMDL", "Log copied.")])
 
 
 class Recovery(Flow):
@@ -1047,9 +1028,9 @@ class Recovery(Flow):
         with open(os.path.join(w.workspace, "last.b64"), "w") as handle:
             handle.write(blob)
         w.set_scenario(self.one_video())
-        w.script(("list", "Resume last download"))
+        w.script(("list", "Resume"))
         w.share(None)
-        self.assertEqual(w.seen("list")[0][2], MAIN_MENU[:1] + ["Resume last download"] + MAIN_MENU[1:])
+        self.assertEqual(w.seen("list")[0][2], MAIN_MENU[:1] + ["Resume"] + MAIN_MENU[1:])
         self.assertEqual(w.helper_runs[0], ("run", json.loads(base64.b64decode(blob))))
         self.assertEqual(len(w.photos), 1)
         self.assertFalse(os.path.exists(os.path.join(w.workspace, "last.b64")))
@@ -1072,11 +1053,11 @@ class Recovery(Flow):
         w.set_scenario({"ytdlp": {"error": "HTTP Error 500"}, "gallery": {"found": False}})   # no second download
         w.script(("list", "Status"), ("menu", "Done"))
         w.share(None)
-        self.assertIn("Unfinished downloads: 1", self.alerts(w)[0][1].split("\n"))
-        w.script(("list", "Resume last download"))
+        self.assertIn("Unfinished: 1", self.alerts(w)[0][1].split("\n"))
+        w.script(("list", "Resume"))
         w.share(None)
         self.assertEqual([(name, album) for name, album, _ in w.photos], [("My clip.mp4", "Clips")])
-        self.assertEqual(self.notifications(w), [("My clip", "Saved to the Clips album.")])
+        self.assertEqual(self.notifications(w), [("My clip", "Saved to Clips.")])
         with open(os.path.join(w.workspace, "last.log"), encoding="utf-8") as handle:
             self.assertIn("carrying on: 1 file already downloaded", handle.read())
         self.assertEqual(os.listdir(os.path.join(w.workspace, "Working")), [])
@@ -1097,14 +1078,14 @@ class MainMenu(Flow):
     def test_opening_from_the_app_goes_straight_to_the_main_menu(self):
         w = self.world
         w.install(CONFIG)
-        w.script(("list", "About UMDL"), ("menu", "Done"))
+        w.script(("list", "About"), ("menu", "Done"))
         w.share(None)
         self.assertEqual(w.events[0][0], "list")            # nothing is shown before the menu
         kind, prompt, names, _, details = w.seen("list")[0]
         self.assertEqual((prompt, names), ("UMDL", MAIN_MENU))
         self.assertEqual(details, [
-            "The link you copied", "Album, quality, mode", "For private posts",
-            "Sign-ins, versions, log", "Latest yt-dlp and gallery-dl",
+            "From clipboard", "Save to, quality, conversion", "Private posts",
+            "Tools, sign-ins, log", "yt-dlp, gallery-dl",
             "Version %s" % VERSION["shortcut"]])
         self.assertEqual(w.helper_runs, [])
         self.assertEqual(self.alerts(w), [])
@@ -1114,7 +1095,7 @@ class MainMenu(Flow):
         w.install(CONFIG)
         w.clipboard = "check " + VIDEO
         w.set_scenario(self.one_video())
-        w.script(("list", "Download from clipboard"))
+        w.script(("list", "Download"))
         w.share(None)
         self.assertEqual(w.helper_runs[0][1]["url"], VIDEO)
         self.assertEqual(len(w.photos), 1)
@@ -1124,7 +1105,7 @@ class MainMenu(Flow):
             w = self.new_world()
             w.install(CONFIG)
             w.clipboard = clipboard
-            w.script(("list", "Download from clipboard"))
+            w.script(("list", "Download"))
             w.share(None)
             self.assertEqual(self.alerts(w)[0][0], "No link", repr(clipboard))
             self.assertEqual(w.helper_runs, [])
@@ -1133,7 +1114,7 @@ class MainMenu(Flow):
         w = self.world
         w.install(CONFIG)
         w.set_sign_in([[".reddit.com", "reddit_session"], [".reddit.com", "csv"]])
-        w.script(("list", "Sign in to a site"), ("menu", "Reddit"))
+        w.script(("list", "Sign in"), ("menu", "Reddit"))
         w.share(None)
         self.assertEqual(w.seen("menu")[0][2], ["Instagram", "X (Twitter)", "Reddit", "TikTok",
                                                 "Facebook", "Another site"])
@@ -1141,15 +1122,15 @@ class MainMenu(Flow):
         self.assertEqual(w.seen("browser"), [("browser", "https://www.reddit.com/login/")])
         first, second = self.alerts(w)
         self.assertEqual(first[0], "Sign in")
-        self.assertIn("UMDL returns here once it is saved", first[1])
+        self.assertIn("UMDL returns by itself", first[1])
         self.assertEqual(second, ("Signed in to Reddit",
-                                  "UMDL will use this sign-in for Reddit links."))
+                                  "Used for Reddit links from now on."))
 
     def test_sign_in_that_was_not_completed_says_so(self):
         w = self.world
         w.install(CONFIG)
         w.set_sign_in([[".instagram.com", "csrftoken"], [".instagram.com", "mid"]])  # visited only
-        w.script(("list", "Sign in to a site"), ("menu", "Instagram"))
+        w.script(("list", "Sign in"), ("menu", "Instagram"))
         w.share(None)
         title, body = self.alerts(w)[-1]
         self.assertEqual(title, "Sign-in not confirmed")
@@ -1159,7 +1140,7 @@ class MainMenu(Flow):
         w = self.world
         w.install(CONFIG)
         w.set_cookies([(".x.com", "auth_token")])
-        w.script(("list", "Sign in to a site"), ("menu", "X (Twitter)"))
+        w.script(("list", "Sign in"), ("menu", "X (Twitter)"))
         w.share(None)
         self.assertEqual(self.alerts(w)[-1][0], "Already signed in to X (Twitter)")
         self.assertEqual(w.seen("browser"), [])              # the page is not opened again
@@ -1168,15 +1149,15 @@ class MainMenu(Flow):
         w = self.world
         w.install(CONFIG)
         w.set_sign_in([["forum.example.org", "session_id"]])
-        w.script(("list", "Sign in to a site"), ("menu", "Another site"),
+        w.script(("list", "Sign in"), ("menu", "Another site"),
                  ("ask", "https://forum.example.org/login?next=/a&b=1"))
         w.share(None)
         self.assertEqual(w.seen("browser"), [("browser", "https://forum.example.org/login?next=/a&b=1")])
         self.assertEqual(self.alerts(w)[-1][0], "Signed in to example.org")
 
-        w.script(("list", "Sign in to a site"), ("menu", "Another site"), ("ask", "not an address"))
+        w.script(("list", "Sign in"), ("menu", "Another site"), ("ask", "not an address"))
         w.share(None)
-        self.assertEqual(self.alerts(w)[-1], ("Sign in", "That is not a web address."))
+        self.assertEqual(self.alerts(w)[-1], ("Sign in", "Not a web address."))
 
     def test_status_shows_sign_ins_versions_and_storage(self):
         w = self.world
@@ -1195,8 +1176,8 @@ class MainMenu(Flow):
         self.assertIn("Reddit: not signed in", lines)       # that cookie expired long ago
         self.assertIn("TikTok: not signed in", lines)       # visited, never signed in
         self.assertIn("Other sites that may be signed in: example.org", lines)
-        self.assertIn("Unfinished downloads: none", lines)
-        self.assertIn("Download tools: ready", lines)
+        self.assertIn("Unfinished: none", lines)
+        self.assertIn("Tools: ready", lines)
         self.assertIn("Last download: none yet", lines)
         self.assertEqual(w.seen("menu")[0][2], ["📋 Copy", "Done"])
         self.assertEqual(w.clipboard, "")
@@ -1213,7 +1194,7 @@ class MainMenu(Flow):
         self.assertIn("No sign-ins are stored.", status)
         self.assertRegex(status, r"Last download: \d\d \w+ \d\d:\d\d, failed \(unknown\)")
         self.assertIn("HTTP Error 500", log)
-        self.assertEqual(self.notifications(w)[-1], ("UMDL", "Status and log copied."))
+        self.assertEqual(self.notifications(w)[-1], ("UMDL", "Copied."))
 
     def test_copying_status_before_any_download_does_not_fail(self):
         w = self.world
@@ -1229,19 +1210,19 @@ class MainMenu(Flow):
         w.share(None)
         self.assertEqual(self.helper_commands(w), ["update"])
         title, body = self.alerts(w)[-1]
-        self.assertEqual(title, "Download tools updated")
+        self.assertEqual(title, "Tools updated")
         self.assertIn("yt-dlp  2099.01.01-fake", body)
 
     def test_about_project_page_and_done(self):
         w = self.world
         w.install(CONFIG)
-        w.script(("list", "About UMDL"), ("menu", "Project page"))
+        w.script(("list", "About"), ("menu", "Project page"))
         w.share(None)
         about = w.seen("menu")[0]
         self.assertTrue(about[1].startswith("UMDL %s\n" % VERSION["shortcut"]))
         self.assertEqual(about[2], ["🔄 Check for updates", "🌐 Project page", "Done"])
         self.assertEqual(w.seen("openurl")[-1][1], "https://github.com/TheKfcBandit/UMDL")
-        w.script(("list", "About UMDL"), ("menu", "Done"))
+        w.script(("list", "About"), ("menu", "Done"))
         w.share(None)
         self.assertEqual(w.helper_runs, [])
 
@@ -1249,20 +1230,20 @@ class MainMenu(Flow):
         w = self.world
         w.install(CONFIG)
         w.set_version_json(VERSION)
-        w.script(("list", "About UMDL"), ("menu", "Check for updates"))
+        w.script(("list", "About"), ("menu", "Check for updates"))
         w.share(None)
         self.assertEqual(self.alerts(w)[-1][0], "Up to date")
 
         w.set_version_json(dict(VERSION, shortcut="9.9.9", notes="Faster."))
-        w.script(("list", "About UMDL"), ("menu", "Check for updates"),
-                 ("menu", "Get the update"))
+        w.script(("list", "About"), ("menu", "Check for updates"),
+                 ("menu", "Update"))
         w.share(None)
-        self.assertEqual(w.seen("menu")[-1][1], "UMDL 9.9.9 is available. Installed: "
-                                                "%s.\n\nFaster." % VERSION["shortcut"])
+        self.assertEqual(w.seen("menu")[-1][1], "UMDL 9.9.9 available\n\nInstalled: "
+                                                "%s\n\nFaster." % VERSION["shortcut"])
         self.assertEqual(w.seen("openurl")[-1][1], VERSION["url"])
 
         w.set_offline(True)
-        w.script(("list", "About UMDL"), ("menu", "Check for updates"))
+        w.script(("list", "About"), ("menu", "Check for updates"))
         w.share(None)
         self.assertEqual(self.alerts(w)[-1][0], "Update check")
 
@@ -1280,9 +1261,9 @@ class Settings(Flow):
         self.open_settings(w, ("list", "Done"))
         _, prompt, names, _, details = w.seen("list")[1]
         self.assertEqual((prompt, names), ("Settings", SETTINGS_MENU))
-        self.assertEqual(details, ["Library only", "Up to 1080p", "Up to 30 fps", "Ask each time",
-                                   "Ask above 25 items", "Open Photos or Files",
-                                   "Sign out, or remove everything", "Close settings"])
+        self.assertEqual(details, ["Library", "Up to 1080p", "Up to 30 fps", "Ask",
+                                   "Ask above 25 items", "Notify and open",
+                                   "Sign out or remove all", "Close"])
         self.assertEqual(self.notifications(w), [])          # nothing changed, nothing to announce
         self.assertEqual(w.helper_runs, [])
 
@@ -1291,8 +1272,8 @@ class Settings(Flow):
         w.install(CONFIG)
         self.open_settings(w, ("list", "Done"))
         self.assertEqual(w.seen("list")[1][4][:6], [
-            "Clips", "Best available", "Best available", "Ask each time", "Ask above 10 items",
-            "Show a notification"])
+            "Clips", "Best", "Best", "Ask", "Ask above 10 items",
+            "Notify"])
 
     def test_the_list_stays_open_and_each_change_is_saved_at_once(self):
         w = self.world
@@ -1304,19 +1285,19 @@ class Settings(Flow):
         self.assertEqual(w.read_config(), dict(CONFIG, res="1440", fps="60", after="photos"))
         self.assertEqual(len(w.seen("list")), 5)             # main menu, then the list four times
         self.assertEqual(w.seen("list")[4][4][1:3], ["Up to 1440p", "Up to 60 fps"])
-        self.assertEqual(w.seen("list")[4][4][5], "Open Photos or Files")   # a two-value row switches on a tap
+        self.assertEqual(w.seen("list")[4][4][5], "Notify and open")   # a two-value row switches on a tap
         self.assertEqual(self.notifications(w), [("UMDL", "Settings saved.")])
         self.assertEqual(w.helper_runs, [])                  # settings never open a-Shell
 
     def test_resolution_and_frame_rate_choices(self):
         w = self.world
         w.install(dict(CONFIG, res="720", fps="30"))
-        self.open_settings(w, ("list", "Resolution"), ("menu", "Best available"),
-                           ("list", "Frame rate"), ("menu", "Best available"), ("list", "Done"))
+        self.open_settings(w, ("list", "Resolution"), ("menu", "Best"),
+                           ("list", "Frame rate"), ("menu", "Best"), ("list", "Done"))
         menus = w.seen("menu")
-        self.assertEqual(menus[0][1:3], ("Highest resolution", ["Best available", "2160p (4K)", "1440p",
+        self.assertEqual(menus[0][1:3], ("Resolution", ["Best", "2160p", "1440p",
                                                                  "1080p", "720p", "480p"]))
-        self.assertEqual(menus[1][1:3], ("Highest frame rate", ["Best available", "60 fps", "30 fps"]))
+        self.assertEqual(menus[1][1:3], ("Frame rate", ["Best", "60 fps", "30 fps"]))
         self.assertEqual(w.read_config(), CONFIG)
 
     def test_settings_saved_by_earlier_versions_are_read(self):
@@ -1324,19 +1305,19 @@ class Settings(Flow):
         w.install({"album": "Old", "threshold": "7", "convert": "0", "after": "photos"})      # 1.2
         self.open_settings(w, ("list", "When finished"), ("list", "Done"))
         self.assertEqual(w.seen("list")[1][4][:6], [
-            "Old", "Best available", "Best available", "Ask each time", "Ask above 7 items",
-            "Open Photos or Files"])                         # its "convert" meant something else: not set
+            "Old", "Best", "Best", "Ask", "Ask above 7 items",
+            "Notify and open"])                         # its "convert" meant something else: not set
         self.assertEqual(w.read_config(), dict(CONFIG, album="Old", threshold="7"))   # and written as today's
 
     def test_change_album(self):
         w = self.world
         w.install(CONFIG)
-        self.open_settings(w, ("list", "Save to"), ("menu", "An album"), ("ask", "Holiday"),
+        self.open_settings(w, ("list", "Save to"), ("menu", "Album"), ("ask", "Holiday"),
                            ("list", "Done"))
         self.assertEqual(w.read_config(), dict(CONFIG, album="Holiday"))
         self.assertEqual(w.albums, [])
         self.assertEqual(w.seen("ask")[0][2], "Clips")       # the current name is offered
-        self.assertEqual(w.seen("menu")[0][1:3], ("Save to", ["🖼️ An album", "📚 Library only", "📁 Files"]))
+        self.assertEqual(w.seen("menu")[0][1:3], ("Save to", ["🖼️ Album", "📚 Library", "📁 Files"]))
 
     def test_save_to_files_and_back(self):
         w = self.world
@@ -1344,8 +1325,8 @@ class Settings(Flow):
         self.open_settings(w, ("list", "Save to"), ("menu", "Files"), ("list", "Done"))
         self.assertEqual(w.read_config(), dict(CONFIG, dest="files"))        # the album is remembered
         self.assertEqual(w.seen("list")[2][4][0], "Files")
-        self.assertEqual(w.seen("list")[2][4][3], "Not needed for Files")
-        self.open_settings(w, ("list", "Save to"), ("menu", "Library only"), ("list", "Done"))
+        self.assertEqual(w.seen("list")[2][4][3], "Off for Files")
+        self.open_settings(w, ("list", "Save to"), ("menu", "Library"), ("list", "Done"))
         self.assertEqual(w.read_config(), dict(CONFIG, album="Recents"))
 
     def test_conversion_preference(self):
@@ -1354,11 +1335,10 @@ class Settings(Flow):
         self.open_settings(w, ("list", "Conversion"), ("menu", "Never"),
                            ("list", "Conversion"), ("menu", "Always"), ("list", "Done"))
         prompt, items = w.seen("menu")[0][1:3]
-        self.assertTrue(prompt.startswith("Conversion\n\nSome sites have their best version only in a format"))
-        self.assertEqual(items, ["❓ Ask each time", "🎞️ Always, for the best quality",
-                                 "⚡ Never, take what Photos plays"])
-        self.assertEqual(w.seen("list")[2][4][3], "Never, take what Photos plays")
-        self.assertEqual(w.seen("list")[3][4][3], "Always, for the best quality")
+        self.assertEqual(prompt, "Convert for higher quality")
+        self.assertEqual(items, ["❓ Ask", "🎞️ Always", "⚡ Never"])
+        self.assertEqual(w.seen("list")[2][4][3], "Never")
+        self.assertEqual(w.seen("list")[3][4][3], "Always")
         self.assertEqual(w.read_config(), dict(CONFIG, convert="yes"))
 
     def test_change_threshold(self):
@@ -1374,20 +1354,20 @@ class Settings(Flow):
             w.install(CONFIG)
             self.open_settings(w, ("list", "Large downloads"), ("ask", bad), ("list", "Done"))
             self.assertEqual(w.read_config(), CONFIG, bad)
-            self.assertEqual(self.alerts(w)[0], ("Not saved", "Enter a whole number from 1 to 9999."), bad)
+            self.assertEqual(self.alerts(w)[0], ("Not saved", "Enter 1 to 9999."), bad)
             self.assertEqual(len(w.seen("list")), 3, bad)    # back in the list after the alert
 
     def test_reset_sign_out(self):
         w = self.world
         w.install(CONFIG)
         w.set_cookies([(".instagram.com", "sessionid")])
-        self.open_settings(w, ("list", "Reset"), ("menu", "Sign out of all sites"))
+        self.open_settings(w, ("list", "Reset"), ("menu", "Sign out everywhere"))
         prompt, items = w.seen("menu")[0][1:3]
-        self.assertTrue(prompt.startswith("Reset\n\nRemove everything also deletes"))
-        self.assertEqual(items, ["🔑 Sign out of all sites", "🗑️ Remove everything", "Cancel"])
+        self.assertEqual(prompt, "Reset\n\nPhotos are kept.")
+        self.assertEqual(items, ["🔑 Sign out everywhere", "🗑️ Remove everything", "Cancel"])
         self.assertEqual(self.helper_commands(w), ["logout"])
         self.assertFalse(os.path.exists(w.cookie_store))
-        self.assertEqual(self.alerts(w)[-1], ("Signed out", "All saved sign-ins were removed."))
+        self.assertEqual(self.alerts(w)[-1], ("Signed out", "All sign-ins removed."))
         self.assertEqual(w.read_config(), CONFIG)            # settings are kept
 
     def test_reset_everything_removes_umdl_the_tools_and_the_sign_ins(self):
@@ -1403,7 +1383,7 @@ class Settings(Flow):
         self.assertFalse(os.path.exists(w.cookie_store))
         self.assertEqual(w.pip_log()[-1], "uninstall " + " ".join(TOOLS))
         self.assertTrue(os.path.exists(other))               # the user's own files stay
-        self.assertEqual(self.alerts(w)[-1][0], "UMDL was reset")
+        self.assertEqual(self.alerts(w)[-1][0], "Reset")
         w.script(("menu", "Not now"))
         w.share(None)  # and the next run is a first run again
         self.assertIn("Welcome to UMDL", w.seen("menu")[-1][1])

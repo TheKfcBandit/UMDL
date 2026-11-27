@@ -1,75 +1,113 @@
 #!/usr/bin/env python3
 """Stand-in for a-Shell's jsc, which runs JavaScript in the app's web view.
 
-It does not run JavaScript. It recognises the few scripts the helper sends and
-answers as a browser would. Like a-Shell on iOS 27.2, it only passes on what a
-script sends through the print channel: a script that tries to hand its value
-back directly gets "a result of an unsupported type" and nothing else.
-Answers come from the "browser" part of UMDL_FAKE_SCENARIO:
-    {"browser": {"post": {...}}}             the signed-in browser gets the post
-    {"browser": {"http": "403 Blocked"}}     Reddit refuses the browser too
-    {"browser": {"silent": true}}            the request never finishes
+The script is run for real, in Node, against a small browser: a location that
+can be set, a history, and a document. What the document holds comes from the
+"browser" part of UMDL_FAKE_SCENARIO:
+    {"browser": {"page": "<shreddit-post ...>...</shreddit-post>"}}
+                                       the page Reddit shows for the post
+    {"browser": {"page": "...", "challenge": 3}}
+                                       the same, after three looks at a checking page
+    {"browser": {"blocked": true}}     Reddit's block page
+    {"browser": {"silent": true}}      the page never finishes loading
+    {"browser": {"start": "https://..."}}   where the browser is to begin with
 With no "browser" entry there is no web view, and jsc prints nothing.
-The pages it was sent to are kept in $HOME/browser-visits.log.
+
+Like a-Shell on iOS 27.2, only what a script sends through the print channel
+is passed on: a script that evaluates to a value gets "a result of an
+unsupported type" and nothing else. Pages opened are kept, one per line, in
+$HOME/browser-visits.log.
 """
 import json
 import os
-import re
+import shutil
+import subprocess
 import sys
-from urllib.parse import urlsplit
 
 scenario = None
 if os.environ.get("UMDL_FAKE_SCENARIO"):
     with open(os.environ["UMDL_FAKE_SCENARIO"]) as handle:
         scenario = json.load(handle).get("browser")
-if scenario is None:
+if scenario is None or not shutil.which("node"):
     sys.exit(0)
 
 home = os.environ.get("HOME", "")
 store = os.path.join(home, ".fake-browser.json")
-state = {"href": scenario.get("start", "https://localhost:8443/wasm.html"), "history": [], "result": ""}
+state = {"href": scenario.get("start", "https://localhost:8443/wasm.html"), "history": [], "looks": 0}
 if os.path.exists(store):
     with open(store) as handle:
         state = json.load(handle)
-with open(sys.argv[1]) as handle:
-    script = handle.read()
 
-if ('messageHandlers.aShell.postMessage("print:"' not in script
-        or not script.rstrip().endswith("void 0;")):
+BROWSER = r"""
+const fs = require("fs");
+const [scriptPath, statePath] = process.argv.slice(2);
+const {state, scenario} = JSON.parse(fs.readFileSync(statePath, "utf8"));
+const printed = [], visits = [];
+globalThis.window = globalThis;
+window.webkit = {messageHandlers: {aShell: {postMessage: function (text) { printed.push(String(text)); }}}};
+const place = {
+  get href() { return state.href; },
+  set href(to) {
+    state.history.push(state.href);
+    state.href = new URL(String(to), state.href).href;
+    state.looks = 0;
+    visits.push(state.href);
+  },
+  get hostname() { return new URL(state.href).hostname; },
+  get pathname() { return new URL(state.href).pathname; },
+  toString() { return state.href; },
+};
+Object.defineProperty(globalThis, "location", {get: () => place, set: (to) => { place.href = to; }});
+globalThis.history = {
+  get length() { return state.history.length + 1; },
+  go(by) { for (; by < 0 && state.history.length; by++) { state.href = state.history.pop(); } },
+  back() { this.go(-1); },
+};
+const page = (readyState, title, words, post) => ({
+  readyState, title, body: {innerText: words},
+  querySelector: (what) => (what === "shreddit-post" && post ? {outerHTML: post} : null),
+});
+Object.defineProperty(globalThis, "document", {get() {
+  if (place.hostname !== "www.reddit.com") { return page("complete", "a-Shell", "", ""); }
+  if (place.pathname === "/robots.txt") { return page("complete", "", "User-agent: *", ""); }
+  state.looks += 1;
+  if (scenario.silent) { return page("loading", "", "", ""); }
+  if (scenario.blocked) {
+    return page("complete", "Blocked", "You've been blocked by network security. If you think " +
+                "you've been blocked by mistake, file a ticket below and we'll look into it.", "");
+  }
+  if ((scenario.challenge || 0) >= state.looks) { return page("complete", "Reddit - Please wait for verification", "", ""); }
+  const html = String(scenario.page || "");
+  const from = html.indexOf("<shreddit-post");
+  const to = html.indexOf("</shreddit-post>");
+  return page("complete", "A post : r/somewhere", "Skip to main content",
+              from < 0 ? "" : html.slice(from, to < 0 ? undefined : to + 16));
+}});
+const value = (0, eval)(fs.readFileSync(scriptPath, "utf8"));
+console.log(JSON.stringify({state, printed, visits, value: typeof value}));
+"""
+
+runner = os.path.join(home, ".fake-browser.js")
+handover = os.path.join(home, ".fake-browser-in.json")
+with open(runner, "w") as handle:
+    handle.write(BROWSER)
+with open(handover, "w") as handle:
+    json.dump({"state": state, "scenario": scenario}, handle)
+done = subprocess.run(["node", runner, sys.argv[1], handover], stdout=subprocess.PIPE,
+                      stderr=subprocess.PIPE, universal_newlines=True)
+if done.returncode != 0:
+    sys.stderr.write("jsc: " + done.stderr.strip().splitlines()[-1] + "\n")
+    sys.exit(0)
+result = json.loads(done.stdout.strip().splitlines()[-1])
+with open(store, "w") as handle:
+    json.dump(result["state"], handle)
+if result["visits"]:
+    with open(os.path.join(home, "browser-visits.log"), "a") as handle:
+        handle.write("".join(visit + "\n" for visit in result["visits"]))
+if result["value"] != "undefined":
     sys.stderr.write("jsc: Error in file %s : JavaScript execution returned a result of an "
                      "unsupported type\n" % sys.argv[1])
     sys.exit(0)
-
-if "history.back()" in script:
-    state["href"] = state["history"].pop()
-    print("back")
-elif 'location.href = "' in script:
-    state["history"].append(state["href"])
-    state["href"] = re.search(r'location\.href = "([^"]+)"', script).group(1)
-    with open(os.path.join(home, "browser-visits.log"), "a") as handle:
-        handle.write(state["href"] + "\n")
-    print("going")
-elif 'window.__umdl = "";' in script:
-    asked = json.loads(re.search(r"new URL\((\"[^\n]*\")\);", script).group(1))
-    with open(os.path.join(home, "browser-visits.log"), "a") as handle:
-        handle.write("fetch " + asked + "\n")
-    if urlsplit(state["href"]).hostname != "www.reddit.com":
-        state["result"] = "ERR TypeError: Load failed"      # another site's page may not ask
-    elif scenario.get("silent"):
-        state["result"] = ""
-    elif "http" in scenario:
-        state["result"] = "HTTP " + scenario["http"]
-    else:
-        state["result"] = "OK " + json.dumps(scenario.get("post") or {})
-    print("started")
-elif "window.__umdl ||" in script:
-    print(state["result"])
-elif "document.readyState" in script:
-    print((urlsplit(state["href"]).hostname or "") + " complete")
-elif "String(location.href)" in script:
-    print(state["href"])
-else:
-    sys.stderr.write("fake jsc: unexpected script\n")
-    sys.exit(2)
-with open(store, "w") as handle:
-    json.dump(state, handle)
+for text in result["printed"]:
+    if text.startswith("print:"):
+        sys.stdout.write(text[6:])

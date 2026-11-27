@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.8.0
+
+Reddit again, and fewer words. Install the new shortcut; it brings its helper with it.
+
+Reddit:
+
+- **Why it failed.** Around 9 October 2026 Reddit closed the data pages yt-dlp and gallery-dl read. They answer "You've been blocked by network security" to everyone: any network, signed in or not, even a browser. It was never the network or a VPN, and UMDL no longer says so.
+- **What UMDL does now.** It opens the post in a-Shell's browser, as a visitor would, reads from the page where the photo or video is, and hands those addresses to the tools. Share links from the Reddit app (`/s/…`) are followed the same way. This is the only route for Reddit; the four that could no longer work are gone.
+- Not yet run on a device. Reddit cannot be opened from where UMDL is built, so the page reader is tested against pages modelled on Reddit's markup. The log records every step.
+
+Wording, throughout:
+
+- **Higher quality available** shows the title and two buttons, "2160p60 · Converted" and "1080p60 · Native". No explanation.
+- "Converting 2160p60 HDR AV1 + AAC", without "for Photos". The same for "Repacking", "Installing tools", "Updating tools", "Downloading".
+- Notifications: "Saved to UMDL.", "3 saved to UMDL.", "Converted AV1 → HEVC.", "1 kept in Files.", "Not saved to Photos."
+- Main menu: Download, Resume, Settings, Sign in, Status, Update tools, About.
+- Settings values: Best, Ask, Always, Never, Library, Notify, Notify and open. Menus are titled by what they set: Resolution, Frame rate, Convert for higher quality.
+- Failure menu: Retry; Update tools, retry; Sign in; Copy log. Shorter advice under it.
+- Every other prompt and alert, the same way.
+
+Also:
+
+- Status has a "Web view" line: whether a-Shell's browser can decode VP9 and encode HEVC in hardware. Nothing uses it yet; it answers whether a conversion through the browser would be worth building.
+- A failure on a site you are signed in to no longer advises signing in.
+
+Looked into: other ways to hardware-decode VP9. Only WebKit's own decoder, through WebCodecs in a-Shell's web view, is open to an app without Apple's entitlement, and it would mean a second transcoder written in JavaScript. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#hardware-decoding-what-is-and-is-not-reachable).
+
+
 ## 1.7.0
 
 A choice where there is one, Files as a destination, and what the first run of 1.6 on a device showed. Install the new shortcut; it brings its helper with it.

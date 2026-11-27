@@ -400,11 +400,11 @@ class VersionPlan(Base):
     def test_av1_needs_a_chip_that_reads_it_and_an_ffmpeg_that_can(self):
         self.addCleanup(umdl._FFMPEG_HAS.clear)
         umdl._FFMPEG_HAS.update({"-decoders": {"vp9", "libdav1d"}, "-hwaccels": set()})
-        self.assertEqual(umdl.av1_verdict(), (False, "not taken, the chip does not read it"))
+        self.assertEqual(umdl.av1_verdict(), (False, "off, no hardware decoder"))
         os.environ["UMDL_TEST_HARDWARE"] = "av01"
-        self.assertEqual(umdl.av1_verdict(), (True, "taken over VP9, it converts faster"))
+        self.assertEqual(umdl.av1_verdict(), (True, "preferred over VP9"))
         umdl._FFMPEG_HAS["-decoders"] = {"vp9", "av1"}             # ffmpeg's own AV1 reader needs hardware
-        self.assertEqual(umdl.av1_verdict(), (False, "not taken, this ffmpeg cannot read it"))
+        self.assertEqual(umdl.av1_verdict(), (False, "off, ffmpeg cannot read it"))
         umdl._FFMPEG_HAS["-hwaccels"] = {"videotoolbox"}
         self.assertTrue(umdl.av1_verdict()[0])
         umdl.write_json(umdl.STATE_FILE, {"av1_refused": True})    # what 1.6 concluded from a refusal
@@ -521,12 +521,12 @@ class Saving(Base):
         self.assertEqual(ctx["converted"], [])
 
     def test_summary(self):
-        self.assertEqual(umdl.summary(1, "UMDL", [], 0, 0), "Saved to the UMDL album.")
+        self.assertEqual(umdl.summary(1, "UMDL", [], 0, 0), "Saved to UMDL.")
         self.assertEqual(umdl.summary(3, "", ["VP9 → HEVC"], 1, 2),
-                         "Saved 3 items to Photos.\n1 converted (VP9 → HEVC).\n"
-                         "1 kept in Files (a-Shell, UMDL, Saved).\n2 failed.")
+                         "3 saved to Photos.\nConverted VP9 → HEVC.\n"
+                         "1 kept in Files.\n2 failed.")
         self.assertEqual(umdl.summary(0, "", [], 1, 0, "a-Shell is not allowed to add to Photos."),
-                         "Nothing was added to Photos.\n1 kept in Files (a-Shell, UMDL, Saved).\n"
+                         "Not saved to Photos.\n1 kept in Files.\n"
                          "a-Shell is not allowed to add to Photos.")
 
     def test_a_step_that_stopped_a_shell_turns_saving_off_until_update_tools(self):
@@ -546,7 +546,7 @@ class Saving(Base):
         umdl.write_json(umdl.STATE_FILE, state)
         library, reason = umdl.open_library("UMDL")                     # (here it cannot: no device)
         self.assertIsNone(library)
-        self.assertRegex(reason, r"^Photos could not be reached \(\w+\)\.$")
+        self.assertRegex(reason, r"^Photos unavailable \(\w+\)\.$")
 
     def test_off_a_device_there_is_a_reason_not_a_library(self):
         os.environ.pop("UMDL_TEST_PHOTOS")
@@ -795,7 +795,7 @@ class EndToEnd(Base):
         self.assertEqual(code, 0)
         self.assertEqual(name, "UMDL")
         self.assertEqual(data["t"], "done")
-        self.assertEqual((data["title"], data["msg"]), ("My clip", "Saved to the UMDL album."))
+        self.assertEqual((data["title"], data["msg"]), ("My clip", "Saved to UMDL."))
         self.assertEqual(data["cfg"]["album"], "UMDL")
         self.assertEqual(self.library(), [("UMDL", "My clip.mp4")])
         self.assertEqual(os.listdir(umdl.JOBS_DIR), [])            # nothing is left behind
@@ -823,7 +823,7 @@ class EndToEnd(Base):
         install_fake_gallery(False)
         code, (_, data) = self.run_helper(
             "run", payload("https://video.test/playlist/1", mode="limit", limit="10"))
-        self.assertEqual((data["t"], data["msg"]), ("done", "Saved 2 items to the UMDL album."))
+        self.assertEqual((data["t"], data["msg"]), ("done", "2 saved to UMDL."))
         self.assertEqual(self.library(), [("UMDL", "One.mp4"), ("UMDL", "Two.mp4")])
         self.assertEqual(fake["opts"][-1]["playlist_items"], "1-10")
         self.assertEqual(fake["opts"][-1]["ignoreerrors"], "only_download")
@@ -836,14 +836,14 @@ class EndToEnd(Base):
         })
         install_fake_gallery(False)
         code, (_, data) = self.run_helper("run", payload("https://video.test/playlist/2"))
-        self.assertEqual((data["t"], data["msg"]), ("done", "Saved 2 items to the UMDL album."))
+        self.assertEqual((data["t"], data["msg"]), ("done", "2 saved to UMDL."))
 
     def test_falls_back_to_gallery(self):
         install_fake_ytdlp({"raw": FakeDownloadError("No video could be found in this post")})
         install_fake_gallery(True)
         os.environ["FAKE_GALLERY_COUNT"] = "3"
         code, (_, data) = self.run_helper("run", payload("https://video.test/post/9"))
-        self.assertEqual((data["t"], data["msg"]), ("done", "Saved 3 items to the UMDL album."))
+        self.assertEqual((data["t"], data["msg"]), ("done", "3 saved to UMDL."))
         self.assertEqual(len(self.library()), 3)
 
     def test_gallery_first_and_confirm(self):
@@ -858,7 +858,7 @@ class EndToEnd(Base):
         os.environ["FAKE_GALLERY_COUNT"] = "25"
         code, (_, data) = self.run_helper(
             "run", payload("https://x.com/user/media", mode="first"))
-        self.assertEqual((data["t"], data["msg"]), ("done", "Saved to the UMDL album."))
+        self.assertEqual((data["t"], data["msg"]), ("done", "Saved to UMDL."))
 
     def test_error_reports_first_tool(self):
         install_fake_ytdlp({"raw": FakeDownloadError("Sign in to confirm your age")})
@@ -878,7 +878,7 @@ class EndToEnd(Base):
         })
         install_fake_gallery(False)
         code, (_, data) = self.run_helper("run", payload("https://video.test/playlist/3"))
-        self.assertEqual((data["t"], data["msg"]), ("done", "Saved to the UMDL album.\n1 failed."))
+        self.assertEqual((data["t"], data["msg"]), ("done", "Saved to UMDL.\n1 failed."))
 
     @unittest.skipUnless(HAVE_FFMPEG, "ffmpeg not installed")
     def test_audio_goes_to_files(self):
@@ -889,7 +889,7 @@ class EndToEnd(Base):
         })
         install_fake_gallery(False)
         code, (_, data) = self.run_helper("run", payload("https://audio.test/s1"))
-        self.assertEqual(data["msg"], "Nothing was added to Photos.\n1 kept in Files (a-Shell, UMDL, Saved).")
+        self.assertEqual(data["msg"], "Not saved to Photos.\n1 kept in Files.")
         self.assertEqual(os.listdir(umdl.SAVED_DIR), ["A song live 2024.m4a"])
         self.assertEqual(self.library(), [])
 
@@ -931,21 +931,21 @@ class EndToEnd(Base):
         umdl.place = stopped
         self.addCleanup(setattr, umdl, "place", real_place)
         self.assertEqual(umdl.main(["umdl.py", "run", payload(url)]), 130)
-        self.assertIn("Resume last download", self.out.getvalue())
+        self.assertIn("Resume", self.out.getvalue())
         self.assertTrue(os.path.exists(umdl.LAST_FILE))           # which is what that menu row replays
         umdl.place = real_place
         self.assertEqual(self.library(), [("UMDL", "T.mp4")])
         folder = os.path.join(umdl.JOBS_DIR, os.listdir(umdl.JOBS_DIR)[0])
         job = umdl.read_json(os.path.join(folder, "job.json"), {})
         self.assertEqual((job["state"], [i["state"] for i in job["items"]]), ("save", ["saved", "waiting"]))
-        self.assertIn("Unfinished downloads: 1", umdl.status_text({}))
+        self.assertIn("Unfinished: 1", umdl.status_text({}))
 
         # The second run may not download: the tool would fail if it were asked.
         self.setUp_keep_workspace()
         install_fake_ytdlp({"raw": FakeDownloadError("HTTP Error 500")})
         install_fake_gallery(False)
         code, (_, data) = self.run_helper("run", payload(url))
-        self.assertEqual((data["t"], data["title"], data["msg"]), ("done", "T", "Saved 2 items to the UMDL album."))
+        self.assertEqual((data["t"], data["title"], data["msg"]), ("done", "T", "2 saved to UMDL."))
         self.assertEqual(self.library(), [("UMDL", "T.mp4"), ("UMDL", "U.mp4")])     # the first is not added twice
         self.assertIn("carrying on: 2 files already downloaded", open(umdl.LOG_FILE).read())
         self.assertEqual(os.listdir(umdl.JOBS_DIR), [])
@@ -962,7 +962,7 @@ class EndToEnd(Base):
                             "files": [("abc.mp4", clip, "T")]})
         install_fake_gallery(False)
         code, (_, data) = self.run_helper("run", payload(url))
-        self.assertEqual(data["msg"], "Saved to the UMDL album.")
+        self.assertEqual(data["msg"], "Saved to UMDL.")
         self.assertEqual(self.library(), [("UMDL", "T.mp4")])
 
     def test_when_photos_cannot_be_used_the_file_is_kept_with_the_reason(self):
@@ -971,8 +971,8 @@ class EndToEnd(Base):
                             "files": [("abc.mp4", self.clip(), "T")]})
         install_fake_gallery(False)
         code, (_, data) = self.run_helper("run", payload("https://video.test/watch/abc"))
-        self.assertEqual(data["msg"], "Nothing was added to Photos.\n1 kept in Files (a-Shell, UMDL, Saved).\n"
-                                      "a-Shell is not allowed to add to Photos. Allow it in Settings, a-Shell, Photos.")
+        self.assertEqual(data["msg"], "Not saved to Photos.\n1 kept in Files.\n"
+                                      "a-Shell has no Photos access. Allow it in Settings › a-Shell › Photos.")
         self.assertEqual(os.listdir(umdl.SAVED_DIR), ["T.mp4"])
 
     def setUp_keep_workspace(self):
@@ -1003,7 +1003,7 @@ class EndToEnd(Base):
         code, (_, data) = self.run_helper("status", payload(""))
         self.assertEqual(data["t"], "status")
         self.assertIn("gallery-dl fake", data["msg"].split("\n"))
-        self.assertIn("Download tools: ready", data["msg"])
+        self.assertIn("Tools: ready", data["msg"])
         self.assertRegex(data["msg"], r"\nConverts with: [a-z0-9_, ]+\n")
 
     def test_tools_that_cannot_be_installed_are_reported(self):
@@ -1060,54 +1060,6 @@ class EndToEnd(Base):
         self.assertEqual(code, 1)
         self.assertEqual((data["t"], data["kind"]), ("error", "unknown"))
         self.assertIn("ZeroDivisionError", data["msg"])
-
-
-class RedditPosts(unittest.TestCase):
-    """Where a Reddit post keeps its media, from the fields Reddit's JSON has."""
-
-    def test_hosted_video(self):
-        video = {"dash_url": "https://v.redd.it/x/DASHPlaylist.mpd?a=1", "hls_url": "h", "fallback_url": "f"}
-        self.assertEqual(umdl.reddit_targets({"is_video": True, "secure_media": {"reddit_video": video}}),
-                         ("video", video["dash_url"]))
-        self.assertEqual(umdl.reddit_targets({"media": {"reddit_video": {"fallback_url": "f"}}}),
-                         ("video", "f"))
-        self.assertEqual(umdl.reddit_targets({"url": "https://v.redd.it/x9/"}),
-                         ("video", "https://v.redd.it/x9/DASHPlaylist.mpd"))
-
-    def test_gallery_keeps_its_order_and_asks_for_originals(self):
-        post = {"is_gallery": True, "url": "https://www.reddit.com/gallery/1abcde",
-                "gallery_data": {"items": [{"media_id": "b"}, {"media_id": "a"}, {"media_id": "gone"},
-                                           {"media_id": "anim"}]},
-                "media_metadata": {
-                    "a": {"s": {"u": "https://preview.redd.it/a.png?width=640&s=1"}},
-                    "b": {"s": {"u": "https://preview.redd.it/b.jpg?width=640&s=2"}},
-                    "gone": {"status": "failed"},
-                    "anim": {"s": {"gif": "https://i.redd.it/anim.gif", "mp4": "https://preview.redd.it/anim.mp4"}}}}
-        self.assertEqual(umdl.reddit_targets(post),
-                         ("files", ["https://i.redd.it/b.jpg", "https://i.redd.it/a.png",
-                                    "https://i.redd.it/anim.gif"]))
-
-    def test_single_image_crosspost_and_outside_link(self):
-        self.assertEqual(umdl.reddit_targets({"url": "https://i.redd.it/one.jpg"}),
-                         ("files", ["https://i.redd.it/one.jpg"]))
-        crosspost = {"url": "https://www.reddit.com/r/a/comments/1/x/", "is_self": False,
-                     "crosspost_parent_list": [{"url": "https://i.redd.it/orig.png"}]}
-        self.assertEqual(umdl.reddit_targets(crosspost), ("files", ["https://i.redd.it/orig.png"]))
-        self.assertEqual(umdl.reddit_targets({"url_overridden_by_dest": "https://imgur.com/a/xyz",
-                                              "url": "https://imgur.com/a/xyz"}),
-                         ("link", "https://imgur.com/a/xyz"))
-
-    def test_text_post_has_nothing_to_download(self):
-        for post in ({"is_self": True, "url": "https://www.reddit.com/r/a/comments/1/x/"},
-                     {"is_self": True, "url": "https://example.com/mentioned-in-text"}, {}):
-            with self.assertRaises(umdl.EngineError):
-                umdl.reddit_targets(post)
-
-    def test_which_links_are_reddit(self):
-        for link in ("https://www.reddit.com/r/a/s/b", "https://old.reddit.com/x", "https://redd.it/abc"):
-            self.assertTrue(umdl.is_reddit(link), link)
-        for link in ("https://notreddit.com/x", "https://i.redd.it/a.jpg", "https://reddit.com.evil.test/"):
-            self.assertFalse(umdl.is_reddit(link), link)
 
 
 class SelfUpdate(Base):

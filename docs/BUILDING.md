@@ -117,22 +117,24 @@ On an iPhone or iPad with a-Shell installed and UMDL not yet set up:
 - [ ] Open UMDL from the Shortcuts app. The main menu appears at once, with icons, and no other message first.
 - [ ] The first download asks to let a-Shell add to Photos. Allow it. The video is in the album, named by its title, dated today.
 - [ ] Share a long video, 30 minutes or more. It is saved; nothing is kept in Files.
-- [ ] Share a 4K YouTube link with **Conversion** at "Ask each time". **Higher quality available** names both sizes. Choose the converted one: a-Shell does not show "Reading link" working a second time, the video is saved at 2160p in the album under its title, and the notification says "1 converted". Copy the log from Status: "version:" shows what was chosen, "converted … in N s with …" the time and the arguments. If the video is HDR, check that Photos shows it as HDR.
+- [ ] Share a 4K YouTube link with **Conversion** at "Ask". **Higher quality available** names both sizes. Choose the converted one: a-Shell does not show "Reading link" working a second time, the video is saved at 2160p in the album under its title, and the notification says "1 converted". Copy the log from Status: "version:" shows what was chosen, "converted … in N s with …" the time and the arguments. If the video is HDR, check that Photos shows it as HDR.
 - [ ] Share the same link and choose "as it is". The 1080p version is saved with no conversion.
 - [ ] Set **Conversion** to "Never", then to "Always", and share the link each time. Nothing is asked.
 - [ ] Set **Save to** to Files and share the link. Nothing is asked or converted; the file is in Files under a-Shell › UMDL › Saved, under its title, and plays there. With **When finished** set to open, the Files app opens at that folder.
 - [ ] Set Resolution to 1080p and share the same link. No conversion; the saved video is 1080p.
 - [ ] Settings: change Resolution, then Frame rate. The list comes back after each with the new value. **Done** closes it.
-- [ ] Share a post with several images from X, Instagram or Reddit.
+- [ ] Share a post with several images from X or Instagram.
+- [ ] Share a Reddit post from the Reddit app: one with a photo, one with a gallery, one with a video. a-Shell shows "Reading post", the Reddit app does not open, and each is saved under the post's title. If one fails, **Copy log** shows where the browser was and what it saw.
+- [ ] Open Status and read the "Web view" line: whether a-Shell's browser decodes VP9 in hardware.
 - [ ] Share a playlist with more than 10 videos. The menu appears; **First 10** saves ten.
 - [ ] Share an audio link (SoundCloud). The file appears in Files under a-Shell › UMDL › Saved.
 - [ ] Share a link to a page with nothing on it. The error menu appears; **Cancel** works.
 - [ ] Try every menu item and every setting, against [BEHAVIOR.md](BEHAVIOR.md).
-- [ ] Sign in to a site. UMDL returns to Shortcuts and says "Signed in to" with the site's name. Then download a post that needs the sign-in.
+- [ ] Sign in. UMDL returns to Shortcuts and says "Signed in to" with the site's name. Then download a post that needs the sign-in.
 - [ ] Settings › Reset › **Sign out of all sites**. Status shows no sign-ins; settings are unchanged.
 - [ ] Settings › Reset › **Remove everything**, then run UMDL from the Shortcuts app and choose **Custom setup**. The settings list appears without a Reset row.
 - [ ] Turn on Airplane Mode, remove everything, and run setup. **Setup incomplete** appears; with the connection back, the next run finishes setup without asking again.
-- [ ] Start a long download, leave a-Shell, come back. It carries on. Do it again, this time closing a-Shell from the app switcher during a conversion; then open UMDL and choose **Resume last download**. Nothing is downloaded again and the video is saved once. The Files app shows the folder under a-Shell › UMDL › Working meanwhile, and not afterwards.
+- [ ] Start a long download, leave a-Shell, come back. It carries on. Do it again, this time closing a-Shell from the app switcher during a conversion; then open UMDL and choose **Resume**. Nothing is downloaded again and the video is saved once. The Files app shows the folder under a-Shell › UMDL › Working meanwhile, and not afterwards.
 - [ ] In the Settings app, set a-Shell's access to Photos to None and share a link. The notification says nothing was added and why, and the file is in Files under a-Shell › UMDL › Saved.
 
 ## Layout

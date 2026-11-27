@@ -37,9 +37,9 @@ import time
 import traceback
 import urllib.parse
 
-HELPER_VERSION = "1.7.0"
+HELPER_VERSION = "1.8.0"
 # Bumped only when the payload/callback format changes incompatibly.
-PROTOCOL = 7
+PROTOCOL = 8
 
 REPO = "TheKfcBandit/UMDL"
 RAW_BASE = "https://raw.githubusercontent.com/%s/main" % REPO
@@ -79,12 +79,8 @@ SITES = (
 SESSION_COOKIE = re.compile(r"sess|auth|token|login|logged|(^|[_-])sid($|[_-])|user", re.I)
 SIGNIN_WAIT = int(os.environ.get("UMDL_SIGNIN_WAIT") or 600)
 
-# A site turning the request away because of where it comes from, not who is asking.
+# A site turning the request away whoever is asking.
 BLOCKED = re.compile(r"blocked by network security|unable to access the reddit api|403:? blocked", re.I)
-# Reddit refuses its website's JSON to many networks, signed in or not, and
-# points to its API instead. gallery-dl can use that API with a public token.
-# The empty refresh-token keeps gallery-dl 1.32 off a code path that crashes.
-REDDIT_API = ["-o", "api=oauth", "-o", "refresh-token="]
 
 IMAGE_EXTS = {"jpg", "jpeg", "png", "gif", "heic", "heif", "webp", "tif", "tiff", "bmp", "avif"}
 VIDEO_EXTS = {"mp4", "m4v", "mov", "mkv", "webm", "flv", "ts", "avi", "3gp", "wmv", "mpg", "mpeg", "ogv"}
@@ -184,11 +180,11 @@ def av1_verdict():
     keeps its VP9 decoder for apps Apple has granted it to. On the device this
     was measured on, 4K60 AV1 converted in about the video's own length."""
     if not hardware_decodes("av01"):
-        return False, "not taken, the chip does not read it"
+        return False, "off, no hardware decoder"
     readers = {"libdav1d", "libaom-av1"} | ({"av1"} if decode_args() else set())
     if not readers & ffmpeg_has("-decoders"):
-        return False, "not taken, this ffmpeg cannot read it"
-    return True, "taken over VP9, it converts faster"
+        return False, "off, ffmpeg cannot read it"
+    return True, "preferred over VP9"
 
 
 def size_name(fmt):
@@ -805,7 +801,7 @@ def ensure_tools(state, force=False):
     now = time.time()
     missing = missing_tools()
     if missing:
-        ui.start("Installing download tools (first run only)")
+        ui.start("Installing tools")
         tail = ""
         # One package at a time: a failure in one must not hold back the rest.
         for package in list(REQUIRED_TOOLS) + OPTIONAL_TOOLS:
@@ -827,7 +823,7 @@ def ensure_tools(state, force=False):
         return False
     if not force and now - float(state.get("tools_checked", 0)) < DAY:
         return False
-    ui.start("Updating download tools")
+    ui.start("Updating tools")
     ok, _ = pip_install(list(REQUIRED_TOOLS) + OPTIONAL_TOOLS)
     if not ok:
         # One optional package failing should not stop the important ones.
@@ -1202,7 +1198,7 @@ def ytdlp_download(ctx):
                                         else ""))
             opts["format"] = chosen + "/" + opts["format"]
 
-    ui.start("Starting download")
+    ui.start("Downloading")
     try:
         if is_playlist:
             run_opts = dict(opts, ignoreerrors="only_download")
@@ -1281,29 +1277,8 @@ def gallery_run(args, on_line=None):
     return code, lines, strip_ansi(err)
 
 
-def gallery_variants(url):
-    """Extra gallery-dl options to try in turn. Each later entry is used only
-    when the one before it was blocked by the site."""
-    host = hostname(url)
-    if host == "reddit.com" or host.endswith(".reddit.com") or host == "redd.it":
-        return [[], REDDIT_API]
-    return [[]]
-
-
 def gallery_engine(ctx):
-    variants = gallery_variants(ctx["url"])
-    first_error = None
-    for index, extra in enumerate(variants):
-        try:
-            return gallery_attempt(ctx, extra)
-        except EngineError as exc:
-            first_error = first_error or exc
-            if index + 1 == len(variants) or not BLOCKED.search(str(exc)):
-                break
-            log("gallery-dl was blocked (%s); trying again with %s"
-                % (exc, " ".join(variants[index + 1])))
-    # The site's own refusal is the message worth showing.
-    raise first_error
+    return gallery_attempt(ctx, [])
 
 
 def gallery_attempt(ctx, extra, links=None):
@@ -1348,7 +1323,7 @@ def gallery_attempt(ctx, extra, links=None):
         seen["n"] += 1
         ui.progress("↓", None, "%d file%s" % (seen["n"], "" if seen["n"] == 1 else "s"))
 
-    ui.start("Starting download")
+    ui.start("Downloading")
     code, lines, err = gallery_run(args, on_line)
     ui.stop_spinner()
     remove(listing)
@@ -1363,112 +1338,74 @@ def gallery_attempt(ctx, extra, links=None):
 
 # ------------------------------------------------ Reddit through the browser
 #
-# Reddit turns the download tools away on some networks even when they carry a
-# signed-in session ("You've been blocked by network security"). The one client
-# it does accept there is a real browser, and a-Shell has one: the web view that
-# "Sign in to a site" uses. a-Shell's jsc command runs JavaScript in that web
-# view, so the helper asks the browser itself for the post's details, then
-# hands the media links it finds to the download tools. Cookies never leave
-# the browser.
+# In October 2026 Reddit closed the data pages (".json") that yt-dlp and
+# gallery-dl read, for everyone: they answer "You've been blocked by network
+# security" whatever the network, signed in or not, even to a browser. What
+# Reddit still serves is the post's own page, to a browser that runs its
+# scripts. a-Shell has one: the web view that "Sign in" uses, which
+# jsc can drive. So the helper opens the post there, as a visitor would, reads
+# where its media is from the page, and hands those links to the download
+# tools. Cookies never leave the browser.
 
 def is_reddit(url):
     host = hostname(url)
     return host in ("reddit.com", "redd.it") or host.endswith(".reddit.com")
 
 
-# Runs inside a page on www.reddit.com. Leaves its answer in window.__umdl:
-#   "OK <json>"            the fields of the post that say where its media is
-#   "HTTP <status> <text>" Reddit answered, but not with a post
-#   "ERR <message>"        the request could not be made
-REDDIT_JS = r"""
-window.__umdl = "";
-(async function () {
-  try {
-    var target = new URL(__URL__);
-    var link = target.hostname === "redd.it" ? "/comments" + target.pathname
-                                             : target.pathname + target.search;
-    if (!/\/comments\//.test(link)) {
-      // A share link: follow it to the post it stands for.
-      var hop;
-      try {
-        hop = await fetch(link, {method: "HEAD", credentials: "include", redirect: "follow"});
-      } catch (e) {
-        hop = await fetch(link, {credentials: "include", redirect: "follow"});
-      }
-      link = hop.url || link;
-    }
-    var match = link.match(/\/comments\/([A-Za-z0-9]+)/);
-    if (!match) { window.__umdl = "ERR no post found at " + link; return; }
-    var reply = await fetch("/comments/" + match[1] + "/.json?raw_json=1&limit=1",
-                            {credentials: "include", headers: {"Accept": "application/json"}});
-    var text = await reply.text();
-    var data = null;
-    try { data = JSON.parse(text); } catch (e) { data = null; }
-    var ascii = function (value) {
-      // Plain ASCII, so nothing between here and Python can garble it.
-      return JSON.stringify(value).replace(/[\u007f-￿]/g, function (c) {
-        return "\\u" + ("0000" + c.charCodeAt(0).toString(16)).slice(-4);
-      });
-    };
-    if (!Array.isArray(data)) {
-      // Reddit will not give out the post's data. Read the page a visitor's
-      // browser is shown instead: the post element carries what is needed.
-      var page = await fetch(link.replace(/^https?:\/\/[^\/]+/, ""),
-                             {credentials: "include", headers: {"Accept": "text/html"}});
-      var html = await page.text();
-      var start = html.indexOf("<shreddit-post");
-      if (start >= 0) {
-        var end = html.indexOf("</shreddit-post>", start);
-        var post = html.slice(start, end > 0 ? end : start + 400000);
-        var tag = post.slice(0, post.indexOf(">") + 1);
-        var attr = function (name) {
-          var m = tag.match(new RegExp("\\s" + name + '="([^"]*)"'));
-          return !m ? "" : m[1].replace(/&quot;/g, '"').replace(/&#x27;|&#39;/g, "'")
-                               .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
-        };
-        var seen = {id: attr("id").replace(/^t3_/, ""), title: attr("post-title"), umdl: ["none", ""]};
-        var href = attr("content-href");
-        var video = post.match(/https:\/\/v\.redd\.it\/([A-Za-z0-9]+)/);
-        var files = [], had = {}, each;
-        var image = /https:\/\/(?:i|preview)\.redd\.it\/([A-Za-z0-9_-]+\.(?:jpe?g|png|gif|webp))/g;
-        while ((each = image.exec(post))) {
-          // The preview host serves resized copies, sometimes under a longer name.
-          var name = each[1].replace(/^.*-v\d+-/, "");
-          if (!had[name]) { had[name] = 1; files.push("https://i.redd.it/" + name); }
-        }
-        if (video) {
-          seen.umdl = ["video", "https://v.redd.it/" + video[1] + "/DASHPlaylist.mpd"];
-        } else if (files.length) {
-          seen.umdl = ["files", files];
-        } else if (/^https?:\/\//.test(href) && !/^https?:\/\/([a-z0-9-]+\.)?(reddit\.com|redd\.it)\//.test(href)) {
-          seen.umdl = ["link", href];
-        }
-        window.__umdl = "OK " + ascii(seen);
-        return;
-      }
-      var said = data && data.message ? String(data.message)
-        : html.replace(/<(style|script)[\s\S]*?<\/\1>/g, " ").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
-      window.__umdl = "HTTP " + reply.status + ", page " + page.status + ": " + said.slice(0, 140);
-      return;
-    }
-    var keep = ["id", "title", "url", "url_overridden_by_dest", "is_video", "is_gallery",
-                "is_self", "media", "secure_media", "gallery_data", "media_metadata"];
-    var pick = function (post) {
-      var out = {};
-      keep.forEach(function (key) { if (post[key] !== undefined) { out[key] = post[key]; } });
-      return out;
-    };
-    var post = data[0].data.children[0].data;
-    var found = pick(post);
-    if (post.crosspost_parent_list && post.crosspost_parent_list[0]) {
-      found.crosspost_parent_list = [pick(post.crosspost_parent_list[0])];
-    }
-    window.__umdl = "OK " + ascii(found);
-  } catch (e) {
-    window.__umdl = "ERR " + e;
+def reddit_page(url):
+    """The address of a post's page on www.reddit.com, share links included."""
+    parts = urllib.parse.urlsplit(url)
+    path = "/comments" + parts.path if hostname(url) == "redd.it" else parts.path
+    return "https://www.reddit.com" + urllib.parse.quote(path, safe="/%")
+
+
+# Defines umdlRead(html): what the post element of a Reddit page says about
+# its media. `html` is the element as the browser writes it out. Returns JSON:
+#   {"id", "title", "type", "umdl": [kind, value]}
+# with kind "video" (a manifest link), "files" (direct links), "link" (another
+# site's address) or "none".
+REDDIT_READ = r"""
+function umdlRead(html) {
+  var tag = html.slice(0, html.indexOf(">") + 1);
+  var attr = function (name) {
+    var m = tag.match(new RegExp("\\s" + name + '="([^"]*)"'));
+    return !m ? "" : m[1].replace(/&quot;/g, '"').replace(/&#x27;|&#39;/g, "'")
+                         .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+  };
+  var seen = {id: attr("id").replace(/^t3_/, ""), title: attr("post-title"),
+              type: attr("post-type"), umdl: ["none", ""]};
+  var href = attr("content-href");
+  var video = (href + " " + html).match(/https:\/\/v\.redd\.it\/([A-Za-z0-9]+)/);
+  var files = [], had = {}, each;
+  var image = /https:\/\/(?:i|preview)\.redd\.it\/([A-Za-z0-9_-]+\.(?:jpe?g|png|gif|webp))/g;
+  while ((each = image.exec(href + " " + html))) {
+    // The preview host serves resized copies, sometimes under a longer name;
+    // the same name on i.redd.it is the original.
+    var name = each[1].replace(/^.*-v\d+-/, "");
+    if (!had[name]) { had[name] = 1; files.push("https://i.redd.it/" + name); }
   }
-})();
+  if (video) {
+    seen.umdl = ["video", "https://v.redd.it/" + video[1] + "/DASHPlaylist.mpd"];
+  } else if (files.length) {
+    seen.umdl = ["files", files];
+  } else if (/^https?:\/\//.test(href) && !/^https?:\/\/([a-z0-9-]+\.)?(reddit\.com|redd\.it)\//.test(href)) {
+    seen.umdl = ["link", href];
+  }
+  // Plain ASCII, so nothing between here and Python can garble it.
+  return JSON.stringify(seen).replace(/[\u007f-\uffff]/g, function (c) {
+    return "\\u" + ("0000" + c.charCodeAt(0).toString(16)).slice(-4);
+  });
+}
 """
+
+# What the page shows right now: "OK <json>" once the post is on it, and until
+# then "AT <address> | <state> | <title> | <the first words on the page>".
+REDDIT_LOOK = """(function () {
+  var post = document.querySelector("shreddit-post");
+  if (post) { return "OK " + umdlRead(post.outerHTML); }
+  var words = document.body ? String(document.body.innerText || "").replace(/\\s+/g, " ").trim() : "";
+  return "AT " + location.href + " | " + document.readyState + " | " + document.title + " | " + words.slice(0, 120);
+})()"""
 
 BROWSER_WAIT = float(os.environ.get("UMDL_BROWSER_WAIT") or 40)
 
@@ -1506,99 +1443,103 @@ def browser_js(name, expression, before=""):
     return lines[-1].strip() if lines else ""
 
 
+# What a-Shell's web view can decode and encode by itself. WebKit holds the
+# permission for VP9 that a-Shell lacks, so this is the one place hardware VP9
+# decoding could come from. Asked for Status only; nothing depends on it yet.
+CODEC_PROBE = """
+window.__umdlCodecs = "";
+(async function () {
+  if (typeof VideoDecoder === "undefined" || typeof VideoEncoder === "undefined") {
+    window.__umdlCodecs = "no WebCodecs"; return;
+  }
+  var out = [];
+  var ask = async function (label, kind, config, how) {
+    try {
+      var answer = await kind.isConfigSupported(Object.assign({hardwareAcceleration: how}, config));
+      out.push(label + " " + (answer && answer.supported ? "yes" : "no"));
+    } catch (e) { out.push(label + " error"); }
+    window.__umdlCodecs = out.join(", ");
+  };
+  var vp9 = {codec: "vp09.00.51.08", codedWidth: 3840, codedHeight: 2160};
+  var hevc = {codec: "hvc1.1.6.L153.B0", width: 3840, height: 2160, bitrate: 30000000, framerate: 60};
+  await ask("VP9 decode in hardware", VideoDecoder, vp9, "prefer-hardware");
+  await ask("in software", VideoDecoder, vp9, "prefer-software");
+  await ask("HEVC encode in hardware", VideoEncoder, hevc, "prefer-hardware");
+})();
+"""
+
+
+def browser_codecs():
+    """One line for Status, or nothing when the web view does not answer."""
+    try:
+        if browser_js("codecs", '"asked"', CODEC_PROBE) != "asked":
+            return ""
+        time.sleep(min(1.0, BROWSER_WAIT / 40.0))
+        return browser_js("codecs", 'window.__umdlCodecs || ""')[:120]
+    except Exception:
+        return ""
+
+
 def reddit_post_from_browser(url):
-    """Ask a-Shell's browser for a Reddit post. Returns the post's fields."""
-    here = browser_js("where", "location.href")  # the page the web view is on
+    """Open a Reddit post in a-Shell's browser and read it off the page."""
+    here = browser_js("where", 'location.href + " " + history.length')
     if not here:
         raise EngineError("a-Shell's browser did not answer")
+    here, _, depth = here.rpartition(" ")
     log("browser was at " + here[:80])
-    # The request has to come from a page of the site. This one is small and runs
-    # no scripts of its own, so nothing else can see what jsc puts in the page.
-    quiet_page = "https://www.reddit.com/robots.txt"
-    moved = here != quiet_page
     step = max(0.05, min(0.5, BROWSER_WAIT / 40.0))
-    answer = ""
+    seen = ""
     try:
-        if moved:
-            browser_js("go", '"going"', 'location.href = "%s";' % quiet_page)
+        if urllib.parse.urlsplit(here).hostname != "www.reddit.com":
+            # First a page of the site that runs nothing and belongs to no app.
+            # From there the post is a link within one site, which iOS leaves
+            # in the browser; opened from elsewhere it could start the Reddit app.
+            browser_js("go", '"going"', 'location.href = "https://www.reddit.com/robots.txt";')
             deadline = time.time() + BROWSER_WAIT / 2
             while time.time() < deadline:
                 time.sleep(step)
-                state = browser_js("ready", 'location.hostname + " " + document.readyState')
-                if state.startswith("www.reddit.com ") and not state.endswith("loading"):
+                if browser_js("ready", "location.hostname") == "www.reddit.com":
                     break
             else:
                 raise EngineError("a-Shell's browser could not open reddit.com")
-        if browser_js("start", '"started"', REDDIT_JS.replace("__URL__", json.dumps(url))) != "started":
-            raise EngineError("a-Shell's browser did not run the request")
+        browser_js("open", '"opening"', "location.href = %s;" % json.dumps(reddit_page(url)))
         deadline = time.time() + BROWSER_WAIT
-        while time.time() < deadline and not answer:
+        while time.time() < deadline and not seen.startswith("OK "):
             time.sleep(step)
-            answer = browser_js("result", 'window.__umdl || ""')
+            seen = browser_js("look", REDDIT_LOOK, REDDIT_READ) or seen
     finally:
-        if moved:
-            browser_js("back", '"back"', "history.back();")
-    log("browser answered: " + (answer[:200] or "nothing"))
-    if answer.startswith("OK "):
+        # Back to where the browser was, however many pages Reddit put in between.
+        browser_js("back", '"back"', "if (history.length > %d) { history.go(%d - history.length); }"
+                   % (to_int(depth, 1), to_int(depth, 1)))
+    log("browser saw: " + (seen[:200] or "nothing"))
+    if seen.startswith("OK "):
         try:
-            post = json.loads(answer[3:])
+            post = json.loads(seen[3:])
             if isinstance(post, dict):
                 return post
         except ValueError:
             pass
         raise EngineError("a-Shell's browser returned something unreadable")
-    if answer.startswith("HTTP "):
-        raise EngineError("Reddit refused the browser as well: " + answer[5:])
-    raise EngineError(answer[4:] if answer.startswith("ERR ") else "Reddit did not answer the browser")
+    if BLOCKED.search(seen):
+        raise EngineError("Reddit blocked a-Shell's browser.")
+    if not signed_in("reddit.com", read_cookie_store()):
+        raise EngineError("Reddit did not show the post. Sign in to Reddit.")
+    raise EngineError("Reddit did not show the post.")
 
 
 def reddit_targets(post):
-    """Where a Reddit post keeps its media.
-
-    Returns ("video", manifest link), ("files", [direct links]) or
-    ("link", another site's link).
-    """
+    """Where a Reddit post keeps its media: ("video", manifest link),
+    ("files", [direct links]) or ("link", another site's address)."""
     seen = post.get("umdl")
-    if isinstance(seen, list) and len(seen) == 2:
-        # Read off the post's page by the browser, when Reddit withholds its data.
-        if seen[0] in ("video", "files", "link") and seen[1]:
-            return seen[0], seen[1]
-        raise EngineError("This Reddit post has no photo or video.")
-    parents = post.get("crosspost_parent_list") or []
-    if parents and isinstance(parents[0], dict):
-        post = parents[0]  # a crosspost: the media belongs to the original
-    for holder in (post.get("secure_media"), post.get("media")):
-        video = (holder or {}).get("reddit_video") if isinstance(holder, dict) else None
-        if isinstance(video, dict):
-            link = video.get("dash_url") or video.get("hls_url") or video.get("fallback_url")
-            if link:
-                return "video", link
-    items = (post.get("gallery_data") or {}).get("items") or []
-    described = post.get("media_metadata") or {}
-    links = []
-    for item in items:
-        source = (described.get(item.get("media_id")) or {}).get("s") or {}
-        link = source.get("u") or source.get("gif") or source.get("mp4")
-        if link:
-            # The preview host serves a resized copy; the same name on i.redd.it is the original.
-            links.append(link.partition("?")[0].replace("/preview.", "/i.", 1))
-    if links:
-        return "files", links
-    link = clean_url(str(post.get("url_overridden_by_dest") or post.get("url") or ""))
-    host = hostname(link)
-    if host == "i.redd.it":
-        return "files", [link]
-    if host == "v.redd.it":
-        return "video", link.rstrip("/") + "/DASHPlaylist.mpd"
-    if link and not is_reddit(link) and not post.get("is_self"):
-        return "link", link
-    raise EngineError("This Reddit post has no photo or video.")
+    if isinstance(seen, list) and len(seen) == 2 and seen[0] in ("video", "files", "link") and seen[1]:
+        return seen[0], seen[1]
+    raise EngineError("No photo or video in this post.")
 
 
 def reddit_web_engine(ctx):
-    """Last resort for Reddit: get the post from a-Shell's browser, then let the
-    download tools fetch the media it points to."""
-    ui.start("Asking a-Shell's browser for the post")
+    """Reddit: read the post in a-Shell's browser, then let the download tools
+    fetch the media it points to."""
+    ui.start("Reading post")
     try:
         post = reddit_post_from_browser(ctx["url"])
         kind, target = reddit_targets(post)
@@ -1641,8 +1582,15 @@ def reddit_web_engine(ctx):
 ENGINES = {"ytdlp": ytdlp_engine, "gallery": gallery_engine, "redditweb": reddit_web_engine}
 
 
+# Sites that are not read by the tools' own extractors: (test, what reads them).
+SOURCES = ((is_reddit, ["redditweb"]),)
+
+
 def plan_engines(url):
     """Order in which to try the tools for this link."""
+    for matches, engines in SOURCES:
+        if matches(url):
+            return list(engines)
     gallery = gallery_extractor_name(url)
     ytdlp = ytdlp_extractor_name(url)
     if gallery and (prefers_gallery(hostname(url)) or not ytdlp):
@@ -1927,7 +1875,7 @@ def repack(path, info):
     args = ["-i", path, "-c:v", "copy"] + (["-tag:v", "hvc1"] if info["v"] == "hevc" else [])
     args += (["-c:a", "copy"] if audio_ok else ["-c:a", "aac", "-b:a", "256k"])
     args += ["-map", "0:v:0", "-map", "0:a:0?", "-movflags", "+faststart"]
-    ui.start("Repacking for Photos")
+    ui.start("Repacking")
     if ffmpeg(args, target):
         ui.done()
         return replace_with(path, target)
@@ -1943,7 +1891,7 @@ def convert(path, info, notes):
     tail = (["-c:a", "copy"] if audio_ok else ["-c:a", "aac", "-b:a", "256k"])
     tail += ["-map", "0:v:0", "-map", "0:a:0?", "-movflags", "+faststart"]
     source = describe_media(info)
-    ui.start("Converting %s for Photos" % source)
+    ui.start("Converting %s" % source)
     started = time.time()
     # Hardware reads the picture where it can; the plain way is the second try.
     readers = [decode_args(), []] if decode_args() else [[]]
@@ -2093,7 +2041,7 @@ class PhotosLibrary(Library):
         """True once the owner has allowed this. 3 is allowed, 4 allowed for chosen photos."""
         state = self.status()
         if state == 0:
-            ui.start("Asking for access to Photos")
+            ui.start("Photos access")
             state = self.ask()
             ui.done() if state in (3, 4) else ui.fail("not allowed")
         return state in (3, 4)
@@ -2203,7 +2151,7 @@ def open_library(album):
     folder = os.environ.get("UMDL_TEST_PHOTOS")
     if folder:
         if os.environ.get("UMDL_TEST_PHOTOS_REFUSED"):
-            return None, "a-Shell is not allowed to add to Photos. Allow it in Settings, a-Shell, Photos."
+            return None, "a-Shell has no Photos access. Allow it in Settings › a-Shell › Photos."
         return TestLibrary(folder, album), ""
     if not IOS:
         return None, "Photos can only be reached on an iPhone or iPad."
@@ -2236,7 +2184,7 @@ def open_library(album):
             if not library.permitted():
                 library.level = library.ADD_ONLY
                 if not library.permitted():
-                    return None, "a-Shell is not allowed to add to Photos. Allow it in Settings, a-Shell, Photos."
+                    return None, "a-Shell has no Photos access. Allow it in Settings › a-Shell › Photos."
             guard("album")
             library.collection = library.find_album()
         finally:
@@ -2245,7 +2193,7 @@ def open_library(album):
         return library, ""
     except Exception as exc:
         log("photos: %s: %s" % (type(exc).__name__, exc))
-        return None, "Photos could not be reached (%s)." % type(exc).__name__
+        return None, "Photos unavailable (%s)." % type(exc).__name__
     finally:
         guard(None)
 
@@ -2321,23 +2269,20 @@ def place(ctx, item, library):
     return "kept"
 
 
-FILES_PLACE = "Files (a-Shell, UMDL, Saved)"
-
-
 def summary(saved, album, converted, kept, failed, reason="", dest="photos"):
-    """The notification."""
+    """The notification: where it went, then anything out of the ordinary."""
     if dest == "files":
-        lines = ["Saved to %s." % FILES_PLACE if kept == 1 else "Saved %d items to %s." % (kept, FILES_PLACE)]
-        kept = 0
+        saved, kept, where = kept, 0, "Files"
     else:
-        where = "the %s album" % album if album else "Photos"
-        lines = ["Nothing was added to Photos." if not saved
-                 else "Saved to %s." % where if saved == 1
-                 else "Saved %d items to %s." % (saved, where)]
+        where = album or "Photos"
+    lines = ["Not saved to Photos." if not saved
+             else "Saved to %s." % where if saved == 1
+             else "%d saved to %s." % (saved, where)]
     if converted:
-        lines.append("%d converted (%s)." % (len(converted), converted[0]))
+        lines.append("Converted %s." % converted[0] if len(converted) == 1
+                     else "%d converted." % len(converted))
     if kept:
-        lines.append("%d kept in %s." % (kept, FILES_PLACE))
+        lines.append("%d kept in Files." % kept)
     if failed:
         lines.append("%d failed." % failed)
     if reason:
@@ -2398,11 +2343,7 @@ def state_fetch(job, ctx):
     remove(os.path.join(ctx["dir"], "out"))
     url = ctx["url"]
     files, errors = [], []
-    blocked = False
-    # Reddit only: if the site blocks both tools, its own browser is asked instead.
-    for engine in plan_engines(url) + (["redditweb"] if is_reddit(url) else []):
-        if engine == "redditweb" and not blocked:
-            continue
+    for engine in plan_engines(url):
         try:
             files = ENGINES[engine](ctx)
             if files:
@@ -2415,7 +2356,6 @@ def state_fetch(job, ctx):
             raise  # a tool has a question; the answer comes back as a new run
         except EngineError as exc:
             errors.append(str(exc))
-            blocked = blocked or bool(BLOCKED.search(str(exc)))
             log("%s could not do it: %s" % (engine, exc))
         except KeyboardInterrupt:
             raise
@@ -2426,14 +2366,8 @@ def state_fetch(job, ctx):
         # The first tool's message is the relevant one; the fallback's is noise.
         message = errors[0] if errors else "Nothing to download at that link."
         kind = classify_error(" ".join(errors))
-        host = hostname(url)
-        if BLOCKED.search(" ".join(errors)) and signed_in(host, read_cookie_store()):
-            # Signing in is not what is missing, so do not send the user to do it again.
-            entry = site_for(host)
-            kind = "unknown"
-            message = ("%s refused this device or network: %s Being signed in did not help. "
-                       "If a VPN is on, turn it off and try again."
-                       % (entry[0] if entry else base_domain(host), message.strip()))
+        if kind == "auth" and signed_in(hostname(url), read_cookie_store()):
+            kind = "unknown"  # signing in is not what is missing; do not send the user to do it again
         raise Stop({"t": "error", "kind": kind, "msg": message, "url": url})
     job["items"] = stage(ctx, files)
     job["title"] = ctx.get("title") or ""
@@ -2457,7 +2391,7 @@ def state_save(job, ctx):
         except Exception as exc:
             # Whatever went wrong in there, this file is not lost.
             log("photos: %s: %s" % (type(exc).__name__, exc))
-            library, reason, outcome = None, "Photos could not be reached (%s)." % type(exc).__name__, "kept"
+            library, reason, outcome = None, "Photos unavailable (%s)." % type(exc).__name__, "kept"
         if outcome == "kept":
             os.makedirs(SAVED_DIR, exist_ok=True)
             target = unique_path(SAVED_DIR, "%s.%s" % (item["stem"], ext_of(item["path"]) or "bin"))
@@ -2594,7 +2528,7 @@ def cmd_update(payload):
         versions["helper"] = found.group(1) if found else HELPER_VERSION
     except OSError:
         pass
-    title = "Download tools updated" if ok else "The update could not be completed"
+    title = "Tools updated" if ok else "Update failed"
     return callback(payload, {"t": "info", "title": title, "msg": describe_versions(versions)})
 
 
@@ -2632,8 +2566,11 @@ def status_text(payload):
     usable = [name for name in ("hevc_videotoolbox", "h264_videotoolbox", "libx264") if name in encoders()]
     lines.append("Converts with: %s" % (", ".join(usable) if usable else "no encoder found"))
     lines.append("AV1: " + av1_verdict()[1])
+    in_browser = browser_codecs()
+    if in_browser:
+        lines.append("Web view: " + in_browser)
     checked = float(state.get("tools_checked", 0) or 0)
-    lines.append("Tools last updated: %s" % (time.strftime("%d %b %H:%M", time.localtime(checked))
+    lines.append("Tools updated: %s" % (time.strftime("%d %b %H:%M", time.localtime(checked))
                                              if checked > DAY else "never"))
 
     lines += ["", "Sign-ins"] + sign_in_lines(read_cookie_store())
@@ -2644,17 +2581,17 @@ def status_text(payload):
         saved = len(os.listdir(SAVED_DIR))
     except OSError:
         saved = 0
-    lines.append("Kept in Files: %d %s" % (saved, "item" if saved == 1 else "items"))
+    lines.append("In Files: %d" % saved)
     unfinished = len([n for n in (os.listdir(JOBS_DIR) if os.path.isdir(JOBS_DIR) else [])
                       if os.path.exists(os.path.join(JOBS_DIR, n, "job.json"))])
-    lines.append("Unfinished downloads: %s" % (unfinished or "none"))
+    lines.append("Unfinished: %s" % (unfinished or "none"))
     try:
         lines.append("Free space: %s" % human_size(shutil.disk_usage(WORKSPACE).free))
     except Exception:
         pass
 
     lines += ["", "Checks"]
-    lines.append("Download tools: %s" % ("ready" if not missing_tools() else "missing"))
+    lines.append("Tools: %s" % ("ready" if not missing_tools() else "missing"))
     lines.append("GitHub: %s" % ("reachable" if fetch_text(RAW_BASE + "/version.json") else "not reachable"))
     last = state.get("last_run") or {}
     if last.get("at"):
@@ -2667,7 +2604,7 @@ def status_text(payload):
 
 def cmd_status(payload):
     ui.header("status")
-    ui.start("Checking tools, sign-ins and storage")
+    ui.start("Checking")
     text = status_text(payload)
     ui.done()
     return callback(payload, {"t": "status", "msg": text})
@@ -2681,7 +2618,7 @@ def cmd_signin(payload):
     host = hostname(url)
     if not host:
         return callback(payload, {"t": "info", "title": "Sign in",
-                                  "msg": "That was not a web address."})
+                                  "msg": "Not a web address."})
     entry = site_for(host)
     label = entry[0] if entry else base_domain(host)
     page = entry[3] if entry else url
@@ -2689,11 +2626,10 @@ def cmd_signin(payload):
     if signed_in(host, read_cookie_store()):
         return callback(payload, {
             "t": "info", "title": "Already signed in to " + label,
-            "msg": "To switch accounts, sign out first: Settings, Reset."})
-    ui.write("  Sign in on the page that opens.\n"
-             "  UMDL returns to Shortcuts once the sign-in is saved.\n\n")
+            "msg": "To switch accounts, sign out first (Settings › Reset)."})
+    ui.write("  Sign in on the next page. UMDL returns by itself.\n\n")
     run_cmd(["internalbrowser", page])
-    ui.start("Waiting for the sign-in to %s" % label)
+    ui.start("Waiting for %s sign-in" % label)
     deadline = time.time() + SIGNIN_WAIT
     found = False
     while time.time() < deadline:
@@ -2706,12 +2642,12 @@ def cmd_signin(payload):
         log("signed in to " + label)
         return callback(payload, {
             "t": "info", "title": "Signed in to " + label,
-            "msg": "UMDL will use this sign-in for %s links." % label})
+            "msg": "Used for %s links from now on." % label})
     ui.fail("not confirmed")
     return callback(payload, {
         "t": "info", "title": "Sign-in not confirmed",
-        "msg": "No sign-in to %s appeared within %d minutes. Status shows whether it was saved. "
-               "Some sites block sign-in from in-app browsers." % (label, max(1, SIGNIN_WAIT // 60))})
+        "msg": "No %s sign-in within %d minutes. Status shows whether it was saved. "
+               "Some sites block in-app browsers." % (label, max(1, SIGNIN_WAIT // 60))})
 
 
 def forget_sign_ins():
@@ -2727,13 +2663,13 @@ def forget_sign_ins():
 def cmd_logout(payload):
     """Sign out of every site."""
     ui.header("signing out")
-    ui.start("Removing saved sign-ins")
+    ui.start("Signing out")
     gone = forget_sign_ins()
     ui.done()
     return callback(payload, {
         "t": "info",
         "title": "Signed out" if gone else "Could not sign out",
-        "msg": "All saved sign-ins were removed." if gone else "Open a-Shell, then try again."})
+        "msg": "All sign-ins removed." if gone else "Open a-Shell and retry."})
 
 
 def cmd_reset(payload):
@@ -2741,20 +2677,19 @@ def cmd_reset(payload):
     and the sign-ins. Files the user keeps in a-Shell for other purposes are
     not touched."""
     ui.header("resetting")
-    ui.start("Removing the download tools")
+    ui.start("Removing tools")
     for command in pip_commands():
         code, out, err = run_cmd(command + ["uninstall", "-y"] + list(REQUIRED_TOOLS) + OPTIONAL_TOOLS)
         if code == 0:
             break
     ui.done()
-    ui.start("Removing sign-ins and UMDL's files")
+    ui.start("Removing files")
     forget_sign_ins()
     shutil.rmtree(WORKSPACE, ignore_errors=True)
     ui.done()
     return callback(payload, {
-        "t": "info", "title": "UMDL was reset",
-        "msg": "UMDL's files, the download tools and all sign-ins were removed from a-Shell. "
-               "Run UMDL to set it up again."})
+        "t": "info", "title": "Reset",
+        "msg": "Files, tools and sign-ins removed from a-Shell. Run UMDL to set up again."})
 
 
 def main(argv):
@@ -2797,9 +2732,7 @@ def main(argv):
             cmd_logout(payload)
     except KeyboardInterrupt:
         ui.stop_spinner()
-        OUT.write("\n  Stopped. What is already downloaded is kept in UMDL > Working;\n"
-                  "  run UMDL and choose Resume last download to carry on.\n"
-                  if command == "run" else "\n  Cancelled.\n")
+        OUT.write("\n  Stopped. Resume from the UMDL menu.\n" if command == "run" else "\n  Cancelled.\n")
         return 130
     except Exception as exc:
         # Never strand the user in the terminal: always report back.
